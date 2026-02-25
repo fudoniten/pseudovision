@@ -1,0 +1,4 @@
+{:store         :database
+ :migration-dir "migrations"
+ :db            {:jdbcUrl #or [#env PSEUDOVISION_DB_URL
+                               "jdbc:postgresql://localhost:5432/pseudovision"]}}

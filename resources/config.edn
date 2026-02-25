@@ -1,0 +1,28 @@
+{:log-level :info
+
+ :server {:port #or [#env PSEUDOVISION_PORT 8080]}
+
+ :database {:jdbc-url  #or [#env PSEUDOVISION_DB_URL
+                             "jdbc:postgresql://localhost:5432/pseudovision"]
+            :username  #or [#env PSEUDOVISION_DB_USER "pseudovision"]
+            :password  #or [#env PSEUDOVISION_DB_PASS "pseudovision"]}
+
+ ;; Path to the ffmpeg/ffprobe binaries used for media metadata extraction.
+ :ffmpeg {:ffmpeg-path  #or [#env FFMPEG_PATH  "/usr/bin/ffmpeg"]
+          :ffprobe-path #or [#env FFPROBE_PATH "/usr/bin/ffprobe"]}
+
+ ;; Local filesystem scanner settings.
+ :media {:scan-concurrency   4
+         ;; How long to wait for ffprobe to return per file (ms).
+         :probe-timeout-ms   30000
+         ;; File extensions recognised as video.
+         :video-extensions   [".mkv" ".mp4" ".avi" ".m4v" ".mov" ".ts" ".wmv"]
+         ;; File extensions recognised as audio.
+         :audio-extensions   [".mp3" ".flac" ".ogg" ".m4a" ".aac" ".wav"]
+         ;; File extensions recognised as images.
+         :image-extensions   [".jpg" ".jpeg" ".png" ".webp" ".gif" ".bmp"]}
+
+ ;; Playout builder settings.
+ :scheduling {:lookahead-hours 72
+              ;; How often (minutes) the background rebuild job runs.
+              :rebuild-interval-minutes 60}}
