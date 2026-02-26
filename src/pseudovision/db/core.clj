@@ -2,7 +2,8 @@
   (:require [migratus.core   :as migratus]
             [next.jdbc       :as jdbc]
             [next.jdbc.connection :as conn]
-            [taoensso.timbre :as log])
+            [taoensso.timbre :as log]
+            [aero.core       :as aero])
   (:import [com.zaxxer.hikari HikariDataSource]))
 
 ;; ---------------------------------------------------------------------------
@@ -39,7 +40,7 @@
 
 ;; Exec-fn entry point for `clojure -X:migrate`
 (defn run-migrations! [{:keys [action] :or {action "migrate"}}]
-  (let [cfg  (aero.core/read-config (clojure.java.io/resource "migratus.edn"))
+  (let [cfg  (aero/read-config (clojure.java.io/resource "migratus.edn"))
         ds   (make-datasource {:jdbc-url  (get-in cfg [:db :jdbcUrl])
                                :username  nil
                                :password  nil})]
