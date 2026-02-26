@@ -83,7 +83,7 @@
           default = updateDeps;
 
           updateDeps =
-            pkgs.mkShell { buildInputs = [ (helpers.updateClojureDeps { }) ]; };
+            pkgs.mkShell { buildInputs = [ (helpers.updateClojureDeps { aliases = ["test"]; }) ]; };
 
           pseudovision = pkgs.mkShell {
             packages = with pkgs; [ clojure jdk21 ffmpeg postgresql ];
@@ -91,15 +91,10 @@
         };
 
         checks = {
-          tests = pkgs.runCommand "pseudovision-tests" {
-            nativeBuildInputs = with pkgs; [ clojure jdk21 ];
+          tests = helpers.mkClojureTests {
+            name = "pseudovision/pseudovision";
             src = ./.;
-          } ''
-            export HOME=$TMPDIR
-            cd $src
-            clojure -M:test
-            touch $out
-          '';
+          };
         } // (pkgs.lib.optionalAttrs pkgs.stdenv.isLinux integrationTests);
       });
 }
