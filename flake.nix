@@ -95,6 +95,7 @@
             nativeBuildInputs = with pkgs; [ clojure jdk21 ];
             src = ./.;
           } ''
+            export HOME=$TMPDIR
             cd $src
             clojure -M:test
             touch $out
