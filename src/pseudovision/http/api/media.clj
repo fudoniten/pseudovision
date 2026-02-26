@@ -1,7 +1,8 @@
 (ns pseudovision.http.api.media
-  (:require [pseudovision.db.media    :as db]
-            [pseudovision.media.scanner :as scanner]
-            [taoensso.timbre          :as log]))
+  (:require [pseudovision.db.media       :as db]
+            [pseudovision.media.scanner  :as scanner]
+            [pseudovision.media.jellyfin :as jellyfin]
+            [taoensso.timbre             :as log]))
 
 (defn list-sources-handler [{:keys [db]}]
   (fn [_req] {:status 200 :body (db/list-media-sources db)}))
@@ -26,13 +27,18 @@
     (let [library-id (parse-long (get-in req [:path-params :id]))
           library    (db/get-library db library-id)]
       (if library
-        (do
+        (let [source (db/get-media-source db (:libraries/media_source_id library))
+              kind   (keyword (:media_sources/kind source))]
           ;; Run the scan asynchronously so the HTTP request returns quickly.
           (future
             (try
-              (scanner/scan-library! db media ffmpeg library)
+              (case kind
+                :jellyfin (jellyfin/scan-library! db source library)
+                ;; Default to local filesystem scanner for :local and others
+                (scanner/scan-library! db media ffmpeg library))
               (catch Exception e
-                (log/error e "Library scan failed" {:library-id library-id}))))
+                (log/error e "Library scan failed" {:library-id library-id
+                                                    :kind       kind}))))
           {:status 202 :body {:message "Scan triggered"}})
         {:status 404 :body {:error "Library not found"}}))))
 

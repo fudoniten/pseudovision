@@ -1,0 +1,420 @@
+(ns pseudovision.media.jellyfin
+  "Jellyfin media server scanner.
+
+   Connect → Discover Libraries → Fetch Items → Upsert
+
+   For each synced library:
+     1. Fetch items from the Jellyfin API with full metadata fields
+     2. Map Jellyfin item types to pseudovision media_item_kinds
+     3. Upsert media_items using remote_key (Jellyfin item ID)
+     4. Skip unchanged items via remote_etag (Jellyfin Etag header)
+     5. Upsert media_versions, media_files, media_streams, and metadata"
+  (:require [clj-http.client       :as http]
+            [cheshire.core         :as json]
+            [next.jdbc             :as jdbc]
+            [honey.sql             :as sql]
+            [honey.sql.helpers     :as h]
+            [pseudovision.db.media :as db]
+            [taoensso.timbre       :as log])
+  (:import [java.security MessageDigest]
+           [java.util HexFormat]))
+
+;; ---------------------------------------------------------------------------
+;; Jellyfin API client
+;; ---------------------------------------------------------------------------
+
+(defn- active-connection
+  "Returns the first active connection URI from a media source's connection_config,
+   or the first connection if none is marked active."
+  [connection-config]
+  (let [conns (:connections connection-config)]
+    (or (:uri (first (filter :is_active conns)))
+        (:uri (first conns)))))
+
+(defn- jellyfin-get
+  "Performs an authenticated GET against the Jellyfin server.
+   Returns the parsed JSON body or nil on failure."
+  [base-url path api-key & {:keys [query-params]}]
+  (try
+    (let [url  (str base-url path)
+          resp (http/get url
+                 {:headers          {"X-Emby-Token" api-key}
+                  :query-params     query-params
+                  :as               :json
+                  :throw-exceptions false
+                  :socket-timeout   30000
+                  :connection-timeout 10000})]
+      (when (<= 200 (:status resp) 299)
+        (:body resp)))
+    (catch Exception e
+      (log/warn e "Jellyfin API request failed" {:path path})
+      nil)))
+
+;; ---------------------------------------------------------------------------
+;; Server discovery
+;; ---------------------------------------------------------------------------
+
+(defn check-server
+  "Verifies connectivity with the Jellyfin server. Returns server info or nil."
+  [base-url api-key]
+  (jellyfin-get base-url "/System/Info" api-key))
+
+(defn fetch-libraries
+  "Fetches the virtual folder (library) list from Jellyfin."
+  [base-url api-key]
+  (jellyfin-get base-url "/Library/VirtualFolders" api-key))
+
+;; ---------------------------------------------------------------------------
+;; Item fetching
+;; ---------------------------------------------------------------------------
+
+(def ^:private item-fields
+  "Fields to request from the Jellyfin /Items endpoint."
+  (str "Path,Overview,Genres,Studios,People,MediaStreams,Chapters,"
+       "DateCreated,ProviderIds,OfficialRating,CommunityRating,"
+       "ProductionYear,PremiereDate,SortName,MediaSources"))
+
+(def ^:private include-item-types
+  "Jellyfin item types to include when scanning."
+  "Movie,Series,Season,Episode,MusicVideo,Audio,Photo")
+
+(defn- fetch-items-page
+  "Fetches a single page of items from a Jellyfin library."
+  [base-url api-key parent-id start-index limit]
+  (jellyfin-get base-url "/Items" api-key
+    :query-params {"ParentId"         parent-id
+                   "Recursive"        "true"
+                   "Fields"           item-fields
+                   "IncludeItemTypes" include-item-types
+                   "StartIndex"       (str start-index)
+                   "Limit"            (str limit)
+                   "SortBy"           "SortName"
+                   "SortOrder"        "Ascending"}))
+
+(defn- fetch-all-items
+  "Pages through all items in a Jellyfin library."
+  [base-url api-key parent-id]
+  (let [page-size 100]
+    (loop [start  0
+           result []]
+      (let [page  (fetch-items-page base-url api-key parent-id start page-size)
+            items (get page :Items [])
+            total (get page :TotalRecordCount 0)]
+        (if (or (empty? items) (>= (+ start (count items)) total))
+          (into result items)
+          (recur (+ start (count items))
+                 (into result items)))))))
+
+;; ---------------------------------------------------------------------------
+;; Type mapping
+;; ---------------------------------------------------------------------------
+
+(defn- jellyfin-type->kind
+  "Maps a Jellyfin item Type string to a pseudovision media_item_kind keyword."
+  [jf-type]
+  (case jf-type
+    "Movie"      :movie
+    "Series"     :show
+    "Season"     :season
+    "Episode"    :episode
+    "MusicVideo" :music_video
+    "Audio"      :song
+    "Photo"      :image
+    nil))
+
+(defn- needs-parent?
+  "Returns true for item kinds that require a parent_id in the schema."
+  [kind]
+  (contains? #{:season :episode :music_video} kind))
+
+;; ---------------------------------------------------------------------------
+;; Stream mapping
+;; ---------------------------------------------------------------------------
+
+(defn- jellyfin-stream->attrs
+  "Converts a Jellyfin MediaStream to a media_streams attribute map."
+  [idx stream]
+  {:stream-index    idx
+   :kind            (case (:Type stream)
+                      "Video"    "video"
+                      "Audio"    "audio"
+                      "Subtitle" "subtitle"
+                      "video")
+   :codec           (:Codec stream)
+   :profile         (:Profile stream)
+   :language        (:Language stream)
+   :channels        (or (:Channels stream) 0)
+   :title           (:DisplayTitle stream)
+   :is-default      (boolean (:IsDefault stream))
+   :is-forced       (boolean (:IsForced stream))
+   :pixel-format    (:PixelFormat stream)
+   :color-range     (:ColorRange stream)
+   :color-space     (:ColorSpace stream)
+   :color-transfer  (:ColorTransfer stream)
+   :color-primaries (:ColorPrimaries stream)})
+
+;; ---------------------------------------------------------------------------
+;; Version / file mapping
+;; ---------------------------------------------------------------------------
+
+(defn- ticks->duration
+  "Converts Jellyfin RunTimeTicks (100ns units) to a java.time.Duration."
+  [ticks]
+  (when ticks
+    (java.time.Duration/ofMillis (quot ticks 10000))))
+
+(defn- path-hash
+  "SHA-256 hex of a path string for deduplication."
+  [^String path]
+  (let [md  (MessageDigest/getInstance "SHA-256")
+        raw (.digest md (.getBytes path "UTF-8"))]
+    (.formatHex (HexFormat/of) raw)))
+
+(defn- item->version-attrs
+  "Extracts media_versions attributes from a Jellyfin item."
+  [item]
+  (let [streams (:MediaStreams item [])
+        video   (first (filter #(= "Video" (:Type %)) streams))]
+    {:duration             (ticks->duration (:RunTimeTicks item))
+     :width                (or (:Width video) 0)
+     :height               (or (:Height video) 0)
+     :r-frame-rate         (some-> (:RealFrameRate video) str)
+     :display-aspect-ratio (:AspectRatio video)
+     :video-scan-kind      (if (:IsInterlaced video) "interlaced" "progressive")}))
+
+;; ---------------------------------------------------------------------------
+;; Metadata extraction
+;; ---------------------------------------------------------------------------
+
+(defn- item->metadata-attrs
+  "Extracts metadata table attributes from a Jellyfin item."
+  [item kind]
+  (cond-> {:kind           (name kind)
+           :title          (:Name item)
+           :sort-title     (:SortName item)
+           :original-title (:OriginalTitle item)
+           :year           (:ProductionYear item)
+           :plot           (:Overview item)
+           :content-rating (:OfficialRating item)}
+    (= kind :episode)
+    (assoc :episode-number (:IndexNumber item))
+
+    (= kind :song)
+    (assoc :album        (:Album item)
+           :track-number (:IndexNumber item))))
+
+;; ---------------------------------------------------------------------------
+;; Upsert helpers
+;; ---------------------------------------------------------------------------
+
+(defn- find-parent-item
+  "Looks up the parent media_item by its Jellyfin ID (remote_key) in our DB."
+  [tx library-path-id parent-jf-id]
+  (when parent-jf-id
+    (jdbc/execute-one! tx
+      (sql/format
+        (-> (h/select :id)
+            (h/from :media-items)
+            (h/where [:and
+                      [:= :library-path-id library-path-id]
+                      [:= :remote-key parent-jf-id]]))))))
+
+(defn- item-unchanged?
+  "Returns true if the item already exists with the same etag."
+  [tx library-path-id jf-id etag]
+  (let [existing (jdbc/execute-one! tx
+                   (sql/format
+                     (-> (h/select :id :remote-etag)
+                         (h/from :media-items)
+                         (h/where [:and
+                                   [:= :library-path-id library-path-id]
+                                   [:= :remote-key jf-id]]))))]
+    (and existing (= (:media_items/remote_etag existing) etag))))
+
+(defn- upsert-version-and-file!
+  "Upserts a media version and its backing file for an item with a physical path."
+  [tx item-id item]
+  (when (:Path item)
+    ;; Delete existing version(s) for this item and let cascade clean up files/streams
+    (jdbc/execute-one! tx
+      (sql/format
+        (-> (h/delete-from :media-versions)
+            (h/where [:= :media-item-id item-id]))))
+    (let [ver-attrs (assoc (item->version-attrs item) :media-item-id item-id)
+          ver       (jdbc/execute-one! tx
+                      (sql/format
+                        (-> (h/insert-into :media-versions)
+                            (h/values [ver-attrs])))
+                      {:return-keys true})
+          ver-id    (:media_versions/id ver)]
+      (when ver-id
+        ;; Insert file
+        (jdbc/execute-one! tx
+          (sql/format
+            (-> (h/insert-into :media-files)
+                (h/values [{:media-version-id ver-id
+                            :path             (:Path item)
+                            :path-hash        (path-hash (:Path item))}])
+                (h/on-conflict :path-hash)
+                (h/do-update-set :media-version-id :path))))
+        ;; Insert streams
+        (let [streams (map-indexed jellyfin-stream->attrs (:MediaStreams item []))]
+          (when (seq streams)
+            (jdbc/execute! tx
+              (sql/format
+                (-> (h/insert-into :media-streams)
+                    (h/values (mapv #(assoc % :media-version-id ver-id) streams))))))))
+      ver-id)))
+
+(defn- upsert-metadata!
+  "Upserts metadata, genres, and studios for an item."
+  [tx item-id item kind]
+  (let [meta-attrs (assoc (item->metadata-attrs item kind) :media-item-id item-id)]
+    (jdbc/execute-one! tx
+      (sql/format
+        (-> (h/insert-into :metadata)
+            (h/values [meta-attrs])
+            (h/on-conflict :media-item-id)
+            (h/do-update-set :title :sort-title :original-title
+                             :year :plot :content-rating
+                             :episode-number :album :track-number
+                             :date-updated)))))
+  ;; Fetch the metadata row ID for genre/studio insertion
+  (let [meta-row (jdbc/execute-one! tx
+                   (sql/format
+                     (-> (h/select :id)
+                         (h/from :metadata)
+                         (h/where [:= :media-item-id item-id]))))
+        meta-id  (:metadata/id meta-row)]
+    (when meta-id
+      ;; Genres
+      (when (seq (:Genres item))
+        (jdbc/execute-one! tx
+          (sql/format
+            (-> (h/delete-from :metadata-genres)
+                (h/where [:= :metadata-id meta-id]))))
+        (jdbc/execute! tx
+          (sql/format
+            (-> (h/insert-into :metadata-genres)
+                (h/values (mapv (fn [g] {:metadata-id meta-id :name g})
+                                (:Genres item)))))))
+      ;; Studios
+      (when (seq (:Studios item))
+        (jdbc/execute-one! tx
+          (sql/format
+            (-> (h/delete-from :metadata-studios)
+                (h/where [:= :metadata-id meta-id]))))
+        (jdbc/execute! tx
+          (sql/format
+            (-> (h/insert-into :metadata-studios)
+                (h/values (mapv (fn [s] {:metadata-id meta-id :name (:Name s)})
+                                (:Studios item))))))))))
+
+;; ---------------------------------------------------------------------------
+;; Single item upsert
+;; ---------------------------------------------------------------------------
+
+(defn- upsert-item!
+  "Upserts a single Jellyfin item into the database.
+   Returns the upserted media_items row, or nil if skipped."
+  [db library-path-id item]
+  (let [jf-id   (:Id item)
+        jf-type (:Type item)
+        kind    (jellyfin-type->kind jf-type)
+        etag    (or (:Etag item) (str (:DateLastSaved item)))]
+    (when kind
+      (jdbc/with-transaction [tx db]
+        (when-not (item-unchanged? tx library-path-id jf-id etag)
+          ;; Resolve parent for hierarchical items
+          (let [parent-id (when (needs-parent? kind)
+                            (:media_items/id
+                              (find-parent-item tx library-path-id (:ParentId item))))]
+            (if (and (needs-parent? kind) (nil? parent-id))
+              ;; Parent not yet synced — skip for now
+              (do (log/debug "Skipping item — parent not yet synced"
+                             {:id jf-id :type jf-type})
+                  nil)
+              (let [item-row (db/upsert-media-item! tx
+                               (cond-> {:kind             (name kind)
+                                        :state            "normal"
+                                        :library-path-id  library-path-id
+                                        :remote-key       jf-id
+                                        :remote-etag      etag}
+                                 parent-id
+                                 (assoc :parent-id parent-id)
+
+                                 (some? (:IndexNumber item))
+                                 (assoc :position (:IndexNumber item))))
+                    item-id  (:media_items/id item-row)]
+                (when item-id
+                  (upsert-version-and-file! tx item-id item)
+                  (upsert-metadata! tx item-id item kind))
+                item-row))))))))
+
+;; ---------------------------------------------------------------------------
+;; Public: scan a Jellyfin library
+;; ---------------------------------------------------------------------------
+
+(defn scan-library!
+  "Scans a single library from a Jellyfin media source and upserts all items.
+   `source` must have :connection_config with an api_key and connections list.
+   `library` must have :external_id set to the Jellyfin library ID."
+  [db source library]
+  (let [config   (let [raw (or (:media_sources/connection_config source)
+                               (:connection_config source))]
+                   (if (string? raw) (json/parse-string raw true) raw))
+        base-url (active-connection config)
+        api-key  (:api_key config)]
+    (when-not base-url
+      (throw (ex-info "No active connection for Jellyfin source"
+                      {:source-id (:media_sources/id source)})))
+    (when-not api-key
+      (throw (ex-info "No API key configured for Jellyfin source"
+                      {:source-id (:media_sources/id source)})))
+
+    (log/info "Checking Jellyfin server connectivity" {:url base-url})
+    (let [server-info (check-server base-url api-key)]
+      (when-not server-info
+        (throw (ex-info "Cannot connect to Jellyfin server" {:url base-url})))
+      (log/info "Connected to Jellyfin" {:server-name (:ServerName server-info)
+                                          :version     (:Version server-info)}))
+
+    (let [jf-library-id  (or (:libraries/external_id library)
+                             (:external_id library))
+          library-id     (or (:libraries/id library) (:id library))
+          ;; Use a synthetic path for the library_path row (Jellyfin has no local paths)
+          synthetic-path (str base-url "/library/" jf-library-id)
+          lp             (or (first (db/list-library-paths db library-id))
+                             (db/create-library-path! db {:library-id library-id
+                                                          :path       synthetic-path}))
+          lp-id          (or (:library_paths/id lp) (:id lp))]
+
+      (log/info "Fetching items from Jellyfin library"
+                {:library-id jf-library-id :library-name (:libraries/name library)})
+
+      (let [items  (fetch-all-items base-url api-key jf-library-id)
+            ;; Sort so parents (shows) come before children (seasons → episodes)
+            sorted (sort-by (fn [item]
+                              (case (:Type item)
+                                "Series"     0
+                                "Season"     1
+                                "Episode"    2
+                                "Movie"      0
+                                "MusicVideo" 1
+                                "Audio"      0
+                                "Photo"      0
+                                3))
+                            items)]
+        (log/info "Found items to sync" {:count (count items)})
+        (let [results (atom {:synced 0 :skipped 0 :errors 0})]
+          (doseq [item sorted]
+            (try
+              (if (upsert-item! db lp-id item)
+                (swap! results update :synced inc)
+                (swap! results update :skipped inc))
+              (catch Exception e
+                (log/error e "Failed to upsert Jellyfin item"
+                           {:id (:Id item) :name (:Name item)})
+                (swap! results update :errors inc))))
+          (log/info "Jellyfin library scan complete" @results)
+          @results)))))
