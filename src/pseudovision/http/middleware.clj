@@ -1,5 +1,6 @@
 (ns pseudovision.http.middleware
-  (:require [cheshire.core   :as json]
+  (:require [clojure.string :as str]
+            [cheshire.core   :as json]
             [taoensso.timbre :as log]))
 
 (defn wrap-json-body
@@ -7,7 +8,7 @@
   [handler]
   (fn [req]
     (if (some-> (get-in req [:headers "content-type"])
-                (clojure.string/starts-with? "application/json"))
+                (str/starts-with? "application/json"))
       (let [body (-> req :body slurp (json/parse-string true))]
         (handler (assoc req :body-params body)))
       (handler req))))
