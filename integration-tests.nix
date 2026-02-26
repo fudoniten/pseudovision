@@ -1,7 +1,7 @@
 { pkgs, pseudovision }:
 
 {
-  schedule-integration = pkgs.nixosTest {
+  schedule-integration = pkgs.testers.nixosTest {
     name = "pseudovision-schedule-integration";
 
     nodes.server = { config, pkgs, ... }: {
@@ -9,9 +9,7 @@
       services.postgresql = {
         enable = true;
         package = pkgs.postgresql_16;
-        initialDatabases = [{
-          name = "pseudovision";
-        }];
+        initialDatabases = [{ name = "pseudovision"; }];
         # Trust local connections so the service can connect without a password
         authentication = ''
           local all all trust
@@ -33,8 +31,7 @@
         wants = [ "postgresql.service" ];
         environment = {
           PSEUDOVISION_PORT = "8080";
-          PSEUDOVISION_DB_URL =
-            "jdbc:postgresql://localhost:5432/pseudovision";
+          PSEUDOVISION_DB_URL = "jdbc:postgresql://localhost:5432/pseudovision";
           PSEUDOVISION_DB_USER = "pseudovision";
           PSEUDOVISION_DB_PASS = "";
         };
