@@ -9,20 +9,16 @@
       services.postgresql = {
         enable = true;
         package = pkgs.postgresql_16;
-        initialDatabases = [{
+        ensureDatabases = [ "pseudovision" ];
+        ensureUsers = [{
           name = "pseudovision";
+          ensureDBOwnership = true;
         }];
         # Trust local connections so the service can connect without a password
         authentication = ''
           local all all trust
           host  all all 127.0.0.1/32 trust
           host  all all ::1/128      trust
-        '';
-        initialScript = pkgs.writeText "init.sql" ''
-          CREATE ROLE pseudovision WITH LOGIN;
-          GRANT ALL PRIVILEGES ON DATABASE pseudovision TO pseudovision;
-          \c pseudovision
-          GRANT ALL ON SCHEMA public TO pseudovision;
         '';
       };
 
