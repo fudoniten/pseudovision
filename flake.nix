@@ -5,7 +5,7 @@
     nixpkgs.url = "github:nixos/nixpkgs/nixos-25.11";
     flake-utils.url = "github:numtide/flake-utils";
     nix-helpers = {
-      url = "github:fudoniten/nix-helpers";
+      url = "github:fudoniten/fudo-nix-helpers";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
@@ -14,7 +14,7 @@
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
-        helpers = nix-helpers.packages.${system};
+        helpers = nix-helpers.legacyPackages.${system};
 
         pseudovision = helpers.mkClojureBin {
           name = "pseudovision/pseudovision";
@@ -28,9 +28,8 @@
           src = ./.;
         };
 
-        integrationTests = import ./integration-tests.nix {
-          inherit pkgs pseudovision;
-        };
+        integrationTests =
+          import ./integration-tests.nix { inherit pkgs pseudovision; };
 
       in {
         packages = {
@@ -79,17 +78,15 @@
           };
         };
 
-        devShells = {
-          default = pkgs.mkShell {
-            packages = with pkgs; [ clojure jdk21 ffmpeg postgresql ];
-          };
+        devShells = rec {
 
-          # nix develop .#deps -- update deps-lock.json
-          deps = pkgs.mkShell {
-            packages = with pkgs; [ clojure ];
-            shellHook = ''
-              echo "Run: clojure -Sforce -Sprepare"
-            '';
+          default = updateDeps;
+
+          updateDeps =
+            pkgs.mkShell { buildInputs = [ (helpers.updateClojureDeps { }) ]; };
+
+          pseudovision = pkgs.mkShell {
+            packages = with pkgs; [ clojure jdk21 ffmpeg postgresql ];
           };
         };
 
