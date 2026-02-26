@@ -1,7 +1,7 @@
 { pkgs, pseudovision }:
 
 {
-  schedule-integration = pkgs.nixosTest {
+  schedule-integration = pkgs.testers.nixosTest {
     name = "pseudovision-schedule-integration";
 
     nodes.server = { config, pkgs, ... }: {
@@ -29,8 +29,7 @@
         wants = [ "postgresql.service" ];
         environment = {
           PSEUDOVISION_PORT = "8080";
-          PSEUDOVISION_DB_URL =
-            "jdbc:postgresql://localhost:5432/pseudovision";
+          PSEUDOVISION_DB_URL = "jdbc:postgresql://localhost:5432/pseudovision";
           PSEUDOVISION_DB_USER = "pseudovision";
           PSEUDOVISION_DB_PASS = "";
         };
