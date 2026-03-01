@@ -149,11 +149,10 @@
               f"INSERT INTO media_items (kind, library_path_id) "
               f"VALUES ('movie', {lp_id});\""
           )
-          mi_id = server.succeed(
+          mi_id = int(server.succeed(
               "sudo -u pseudovision psql -t -A -d pseudovision -c \""
               "SELECT id FROM media_items ORDER BY id DESC LIMIT 1;\""
-          ).strip()
-          mi_id = int(mi_id)
+          ).strip())
           media_item_ids.append(mi_id)
 
           # metadata
