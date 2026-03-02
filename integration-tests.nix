@@ -371,7 +371,7 @@
       # 7. Fetch events and run coherence checks
       # ================================================================
 
-      from datetime import datetime, timezone
+      from datetime import datetime
 
 
       def parse_iso(s):
