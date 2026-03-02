@@ -31,7 +31,9 @@
     (try
       (handler req)
       (catch Exception e
-        (log/error e "Unhandled exception" {:uri (:uri req)})
+        (log/error e "Unhandled exception" {:uri        (:uri req)
+                                            :error-type (-> e .getClass .getName)
+                                            :error      (ex-message e)})
         {:status  500
          :headers {"Content-Type" "application/json; charset=utf-8"}
          :body    (json/generate-string {:error "Internal server error"})}))))
