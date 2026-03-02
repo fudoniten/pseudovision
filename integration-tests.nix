@@ -102,7 +102,7 @@
       # 1. Create an FFmpeg profile (required FK for channels)
       # ================================================================
       server.succeed(
-          "sudo -u pseudovision psql -d pseudovision -c \""
+          "psql -U pseudovision -d pseudovision -c \""
           "INSERT INTO ffmpeg_profiles (name, config) "
           "VALUES ('default', '{\\\"video_format\\\": \\\"h264\\\"}');\""
       )
@@ -129,12 +129,12 @@
 
       # -- library path  (direct SQL — no scan API for fake files)
       server.succeed(
-          f"sudo -u pseudovision psql -d pseudovision -c \""
+          f"psql -U pseudovision -d pseudovision -c \""
           f"INSERT INTO library_paths (library_id, path) "
           f"VALUES ({lib_id}, '/media/movies');\""
       )
       lp_row = server.succeed(
-          "sudo -u pseudovision psql -t -A -d pseudovision -c \""
+          "psql -U pseudovision -t -A -d pseudovision -c \""
           "SELECT id FROM library_paths LIMIT 1;\""
       ).strip()
       lp_id = int(lp_row)
@@ -145,37 +145,37 @@
       media_item_ids = []
       for i, dur_min in enumerate(durations_minutes):
           server.succeed(
-              f"sudo -u pseudovision psql -d pseudovision -c \""
+              f"psql -U pseudovision -d pseudovision -c \""
               f"INSERT INTO media_items (kind, library_path_id) "
               f"VALUES ('movie', {lp_id});\""
           )
           mi_id = int(server.succeed(
-              "sudo -u pseudovision psql -t -A -d pseudovision -c \""
+              "psql -U pseudovision -t -A -d pseudovision -c \""
               "SELECT id FROM media_items ORDER BY id DESC LIMIT 1;\""
           ).strip())
           media_item_ids.append(mi_id)
 
           # metadata
           server.succeed(
-              f"sudo -u pseudovision psql -d pseudovision -c \""
+              f"psql -U pseudovision -d pseudovision -c \""
               f"INSERT INTO metadata (media_item_id, kind, title) "
               f"VALUES ({mi_id}, 'movie', 'Test Movie {i+1}');\""
           )
 
           # media version with duration
           server.succeed(
-              f"sudo -u pseudovision psql -d pseudovision -c \""
+              f"psql -U pseudovision -d pseudovision -c \""
               f"INSERT INTO media_versions (media_item_id, name, duration) "
               f"VALUES ({mi_id}, 'Main', INTERVAL '{dur_min} minutes');\""
           )
 
           # media file (fake path)
           mv_id = server.succeed(
-              "sudo -u pseudovision psql -t -A -d pseudovision -c \""
+              "psql -U pseudovision -t -A -d pseudovision -c \""
               "SELECT id FROM media_versions ORDER BY id DESC LIMIT 1;\""
           ).strip()
           server.succeed(
-              f"sudo -u pseudovision psql -d pseudovision -c \""
+              f"psql -U pseudovision -d pseudovision -c \""
               f"INSERT INTO media_files (media_version_id, path, path_hash) "
               f"VALUES ({mv_id}, '/media/movies/movie{i+1}.mkv', 'hash{i+1}');\""
           )
@@ -198,7 +198,7 @@
       assert coll_a_id, f"Failed to create collection A: {coll_a}"
       for mi_id in media_item_ids[:5]:
           server.succeed(
-              f"sudo -u pseudovision psql -d pseudovision -c \""
+              f"psql -U pseudovision -d pseudovision -c \""
               f"INSERT INTO collection_items (collection_id, media_item_id) "
               f"VALUES ({coll_a_id}, {mi_id});\""
           )
@@ -212,7 +212,7 @@
       assert coll_b_id, f"Failed to create collection B: {coll_b}"
       for mi_id in media_item_ids[5:]:
           server.succeed(
-              f"sudo -u pseudovision psql -d pseudovision -c \""
+              f"psql -U pseudovision -d pseudovision -c \""
               f"INSERT INTO collection_items (collection_id, media_item_id) "
               f"VALUES ({coll_b_id}, {mi_id});\""
           )
@@ -226,7 +226,7 @@
       assert coll_c_id, f"Failed to create collection C: {coll_c}"
       for mi_id in media_item_ids:
           server.succeed(
-              f"sudo -u pseudovision psql -d pseudovision -c \""
+              f"psql -U pseudovision -d pseudovision -c \""
               f"INSERT INTO collection_items (collection_id, media_item_id) "
               f"VALUES ({coll_c_id}, {mi_id});\""
           )
@@ -236,7 +236,7 @@
       # 4. Create channels with FFmpeg profile
       # ================================================================
       ffmpeg_id = int(server.succeed(
-          "sudo -u pseudovision psql -t -A -d pseudovision -c \""
+          "psql -U pseudovision -t -A -d pseudovision -c \""
           "SELECT id FROM ffmpeg_profiles LIMIT 1;\""
       ).strip())
 
@@ -348,7 +348,7 @@
       # Wire channel → schedule via playout rows (direct SQL to set schedule_id)
       for (ch_id, s_id) in [(ch1_id, s1_id), (ch2_id, s2_id), (ch3_id, s3_id)]:
           server.succeed(
-              f"sudo -u pseudovision psql -d pseudovision -c \""
+              f"psql -U pseudovision -d pseudovision -c \""
               f"INSERT INTO playouts (channel_id, schedule_id, seed) "
               f"VALUES ({ch_id}, {s_id}, 42);\""
           )
