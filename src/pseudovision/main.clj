@@ -48,7 +48,7 @@
                          (:log-level options)
                          (assoc :log-level (:log-level options)))
             sys-config (system/->system-config config)
-            system     (ig/init sys-config)]
+            system     (ig/init (ig/prep sys-config))]
         (log/info "Pseudovision started on port" (get-in config [:server :port]))
         (.addShutdownHook (Runtime/getRuntime)
                           (Thread. ^Runnable #(do (log/info "Shutting down…")
