@@ -1,7 +1,8 @@
 (ns pseudovision.db.media
   (:require [honey.sql         :as sql]
             [honey.sql.helpers :as h]
-            [pseudovision.db.core :as db]))
+            [pseudovision.db.core :as db]
+            [pseudovision.util.sql :as sql-util]))
 
 ;; ---------------------------------------------------------------------------
 ;; Media sources and libraries
@@ -18,7 +19,7 @@
 
 (defn create-media-source! [ds attrs]
   (db/execute-one! ds (-> (h/insert-into :media-sources)
-                          (h/values [attrs])
+                          (h/values [(update attrs :kind #(sql-util/->pg-enum "media_source_kind" %))])
                           sql/format)))
 
 (defn list-libraries [ds]
@@ -42,7 +43,7 @@
 
 (defn create-library! [ds attrs]
   (db/execute-one! ds (-> (h/insert-into :libraries)
-                          (h/values [attrs])
+                          (h/values [(update attrs :kind #(sql-util/->pg-enum "library_kind" %))])
                           sql/format)))
 
 (defn list-library-paths [ds library-id]
@@ -117,7 +118,7 @@
 
 (defn create-collection! [ds attrs]
   (db/execute-one! ds (-> (h/insert-into :collections)
-                          (h/values [attrs])
+                          (h/values [(update attrs :kind #(sql-util/->pg-enum "collection_kind" %))])
                           sql/format)))
 
 (defn add-item-to-collection! [ds collection-id media-item-id]
