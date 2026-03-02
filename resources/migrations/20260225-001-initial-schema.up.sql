@@ -24,6 +24,7 @@ CREATE TABLE config (
     key   TEXT NOT NULL PRIMARY KEY,
     value TEXT
 );
+--;;
 
 -- ISO 639-2/T codes bundled at startup; read-only at runtime.
 CREATE TABLE language_codes (
@@ -31,6 +32,7 @@ CREATE TABLE language_codes (
     code TEXT   NOT NULL UNIQUE,   -- e.g. "eng", "fra"
     name TEXT   NOT NULL           -- e.g. "English"
 );
+--;;
 
 
 -- =============================================================================
@@ -43,6 +45,7 @@ CREATE TYPE media_source_kind AS ENUM (
     'jellyfin',   -- future
     'emby'        -- future
 );
+--;;
 
 -- TPH: one row per source.
 -- Remote connection details live in JSONB so they can evolve without schema
@@ -63,6 +66,7 @@ CREATE TABLE media_sources (
     path_replacements     JSONB             NOT NULL DEFAULT '[]',
     last_collections_scan TIMESTAMPTZ
 );
+--;;
 
 CREATE TYPE library_kind AS ENUM (
     'movies',
@@ -72,6 +76,7 @@ CREATE TYPE library_kind AS ENUM (
     'songs',
     'images'
 );
+--;;
 
 CREATE TABLE libraries (
     id              SERIAL       PRIMARY KEY,
@@ -84,8 +89,10 @@ CREATE TABLE libraries (
     should_sync     BOOLEAN      NOT NULL DEFAULT TRUE,
     last_scan       TIMESTAMPTZ
 );
+--;;
 
 CREATE INDEX ix_libraries_source ON libraries (media_source_id);
+--;;
 
 -- Each library can watch one or more root paths.
 -- Separate table so individual paths can be rescanned independently.
@@ -96,8 +103,10 @@ CREATE TABLE library_paths (
     last_scan  TIMESTAMPTZ,
     UNIQUE (library_id, path)
 );
+--;;
 
 CREATE INDEX ix_library_paths ON library_paths (library_id);
+--;;
 
 -- Subdirectory cache for incremental local scanning.
 CREATE TABLE library_folders (
@@ -107,8 +116,10 @@ CREATE TABLE library_folders (
     path            TEXT    NOT NULL,
     etag            TEXT
 );
+--;;
 
 CREATE INDEX ix_library_folders ON library_folders (library_path_id);
+--;;
 
 
 -- =============================================================================
@@ -126,6 +137,7 @@ CREATE TYPE media_item_kind AS ENUM (
     'song',
     'image'
 );
+--;;
 
 CREATE TYPE media_item_state AS ENUM (
     'normal',
@@ -133,6 +145,7 @@ CREATE TYPE media_item_state AS ENUM (
     'unavailable',
     'remote_only'
 );
+--;;
 
 -- TPH: every piece of content is one row.
 -- Replaces 14+ tables from the original (Movie, PlexMovie, Show, PlexShow,
@@ -165,12 +178,17 @@ CREATE TABLE media_items (
         OR (kind NOT IN ('season', 'episode', 'music_video') AND parent_id IS NULL)
     )
 );
+--;;
 
 CREATE INDEX ix_media_items_library    ON media_items (library_path_id);
+--;;
 CREATE INDEX ix_media_items_parent     ON media_items (parent_id) WHERE parent_id IS NOT NULL;
+--;;
 CREATE INDEX ix_media_items_kind_state ON media_items (kind, state);
+--;;
 CREATE INDEX ix_media_items_remote_key ON media_items (library_path_id, remote_key)
     WHERE remote_key IS NOT NULL;
+--;;
 
 -- A media item may have multiple versions (different encodes, editions).
 CREATE TABLE media_versions (
@@ -188,8 +206,10 @@ CREATE TABLE media_versions (
     date_added           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     date_updated         TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+--;;
 
 CREATE INDEX ix_media_versions ON media_versions (media_item_id);
+--;;
 
 -- Physical file(s) backing a version (multi-file episodes are the exception)
 CREATE TABLE media_files (
@@ -199,12 +219,15 @@ CREATE TABLE media_files (
     path              TEXT    NOT NULL,
     path_hash         TEXT    NOT NULL UNIQUE   -- xxHash/SHA-256 of path for dedup
 );
+--;;
 
 CREATE INDEX ix_media_files ON media_files (media_version_id);
+--;;
 
 CREATE TYPE stream_kind AS ENUM (
     'video', 'audio', 'subtitle', 'attachment', 'external_subtitle'
 );
+--;;
 
 -- Individual A/V/subtitle streams within a version
 CREATE TABLE media_streams (
@@ -230,8 +253,10 @@ CREATE TABLE media_streams (
     file_name           TEXT,
     mime_type           TEXT
 );
+--;;
 
 CREATE INDEX ix_media_streams ON media_streams (media_version_id);
+--;;
 
 -- Chapter markers (for mid-roll filler injection)
 CREATE TABLE media_chapters (
@@ -242,8 +267,10 @@ CREATE TABLE media_chapters (
     end_time         INTERVAL NOT NULL,
     title            TEXT
 );
+--;;
 
 CREATE INDEX ix_media_chapters ON media_chapters (media_version_id);
+--;;
 
 
 -- =============================================================================
@@ -253,6 +280,7 @@ CREATE INDEX ix_media_chapters ON media_chapters (media_version_id);
 -- TPH: all metadata in one table.
 -- Replaces 9 separate *Metadata tables from the original.
 -- Kind-specific scalars (episode_number, album, track_number) are nullable;
+--;;
 -- they are never filtered on in isolation.
 CREATE TABLE metadata (
     id              SERIAL          PRIMARY KEY,
@@ -280,17 +308,23 @@ CREATE TABLE metadata (
     date_added      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     date_updated    TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+--;;
 
 CREATE INDEX ix_metadata_item       ON metadata (media_item_id);
+--;;
 CREATE INDEX ix_metadata_title      ON metadata (lower(title));
+--;;
 CREATE INDEX ix_metadata_sort_title ON metadata (sort_title);
+--;;
 
 CREATE TABLE metadata_genres (
     id          SERIAL  PRIMARY KEY,
     metadata_id INTEGER NOT NULL REFERENCES metadata (id) ON DELETE CASCADE,
     name        TEXT    NOT NULL
 );
+--;;
 CREATE INDEX ix_metadata_genres ON metadata_genres (metadata_id);
+--;;
 
 CREATE TABLE metadata_tags (
     id                     SERIAL  PRIMARY KEY,
@@ -300,16 +334,21 @@ CREATE TABLE metadata_tags (
     external_collection_id TEXT,
     external_type_id       TEXT
 );
+--;;
 CREATE INDEX ix_metadata_tags ON metadata_tags (metadata_id);
+--;;
 
 CREATE TABLE metadata_studios (
     id          SERIAL  PRIMARY KEY,
     metadata_id INTEGER NOT NULL REFERENCES metadata (id) ON DELETE CASCADE,
     name        TEXT    NOT NULL
 );
+--;;
 CREATE INDEX ix_metadata_studios ON metadata_studios (metadata_id);
+--;;
 
 CREATE TYPE person_role AS ENUM ('actor', 'director', 'writer', 'artist');
+--;;
 
 CREATE TABLE metadata_people (
     id           SERIAL      PRIMARY KEY,
@@ -320,7 +359,9 @@ CREATE TABLE metadata_people (
     sort_order   INTEGER,
     artwork_path TEXT
 );
+--;;
 CREATE INDEX ix_metadata_people ON metadata_people (metadata_id);
+--;;
 
 -- External IDs: "imdb:tt1234567", "tvdb:123", tmdb GUIDs, etc.
 CREATE TABLE metadata_external_ids (
@@ -329,10 +370,14 @@ CREATE TABLE metadata_external_ids (
     guid        TEXT    NOT NULL,
     UNIQUE (metadata_id, guid)
 );
+--;;
 CREATE INDEX ix_metadata_external_ids      ON metadata_external_ids (metadata_id);
+--;;
 CREATE INDEX ix_metadata_external_ids_guid ON metadata_external_ids (guid);
+--;;
 
 CREATE TYPE artwork_kind AS ENUM ('poster', 'thumbnail', 'logo', 'fanart', 'watermark');
+--;;
 
 CREATE TABLE metadata_artwork (
     id                    SERIAL       PRIMARY KEY,
@@ -348,9 +393,12 @@ CREATE TABLE metadata_artwork (
     date_added            TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     date_updated          TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
+--;;
 CREATE INDEX ix_metadata_artwork ON metadata_artwork (metadata_id, kind);
+--;;
 
 CREATE TYPE subtitle_kind AS ENUM ('embedded', 'sidecar');
+--;;
 
 CREATE TABLE subtitles (
     id           SERIAL        PRIMARY KEY,
@@ -368,7 +416,9 @@ CREATE TABLE subtitles (
     date_added   TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
     date_updated TIMESTAMPTZ   NOT NULL DEFAULT NOW()
 );
+--;;
 CREATE INDEX ix_subtitles ON subtitles (metadata_id);
+--;;
 
 
 -- =============================================================================
@@ -399,6 +449,7 @@ CREATE TYPE collection_kind AS ENUM (
     'trakt',      -- synced from Trakt.tv
     'rerun'       -- first-run → rerun wrapper
 );
+--;;
 
 CREATE TABLE collections (
     id                        SERIAL          PRIMARY KEY,
@@ -407,9 +458,12 @@ CREATE TABLE collections (
     use_custom_playback_order BOOLEAN         NOT NULL DEFAULT FALSE,
     config                    JSONB           NOT NULL DEFAULT '{}'
 );
+--;;
 
 CREATE INDEX ix_collections_kind ON collections (kind);
+--;;
 CREATE INDEX ix_collections_name ON collections (lower(name));
+--;;
 
 -- Junction table for manual collections only.
 CREATE TABLE collection_items (
@@ -418,7 +472,9 @@ CREATE TABLE collection_items (
     custom_order  INTEGER,
     PRIMARY KEY (collection_id, media_item_id)
 );
+--;;
 CREATE INDEX ix_collection_items_item ON collection_items (media_item_id);
+--;;
 
 -- Trakt list → local media item mapping (populated by Trakt sync).
 CREATE TABLE trakt_list_items (
@@ -431,8 +487,11 @@ CREATE TABLE trakt_list_items (
     episode       INTEGER,
     UNIQUE (collection_id, media_item_id)
 );
+--;;
 CREATE INDEX ix_trakt_items_collection ON trakt_list_items (collection_id);
+--;;
 CREATE INDEX ix_trakt_items_item       ON trakt_list_items (media_item_id);
+--;;
 
 
 -- =============================================================================
@@ -458,6 +517,7 @@ CREATE TABLE ffmpeg_profiles (
     name   TEXT   NOT NULL UNIQUE,
     config JSONB  NOT NULL
 );
+--;;
 
 -- config keys: mode (none/permanent/intermittent/opacity_expression),
 --   image_source (custom/channel_logo), image, original_content_type,
@@ -470,8 +530,10 @@ CREATE TABLE watermarks (
     name   TEXT   NOT NULL UNIQUE,
     config JSONB  NOT NULL
 );
+--;;
 
 CREATE TYPE graphics_element_kind AS ENUM ('lower_third', 'sequence', 'overlay');
+--;;
 
 CREATE TABLE graphics_elements (
     id   SERIAL                PRIMARY KEY,
@@ -479,6 +541,7 @@ CREATE TABLE graphics_elements (
     path TEXT                  NOT NULL,
     kind graphics_element_kind NOT NULL
 );
+--;;
 
 
 -- =============================================================================
@@ -500,6 +563,7 @@ CREATE TYPE filler_role AS ENUM (
     'tail',      -- fill remaining time at end of a timed block
     'fallback'   -- play when no other content is scheduled
 );
+--;;
 
 CREATE TYPE filler_category AS ENUM (
     'commercial',    -- advertising / paid interstitials
@@ -514,6 +578,7 @@ CREATE TYPE filler_category AS ENUM (
     'interstitial',  -- general-purpose transition content
     'other'
 );
+--;;
 
 CREATE TYPE filler_mode AS ENUM (
     'duration',      -- fill exactly this duration
@@ -521,6 +586,7 @@ CREATE TYPE filler_mode AS ENUM (
     'random_count',  -- play 1..N items (random)
     'pad_to_minute'  -- pad to the next N-minute boundary
 );
+--;;
 
 CREATE TABLE filler_presets (
     id                    SERIAL          PRIMARY KEY,
@@ -541,9 +607,12 @@ CREATE TABLE filler_presets (
     collection_id         INTEGER      REFERENCES collections (id) ON DELETE SET NULL,
     media_item_id         INTEGER      REFERENCES media_items (id)  ON DELETE SET NULL
 );
+--;;
 
 CREATE INDEX ix_filler_collection ON filler_presets (collection_id) WHERE collection_id IS NOT NULL;
+--;;
 CREATE INDEX ix_filler_category   ON filler_presets (category);
+--;;
 
 
 -- =============================================================================
@@ -556,10 +625,12 @@ CREATE TYPE streaming_mode AS ENUM (
     'hls_direct',     -- HLS passthrough
     'hls_segmenter'   -- HLS with segmenter
 );
+--;;
 
 CREATE TYPE subtitle_mode AS ENUM (
     'none', 'any', 'forced_only', 'default_only', 'burn_in'
 );
+--;;
 
 CREATE TABLE channels (
     id                          SERIAL           PRIMARY KEY,
@@ -594,8 +665,10 @@ CREATE TABLE channels (
     is_enabled                  BOOLEAN          NOT NULL DEFAULT TRUE,
     show_in_epg                 BOOLEAN          NOT NULL DEFAULT TRUE
 );
+--;;
 
 CREATE INDEX ix_channels_sort ON channels (sort_number);
+--;;
 
 CREATE TABLE channel_artwork (
     id                    SERIAL       PRIMARY KEY,
@@ -606,8 +679,10 @@ CREATE TABLE channel_artwork (
     date_added            TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     date_updated          TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
+--;;
 
 CREATE INDEX ix_channel_artwork ON channel_artwork (channel_id);
+--;;
 
 
 -- =============================================================================
@@ -627,11 +702,13 @@ CREATE TABLE schedules (
     keep_multi_part_together   BOOLEAN NOT NULL DEFAULT FALSE,
     treat_collections_as_shows BOOLEAN NOT NULL DEFAULT FALSE
 );
+--;;
 
 CREATE TYPE slot_anchor AS ENUM (
     'fixed',      -- starts at a wall-clock time (start_time must be set)
     'sequential'  -- starts when the previous slot ends
 );
+--;;
 
 CREATE TYPE slot_fill_mode AS ENUM (
     'once',   -- play exactly one item
@@ -639,6 +716,7 @@ CREATE TYPE slot_fill_mode AS ENUM (
     'block',  -- fill a fixed duration, pad the remainder
     'flood'   -- fill until the next fixed-anchor slot
 );
+--;;
 
 CREATE TYPE playback_order AS ENUM (
     'chronological',
@@ -650,11 +728,13 @@ CREATE TYPE playback_order AS ENUM (
     'random_rotation',
     'marathon'
 );
+--;;
 
 CREATE TYPE guide_mode AS ENUM (
     'normal',
     'filler'   -- hide from EPG / merge with adjacent content
 );
+--;;
 
 -- A Slot is one entry in a Schedule.
 -- Content source: set exactly one of (collection_id, media_item_id).
@@ -720,14 +800,17 @@ CREATE TABLE schedule_slots (
         fill_mode <> 'block' OR block_duration IS NOT NULL
     )
 );
+--;;
 
 CREATE INDEX ix_schedule_slots ON schedule_slots (schedule_id, slot_index);
+--;;
 
 CREATE TABLE slot_graphics_elements (
     slot_id             INTEGER NOT NULL REFERENCES schedule_slots (id) ON DELETE CASCADE,
     graphics_element_id INTEGER NOT NULL REFERENCES graphics_elements (id) ON DELETE CASCADE,
     PRIMARY KEY (slot_id, graphics_element_id)
 );
+--;;
 
 
 -- =============================================================================
@@ -769,8 +852,10 @@ CREATE TABLE playouts (
     build_success      BOOLEAN,
     build_message      TEXT
 );
+--;;
 
 CREATE INDEX ix_playouts_schedule ON playouts (schedule_id) WHERE schedule_id IS NOT NULL;
+--;;
 
 CREATE TYPE event_kind AS ENUM (
     'content',   -- primary programme content
@@ -782,6 +867,7 @@ CREATE TYPE event_kind AS ENUM (
     'fallback',  -- fallback when nothing else is available
     'offline'    -- explicit offline segment
 );
+--;;
 
 -- A single scheduled media item in a Playout timeline.
 --
@@ -828,24 +914,29 @@ CREATE TABLE playout_events (
     -- TRUE = user-managed; rebuild will not overwrite
     is_manual     BOOLEAN      NOT NULL DEFAULT FALSE
 );
+--;;
 
 -- Hot path: streaming engine fetches current/upcoming events constantly.
 CREATE INDEX ix_playout_events_time
     ON playout_events (playout_id, start_at, finish_at);
+--;;
 
 -- EPG queries across all channels for a time window.
 CREATE INDEX ix_playout_events_global_time
     ON playout_events (start_at, finish_at);
+--;;
 
 -- Fast lookup of manual events during rebuild.
 CREATE INDEX ix_playout_events_manual
     ON playout_events (playout_id) WHERE is_manual = TRUE;
+--;;
 
 CREATE TABLE event_graphics_elements (
     event_id            INTEGER NOT NULL REFERENCES playout_events (id) ON DELETE CASCADE,
     graphics_element_id INTEGER NOT NULL REFERENCES graphics_elements (id) ON DELETE CASCADE,
     PRIMARY KEY (event_id, graphics_element_id)
 );
+--;;
 
 -- Materialised gaps for fast "what's on now" EPG queries.
 CREATE TABLE playout_gaps (
@@ -854,7 +945,9 @@ CREATE TABLE playout_gaps (
     start_at   TIMESTAMPTZ NOT NULL,
     finish_at  TIMESTAMPTZ NOT NULL
 );
+--;;
 CREATE INDEX ix_playout_gaps ON playout_gaps (playout_id, start_at);
+--;;
 
 -- PlayoutHistory: tracks which items have recently aired per collection.
 -- Used for sequential playback coherence across rebuilds and rerun detection.
@@ -872,10 +965,14 @@ CREATE TABLE playout_history (
     event_finish_at  TIMESTAMPTZ    NOT NULL,
     details          JSONB          -- title, episode info etc. for rerun display
 );
+--;;
 
 CREATE INDEX ix_playout_history_playout    ON playout_history (playout_id);
+--;;
 CREATE INDEX ix_playout_history_collection ON playout_history (playout_id, collection_key);
+--;;
 CREATE INDEX ix_playout_history_finish     ON playout_history (event_finish_at);
+--;;
 
 
 -- =============================================================================
