@@ -17,4 +17,4 @@
    :pseudovision/scheduling (merge {:lookahead-hours 72
                                     :rebuild-interval-minutes 60}
                                    scheduling)
-   :pseudovision/http      {:port (or (:port server) 8080)}})
+   :pseudovision/http      {:port (or (some-> server :port (Integer/parseInt)) 8080)}})
