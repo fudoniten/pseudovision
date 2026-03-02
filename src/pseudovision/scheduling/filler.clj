@@ -50,7 +50,7 @@
       {:events [] :enumerator enumerator}
 
       ;; duration mode: pick items until we've filled the gap
-      (= "duration" (:filler_presets/mode preset))
+      (= "duration" (:filler-presets/mode preset))
       (loop [cursor  from
              enum    enumerator
              events  []]
@@ -60,7 +60,7 @@
                   (empty? (:items enum)))
             {:events events :enumerator enum}
             (let [[item enum'] (enum/next-item enum)
-                  dur          (or (some-> item :media_versions/duration)
+                  dur          (or (some-> item :media-versions/duration)
                                    (Duration/ofSeconds 0))
                   finish       (t/add-duration cursor dur)]
               (if (.isAfter finish to)
@@ -69,15 +69,15 @@
                 (recur finish
                        enum'
                        (conj events {:playout-id    playout-id
-                                     :media-item-id (:media_items/id item)
-                                     :kind          (name (:filler_presets/role preset))
+                                     :media-item-id (:media-items/id item)
+                                     :kind          (name (:filler-presets/role preset))
                                      :start-at      cursor
                                      :finish-at     finish
                                      :is-manual     false})))))))
 
       ;; count mode: pick exactly N items
-      (= "count" (:filler_presets/mode preset))
-      (let [n (:filler_presets/count preset 1)]
+      (= "count" (:filler-presets/mode preset))
+      (let [n (:filler-presets/count preset 1)]
         (loop [i      0
                cursor from
                enum   enumerator
@@ -85,13 +85,13 @@
           (if (>= i n)
             {:events events :enumerator enum}
             (let [[item enum'] (enum/next-item enum)
-                  dur          (or (some-> item :media_versions/duration)
+                  dur          (or (some-> item :media-versions/duration)
                                    (Duration/ofSeconds 0))
                   finish       (t/add-duration cursor dur)]
               (recur (inc i) finish enum'
                      (conj events {:playout-id    playout-id
-                                   :media-item-id (:media_items/id item)
-                                   :kind          (name (:filler_presets/role preset))
+                                   :media-item-id (:media-items/id item)
+                                   :kind          (name (:filler-presets/role preset))
                                    :start-at      cursor
                                    :finish-at     finish
                                    :is-manual     false}))))))
@@ -105,6 +105,6 @@
   [from ceil n-minutes items enumerator playout-id role]
   (let [boundary (t/ceil-to-n-minutes from n-minutes)
         to       (if (.isAfter boundary ceil) ceil boundary)]
-    (fill-gap from to {:filler_presets/mode  "duration"
-                       :filler_presets/role  role}
+    (fill-gap from to {:filler-presets/mode  "duration"
+                       :filler-presets/role  role}
               items enumerator playout-id)))

@@ -60,7 +60,7 @@
 (defn- run-ffprobe
   "Runs ffprobe on `path` and returns the parsed JSON map, or nil on failure."
   [path {:keys [ffprobe-path probe-timeout-ms] :or {ffprobe-path "/usr/bin/ffprobe"
-                                                      probe-timeout-ms 30000}}]
+                                                    probe-timeout-ms 30000}}]
   (try
     (let [result (sh/sh ffprobe-path
                         "-v" "quiet"
@@ -123,24 +123,24 @@
                      :other-video)]
     (jdbc/with-transaction [tx db]
       (let [item (db/upsert-media-item! tx
-                   {:kind           (name item-kind)
-                    :state          "normal"
-                    :library-path-id (:library_paths/id library-path)})]
+                                        {:kind           (name item-kind)
+                                         :state          "normal"
+                                         :library-path-id (:library-paths/id library-path)})]
         (when probe
           (let [ver (jdbc/execute-one! tx
-                      (-> (honey.sql.helpers/insert-into :media-versions)
-                          (honey.sql.helpers/values [(assoc (probe->version probe)
-                                                            :media-item-id (:media_items/id item))])
-                          honey.sql/format)
-                      {:return-keys true})]
+                                       (-> (honey.sql.helpers/insert-into :media-versions)
+                                           (honey.sql.helpers/values [(assoc (probe->version probe)
+                                                                             :media-item-id (:media-items/id item))])
+                                           honey.sql/format)
+                                       {:return-keys true})]
             (jdbc/execute-one! tx
-              (-> (honey.sql.helpers/insert-into :media-files)
-                  (honey.sql.helpers/values [{:media-version-id (:media_versions/id ver)
-                                              :path              path
-                                              :path-hash         hash}])
-                  (honey.sql.helpers/on-conflict :path-hash)
-                  (honey.sql.helpers/do-nothing)
-                  honey.sql/format))))
+                               (-> (honey.sql.helpers/insert-into :media-files)
+                                   (honey.sql.helpers/values [{:media-version-id (:media-versions/id ver)
+                                                               :path              path
+                                                               :path-hash         hash}])
+                                   (honey.sql.helpers/on-conflict :path-hash)
+                                   (honey.sql.helpers/do-nothing)
+                                   honey.sql/format))))
         item))))
 
 ;; ---------------------------------------------------------------------------
@@ -152,7 +152,7 @@
   [db media-config ffmpeg-config library]
   (let [paths (db/list-library-paths db (:libraries/id library))]
     (doseq [lp paths]
-      (let [root (io/file (:library_paths/path lp))]
+      (let [root (io/file (:library-paths/path lp))]
         (if-not (.isDirectory root)
           (log/warn "Library path is not a directory" {:path (.getPath root)})
           (do

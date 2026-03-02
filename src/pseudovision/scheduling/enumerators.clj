@@ -64,8 +64,8 @@
 
 (defmethod make-enumerator :season-episode [items _ _opts]
   ;; Sort by parent (season) position then episode position.
-  {:items          (vec (sort-by (juxt :media_items/parent_id
-                                       :media_items/position) items))
+  {:items          (vec (sort-by (juxt :media-items/parent_id
+                                       :media-items/position) items))
    :index          0
    :playback-order :season-episode})
 

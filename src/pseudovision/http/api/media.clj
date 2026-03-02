@@ -28,7 +28,7 @@
           library    (db/get-library db library-id)]
       (if library
         (let [source (db/get-media-source db (:libraries/media_source_id library))
-              kind   (keyword (:media_sources/kind source))]
+              kind   (keyword (:media-sources/kind source))]
           ;; Run the scan asynchronously so the HTTP request returns quickly.
           (future
             (try

@@ -2,7 +2,8 @@
   (:require [honey.sql         :as sql]
             [honey.sql.helpers :as h]
             [next.jdbc         :as jdbc]
-            [pseudovision.db.core :as db]))
+            [pseudovision.db.core :as db]
+            [pseudovision.util.sql :as sql-util]))
 
 ;; ---------------------------------------------------------------------------
 ;; Playouts
@@ -25,14 +26,14 @@
    existing one. Uses INSERT … ON CONFLICT DO NOTHING."
   [ds channel-id schedule-id]
   (jdbc/execute-one! ds
-    (-> (h/insert-into :playouts)
-        (h/values [{:channel-id  channel-id
-                    :schedule-id schedule-id
-                    :seed        (rand-int Integer/MAX_VALUE)}])
-        (h/on-conflict :channel-id)
-        (h/do-nothing)
-        sql/format)
-    {:return-keys true}))
+                     (-> (h/insert-into :playouts)
+                         (h/values [{:channel-id  channel-id
+                                     :schedule-id schedule-id
+                                     :seed        (rand-int Integer/MAX_VALUE)}])
+                         (h/on-conflict :channel-id)
+                         (h/do-nothing)
+                         sql/format)
+                     {:return-keys true}))
 
 (defn update-playout! [ds id attrs]
   (db/execute-one! ds (-> (h/update :playouts)
@@ -102,9 +103,9 @@
   [ds events]
   (when (seq events)
     (jdbc/execute! ds
-      (-> (h/insert-into :playout-events)
-          (h/values events)
-          sql/format))))
+                   (-> (h/insert-into :playout-events)
+                       (h/values events)
+                       sql/format))))
 
 (defn update-event! [ds id attrs]
   (db/execute-one! ds (-> (h/update :playout-events)
@@ -122,12 +123,12 @@
    Preserves is_manual = TRUE events."
   [ds playout-id from]
   (jdbc/execute! ds
-    (-> (h/delete-from :playout-events)
-        (h/where [:and
-                  [:= :playout-id playout-id]
-                  [:>= :start-at  from]
-                  [:= :is-manual  false]])
-        sql/format)))
+                 (-> (h/delete-from :playout-events)
+                     (h/where [:and
+                               [:= :playout-id playout-id]
+                               [:>= :start-at  from]
+                               [:= :is-manual  false]])
+                     sql/format)))
 
 ;; ---------------------------------------------------------------------------
 ;; Playout history
@@ -147,18 +148,18 @@
 
 (defn upsert-history! [ds attrs]
   (jdbc/execute-one! ds
-    (-> (h/insert-into :playout-history)
-        (h/values [attrs])
-        sql/format)
-    {:return-keys true}))
+                     (-> (h/insert-into :playout-history)
+                         (h/values [attrs])
+                         sql/format)
+                     {:return-keys true}))
 
 (defn prune-history!
   "Deletes history rows whose events have already finished."
   [ds before]
   (jdbc/execute! ds
-    (-> (h/delete-from :playout-history)
-        (h/where [:<  :event-finish-at before])
-        sql/format)))
+                 (-> (h/delete-from :playout-history)
+                     (h/where [:<  :event-finish-at before])
+                     sql/format)))
 
 ;; ---------------------------------------------------------------------------
 ;; Playout gaps
@@ -169,11 +170,11 @@
   [ds playout-id gaps]
   (jdbc/with-transaction [tx ds]
     (jdbc/execute! tx
-      (-> (h/delete-from :playout-gaps)
-          (h/where [:= :playout-id playout-id])
-          sql/format))
+                   (-> (h/delete-from :playout-gaps)
+                       (h/where [:= :playout-id playout-id])
+                       sql/format))
     (when (seq gaps)
       (jdbc/execute! tx
-        (-> (h/insert-into :playout-gaps)
-            (h/values (map #(assoc % :playout-id playout-id) gaps))
-            sql/format)))))
+                     (-> (h/insert-into :playout-gaps)
+                         (h/values (map #(assoc % :playout-id playout-id) gaps))
+                         sql/format)))))

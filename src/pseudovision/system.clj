@@ -3,6 +3,7 @@
             [pseudovision.config         :as config]
             [pseudovision.db.core        :as db]
             [pseudovision.http.core      :as http]
+            [pseudovision.util.sql       :as sql-util]
             [taoensso.timbre             :as log]))
 
 ;; Re-export so callers only need this namespace

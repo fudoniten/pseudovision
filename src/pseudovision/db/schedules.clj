@@ -1,7 +1,8 @@
 (ns pseudovision.db.schedules
   (:require [honey.sql         :as sql]
             [honey.sql.helpers :as h]
-            [pseudovision.db.core :as db]))
+            [pseudovision.db.core :as db]
+            [pseudovision.util.sql :as sql-util]))
 
 ;; ---------------------------------------------------------------------------
 ;; Schedules
@@ -54,12 +55,32 @@
 
 (defn create-slot! [ds attrs]
   (db/execute-one! ds (-> (h/insert-into :schedule-slots)
-                          (h/values [attrs])
+                          (h/values [(cond-> attrs
+                                       (:anchor attrs)
+                                       (update :anchor #(sql-util/->pg-enum "slot_anchor" %))
+                                       (:fill_mode attrs)
+                                       (update :fill_mode #(sql-util/->pg-enum "slot_fill_mode" %))
+                                       (:playback_order attrs)
+                                       (update :playback_order #(sql-util/->pg-enum "playback_order" %))
+                                       (:block_duration attrs)
+                                       (update :block_duration sql-util/->pg-interval)
+                                       (:start_time attrs)
+                                       (update :start_time sql-util/->pg-interval))])
                           sql/format)))
 
 (defn update-slot! [ds id attrs]
   (db/execute-one! ds (-> (h/update :schedule-slots)
-                          (h/set attrs)
+                          (h/set (cond-> attrs
+                                   (:anchor attrs)
+                                   (update :anchor #(sql-util/->pg-enum "slot_anchor" %))
+                                   (:fill_mode attrs)
+                                   (update :fill_mode #(sql-util/->pg-enum "slot_fill_mode" %))
+                                   (:playback_order attrs)
+                                   (update :playback_order #(sql-util/->pg-enum "playback_order" %))
+                                   (:block_duration attrs)
+                                   (update :block_duration sql-util/->pg-interval)
+                                   (:start_time attrs)
+                                   (update :start_time sql-util/->pg-interval)))
                           (h/where [:= :id id])
                           sql/format)))
 

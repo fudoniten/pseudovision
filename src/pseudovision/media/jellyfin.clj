@@ -38,12 +38,12 @@
   (try
     (let [url  (str base-url path)
           resp (http/get url
-                 {:headers          {"X-Emby-Token" api-key}
-                  :query-params     query-params
-                  :as               :json
-                  :throw-exceptions false
-                  :socket-timeout   30000
-                  :connection-timeout 10000})]
+                         {:headers          {"X-Emby-Token" api-key}
+                          :query-params     query-params
+                          :as               :json
+                          :throw-exceptions false
+                          :socket-timeout   30000
+                          :connection-timeout 10000})]
       (when (<= 200 (:status resp) 299)
         (:body resp)))
     (catch Exception e
@@ -82,14 +82,14 @@
   "Fetches a single page of items from a Jellyfin library."
   [base-url api-key parent-id start-index limit]
   (jellyfin-get base-url "/Items" api-key
-    :query-params {"ParentId"         parent-id
-                   "Recursive"        "true"
-                   "Fields"           item-fields
-                   "IncludeItemTypes" include-item-types
-                   "StartIndex"       (str start-index)
-                   "Limit"            (str limit)
-                   "SortBy"           "SortName"
-                   "SortOrder"        "Ascending"}))
+                :query-params {"ParentId"         parent-id
+                               "Recursive"        "true"
+                               "Fields"           item-fields
+                               "IncludeItemTypes" include-item-types
+                               "StartIndex"       (str start-index)
+                               "Limit"            (str limit)
+                               "SortBy"           "SortName"
+                               "SortOrder"        "Ascending"}))
 
 (defn- fetch-all-items
   "Pages through all items in a Jellyfin library."
@@ -212,24 +212,24 @@
   [tx library-path-id parent-jf-id]
   (when parent-jf-id
     (jdbc/execute-one! tx
-      (sql/format
-        (-> (h/select :id)
-            (h/from :media-items)
-            (h/where [:and
-                      [:= :library-path-id library-path-id]
-                      [:= :remote-key parent-jf-id]]))))))
+                       (sql/format
+                        (-> (h/select :id)
+                            (h/from :media-items)
+                            (h/where [:and
+                                      [:= :library-path-id library-path-id]
+                                      [:= :remote-key parent-jf-id]]))))))
 
 (defn- item-unchanged?
   "Returns true if the item already exists with the same etag."
   [tx library-path-id jf-id etag]
   (let [existing (jdbc/execute-one! tx
-                   (sql/format
-                     (-> (h/select :id :remote-etag)
-                         (h/from :media-items)
-                         (h/where [:and
-                                   [:= :library-path-id library-path-id]
-                                   [:= :remote-key jf-id]]))))]
-    (and existing (= (:media_items/remote_etag existing) etag))))
+                                    (sql/format
+                                     (-> (h/select :id :remote-etag)
+                                         (h/from :media-items)
+                                         (h/where [:and
+                                                   [:= :library-path-id library-path-id]
+                                                   [:= :remote-key jf-id]]))))]
+    (and existing (= (:media-items/remote_etag existing) etag))))
 
 (defn- upsert-version-and-file!
   "Upserts a media version and its backing file for an item with a physical path."
@@ -237,33 +237,33 @@
   (when (:Path item)
     ;; Delete existing version(s) for this item and let cascade clean up files/streams
     (jdbc/execute-one! tx
-      (sql/format
-        (-> (h/delete-from :media-versions)
-            (h/where [:= :media-item-id item-id]))))
+                       (sql/format
+                        (-> (h/delete-from :media-versions)
+                            (h/where [:= :media-item-id item-id]))))
     (let [ver-attrs (assoc (item->version-attrs item) :media-item-id item-id)
           ver       (jdbc/execute-one! tx
-                      (sql/format
-                        (-> (h/insert-into :media-versions)
-                            (h/values [ver-attrs])))
-                      {:return-keys true})
-          ver-id    (:media_versions/id ver)]
+                                       (sql/format
+                                        (-> (h/insert-into :media-versions)
+                                            (h/values [ver-attrs])))
+                                       {:return-keys true})
+          ver-id    (:media-versions/id ver)]
       (when ver-id
         ;; Insert file
         (jdbc/execute-one! tx
-          (sql/format
-            (-> (h/insert-into :media-files)
-                (h/values [{:media-version-id ver-id
-                            :path             (:Path item)
-                            :path-hash        (path-hash (:Path item))}])
-                (h/on-conflict :path-hash)
-                (h/do-update-set :media-version-id :path))))
+                           (sql/format
+                            (-> (h/insert-into :media-files)
+                                (h/values [{:media-version-id ver-id
+                                            :path             (:Path item)
+                                            :path-hash        (path-hash (:Path item))}])
+                                (h/on-conflict :path-hash)
+                                (h/do-update-set :media-version-id :path))))
         ;; Insert streams
         (let [streams (map-indexed jellyfin-stream->attrs (:MediaStreams item []))]
           (when (seq streams)
             (jdbc/execute! tx
-              (sql/format
-                (-> (h/insert-into :media-streams)
-                    (h/values (mapv #(assoc % :media-version-id ver-id) streams))))))))
+                           (sql/format
+                            (-> (h/insert-into :media-streams)
+                                (h/values (mapv #(assoc % :media-version-id ver-id) streams))))))))
       ver-id)))
 
 (defn- upsert-metadata!
@@ -271,44 +271,44 @@
   [tx item-id item kind]
   (let [meta-attrs (assoc (item->metadata-attrs item kind) :media-item-id item-id)]
     (jdbc/execute-one! tx
-      (sql/format
-        (-> (h/insert-into :metadata)
-            (h/values [meta-attrs])
-            (h/on-conflict :media-item-id)
-            (h/do-update-set :title :sort-title :original-title
-                             :year :plot :content-rating
-                             :episode-number :album :track-number
-                             :date-updated)))))
+                       (sql/format
+                        (-> (h/insert-into :metadata)
+                            (h/values [meta-attrs])
+                            (h/on-conflict :media-item-id)
+                            (h/do-update-set :title :sort-title :original-title
+                                             :year :plot :content-rating
+                                             :episode-number :album :track-number
+                                             :date-updated)))))
   ;; Fetch the metadata row ID for genre/studio insertion
   (let [meta-row (jdbc/execute-one! tx
-                   (sql/format
-                     (-> (h/select :id)
-                         (h/from :metadata)
-                         (h/where [:= :media-item-id item-id]))))
+                                    (sql/format
+                                     (-> (h/select :id)
+                                         (h/from :metadata)
+                                         (h/where [:= :media-item-id item-id]))))
         meta-id  (:metadata/id meta-row)]
     (when meta-id
       ;; Genres
       (when (seq (:Genres item))
         (jdbc/execute-one! tx
-          (sql/format
-            (-> (h/delete-from :metadata-genres)
-                (h/where [:= :metadata-id meta-id]))))
+                           (sql/format
+                            (-> (h/delete-from :metadata-genres)
+                                (h/where [:= :metadata-id meta-id]))))
         (jdbc/execute! tx
-          (sql/format
-            (-> (h/insert-into :metadata-genres)
-                (h/values (mapv (fn [g] {:metadata-id meta-id :name g})
-                                (:Genres item)))))))
+                       (sql/format
+                        (-> (h/insert-into :metadata-genres)
+                            (h/values (mapv (fn [g] {:metadata-id meta-id :name g})
+                                            (:Genres item)))))))
       ;; Studios
       (when (seq (:Studios item))
         (jdbc/execute-one! tx
-          (sql/format
-            (-> (h/delete-from :metadata-studios)
-                (h/where [:= :metadata-id meta-id]))))
+                           (sql/format
+                            (-> (h/delete-from :metadata-studios)
+                                (h/where [:= :metadata-id meta-id]))))
         (jdbc/execute! tx
-          (sql/format
-            (-> (h/insert-into :metadata-studios)
-                (h/values (mapv (fn [s] {:metadata-id meta-id :name (:Name s)})
-                                (:Studios item))))))))))
+                       (sql/format
+                        (-> (h/insert-into :metadata-studios)
+                            (h/values (mapv (fn [s] {:metadata-id meta-id :name (:Name s)})
+                                            (:Studios item))))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Single item upsert
@@ -327,25 +327,25 @@
         (when-not (item-unchanged? tx library-path-id jf-id etag)
           ;; Resolve parent for hierarchical items
           (let [parent-id (when (needs-parent? kind)
-                            (:media_items/id
-                              (find-parent-item tx library-path-id (:ParentId item))))]
+                            (:media-items/id
+                             (find-parent-item tx library-path-id (:ParentId item))))]
             (if (and (needs-parent? kind) (nil? parent-id))
               ;; Parent not yet synced — skip for now
               (do (log/debug "Skipping item — parent not yet synced"
                              {:id jf-id :type jf-type})
                   nil)
               (let [item-row (db/upsert-media-item! tx
-                               (cond-> {:kind             (name kind)
-                                        :state            "normal"
-                                        :library-path-id  library-path-id
-                                        :remote-key       jf-id
-                                        :remote-etag      etag}
-                                 parent-id
-                                 (assoc :parent-id parent-id)
+                                                    (cond-> {:kind             (name kind)
+                                                             :state            "normal"
+                                                             :library-path-id  library-path-id
+                                                             :remote-key       jf-id
+                                                             :remote-etag      etag}
+                                                      parent-id
+                                                      (assoc :parent-id parent-id)
 
-                                 (some? (:IndexNumber item))
-                                 (assoc :position (:IndexNumber item))))
-                    item-id  (:media_items/id item-row)]
+                                                      (some? (:IndexNumber item))
+                                                      (assoc :position (:IndexNumber item))))
+                    item-id  (:media-items/id item-row)]
                 (when item-id
                   (upsert-version-and-file! tx item-id item)
                   (upsert-metadata! tx item-id item kind))
@@ -360,24 +360,24 @@
    `source` must have :connection_config with an api_key and connections list.
    `library` must have :external_id set to the Jellyfin library ID."
   [db source library]
-  (let [config   (let [raw (or (:media_sources/connection_config source)
+  (let [config   (let [raw (or (:media-sources/connection_config source)
                                (:connection_config source))]
                    (if (string? raw) (json/parse-string raw true) raw))
         base-url (active-connection config)
         api-key  (:api_key config)]
     (when-not base-url
       (throw (ex-info "No active connection for Jellyfin source"
-                      {:source-id (:media_sources/id source)})))
+                      {:source-id (:media-sources/id source)})))
     (when-not api-key
       (throw (ex-info "No API key configured for Jellyfin source"
-                      {:source-id (:media_sources/id source)})))
+                      {:source-id (:media-sources/id source)})))
 
     (log/info "Checking Jellyfin server connectivity" {:url base-url})
     (let [server-info (check-server base-url api-key)]
       (when-not server-info
         (throw (ex-info "Cannot connect to Jellyfin server" {:url base-url})))
       (log/info "Connected to Jellyfin" {:server-name (:ServerName server-info)
-                                          :version     (:Version server-info)}))
+                                         :version     (:Version server-info)}))
 
     (let [jf-library-id  (or (:libraries/external_id library)
                              (:external_id library))
@@ -387,7 +387,7 @@
           lp             (or (first (db/list-library-paths db library-id))
                              (db/create-library-path! db {:library-id library-id
                                                           :path       synthetic-path}))
-          lp-id          (or (:library_paths/id lp) (:id lp))]
+          lp-id          (or (:library-paths/id lp) (:id lp))]
 
       (log/info "Fetching items from Jellyfin library"
                 {:library-id jf-library-id :library-name (:libraries/name library)})

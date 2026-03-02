@@ -2,6 +2,7 @@
   (:require [migratus.core   :as migratus]
             [next.jdbc       :as jdbc]
             [next.jdbc.connection :as conn]
+            [next.jdbc.result-set :as rs]
             [taoensso.timbre :as log]
             [aero.core       :as aero])
   (:import [com.zaxxer.hikari HikariDataSource]))
@@ -57,19 +58,21 @@
 (defn execute!
   "Runs a HoneySQL map (already formatted) against the datasource."
   [ds sql-map]
-  (jdbc/execute! ds sql-map {:return-keys true}))
+  (jdbc/execute! ds sql-map {:return-keys true
+                             :builder-fn rs/as-unqualified-kebab-maps}))
 
 (defn execute-one!
   "Like execute! but returns a single row."
   [ds sql-map]
-  (jdbc/execute-one! ds sql-map {:return-keys true}))
+  (jdbc/execute-one! ds sql-map {:return-keys true
+                                 :builder-fn rs/as-unqualified-kebab-maps}))
 
 (defn query
   "Runs a read query and returns all rows."
   [ds sql-map]
-  (jdbc/execute! ds sql-map))
+  (jdbc/execute! ds sql-map {:builder-fn rs/as-kebab-maps}))
 
 (defn query-one
   "Returns a single row or nil."
   [ds sql-map]
-  (jdbc/execute-one! ds sql-map))
+  (jdbc/execute-one! ds sql-map {:builder-fn rs/as-kebab-maps}))

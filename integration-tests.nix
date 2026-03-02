@@ -636,6 +636,9 @@
       print("\n" + "=" * 60)
       print("ALL SCHEDULE INTEGRATION TESTS PASSED")
       print("=" * 60)
+
+      # Shutdown the VM to prevent hanging
+      server.shutdown()
     '';
   };
 }

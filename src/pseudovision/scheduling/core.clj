@@ -33,33 +33,33 @@
 ;; ---------------------------------------------------------------------------
 
 (defn- collection-key [slot]
-  (str "collection:" (or (:schedule_slots/collection-id slot)
-                         (str "item:" (:schedule_slots/media-item-id slot)))))
+  (str "collection:" (or (:schedule-slots/collection-id slot)
+                         (str "item:" (:schedule-slots/media-item-id slot)))))
 
 (defn- load-items
   "Returns the ordered seq of playable media items for a slot."
   [db slot]
   (cond
-    (:schedule_slots/collection-id slot)
-    (let [coll (media-db/get-collection db (:schedule_slots/collection-id slot))]
+    (:schedule-slots/collection-id slot)
+    (let [coll (media-db/get-collection db (:schedule-slots/collection-id slot))]
       (col-db/resolve-collection db coll))
 
-    (:schedule_slots/media-item-id slot)
-    [(media-db/get-media-item db (:schedule_slots/media-item-id slot))]
+    (:schedule-slots/media-item-id slot)
+    [(media-db/get-media-item db (:schedule-slots/media-item-id slot))]
 
     :else []))
 
 (defn- item-duration [item]
-  (or (some-> (:media_versions/duration item))
+  (or (some-> (:media-versions/duration item))
       (Duration/ofSeconds 0)))
 
 (defn- next-fixed-start
   "Returns the next wall-clock Instant when `slot` would fire on or after `after`."
   [slot after zone-id]
-  (let [tod     (:schedule_slots/start-time slot)    ; java.time.Duration = offset from midnight
+  (let [tod     (:schedule-slots/start-time slot)    ; java.time.Duration = offset from midnight
         zdt     (.atZone after (ZoneId/of zone-id))
         midnight (.toInstant (.toLocalDate zdt)
-                              (ZoneId/of zone-id))
+                             (ZoneId/of zone-id))
         candidate (.plus midnight tod)]
     (if (.isAfter candidate after)
       candidate
@@ -74,19 +74,19 @@
   [db cursor slot playout-id _opts]
   (let [items   (load-items db slot)
         ckey    (collection-key slot)
-        order   (keyword (or (:schedule_slots/playback-order slot) "chronological"))
+        order   (keyword (or (:schedule-slots/playback-order slot) "chronological"))
         e       (cursor/get-enumerator cursor ckey items order)
         [item e'] (enum/next-item e)
         dur     (item-duration item)
         from    (:next-start cursor)
         to      (t/add-duration from dur)
         event   {:playout-id    playout-id
-                 :media-item-id (:media_items/id item)
+                 :media-item-id (:media-items/id item)
                  :kind          "content"
                  :start-at      from
                  :finish-at     to
                  :guide-group   (:next-guide-group cursor)
-                 :slot-id       (:schedule_slots/id slot)
+                 :slot-id       (:schedule-slots/id slot)
                  :is-manual     false}
         cursor' (-> cursor
                     (assoc :next-start to)
@@ -99,8 +99,8 @@
   [db cursor slot playout-id _opts]
   (let [items  (load-items db slot)
         ckey   (collection-key slot)
-        order  (keyword (or (:schedule_slots/playback-order slot) "chronological"))
-        n      (or (:schedule_slots/item-count slot) 1)
+        order  (keyword (or (:schedule-slots/playback-order slot) "chronological"))
+        n      (or (:schedule-slots/item-count slot) 1)
         guide  (:next-guide-group cursor)]
     (loop [i      0
            from   (:next-start cursor)
@@ -117,12 +117,12 @@
               to        (t/add-duration from dur)]
           (recur (inc i) to e'
                  (conj events {:playout-id    playout-id
-                               :media-item-id (:media_items/id item)
+                               :media-item-id (:media-items/id item)
                                :kind          "content"
                                :start-at      from
                                :finish-at     to
                                :guide-group   guide
-                               :slot-id       (:schedule_slots/id slot)
+                               :slot-id       (:schedule-slots/id slot)
                                :is-manual     false})))))))
 
 (defn- emit-block
@@ -131,8 +131,8 @@
   [db cursor slot channel playout-id opts]
   (let [items      (load-items db slot)
         ckey       (collection-key slot)
-        order      (keyword (or (:schedule_slots/playback-order slot) "chronological"))
-        block-dur  (:schedule_slots/block-duration slot)
+        order      (keyword (or (:schedule-slots/playback-order slot) "chronological"))
+        block-dur  (:schedule-slots/block-duration slot)
         from       (:next-start cursor)
         block-end  (t/add-duration from block-dur)
         guide      (:next-guide-group cursor)]
@@ -164,7 +164,7 @@
             (if (.isAfter to block-end)
               ;; Item overflows the block — respect tail_mode
               (let [tail-events
-                    (case (:schedule_slots/tail-mode slot "none")
+                    (case (:schedule-slots/tail-mode slot "none")
                       "filler" []   ;; TODO: inject tail filler
                       "offline" []  ;; TODO: inject offline segment
                       [])]          ;; "none": just leave the gap
@@ -175,12 +175,12 @@
                   [(into events tail-events) c']))
               (recur to e'
                      (conj events {:playout-id    playout-id
-                                   :media-item-id (:media_items/id item)
+                                   :media-item-id (:media-items/id item)
                                    :kind          "content"
                                    :start-at      cursor-time
                                    :finish-at     to
                                    :guide-group   guide
-                                   :slot-id       (:schedule_slots/id slot)
+                                   :slot-id       (:schedule-slots/id slot)
                                    :is-manual     false})))))))))
 
 (defn- emit-flood
@@ -190,7 +190,7 @@
   ;; Flood fills from :next-start up to flood-end (the next fixed-anchor time).
   (let [items  (load-items db slot)
         ckey   (collection-key slot)
-        order  (keyword (or (:schedule_slots/playback-order slot) "chronological"))
+        order  (keyword (or (:schedule-slots/playback-order slot) "chronological"))
         guide  (:next-guide-group cursor)
         end    (or flood-end
                    (t/add-duration (:next-start cursor) (t/hours->duration 2)))]
@@ -215,12 +215,12 @@
                 [events c'])
               (recur to e'
                      (conj events {:playout-id    playout-id
-                                   :media-item-id (:media_items/id item)
+                                   :media-item-id (:media-items/id item)
                                    :kind          "content"
                                    :start-at      cursor-time
                                    :finish-at     to
                                    :guide-group   guide
-                                   :slot-id       (:schedule_slots/id slot)
+                                   :slot-id       (:schedule-slots/id slot)
                                    :is-manual     false})))))))))
 
 ;; ---------------------------------------------------------------------------
@@ -233,7 +233,7 @@
   [slots slot-idx now zone-id]
   (let [next-idx (inc slot-idx)
         next     (when (< next-idx (count slots)) (nth slots next-idx))]
-    (when (= "fixed" (some-> next :schedule_slots/anchor))
+    (when (= "fixed" (some-> next :schedule-slots/anchor))
       (next-fixed-start next now zone-id))))
 
 (defn- process-slot
@@ -241,16 +241,16 @@
    Returns [events cursor]."
   [db cursor slot channel playout-id slots opts]
   (let [zone-id (get opts :zone-id "UTC")
-        fill    (keyword (or (:schedule_slots/fill-mode slot) "once"))]
+        fill    (keyword (or (:schedule-slots/fill-mode slot) "once"))]
     (case fill
       :once  (emit-once  db cursor slot playout-id opts)
       :count (emit-count db cursor slot playout-id opts)
       :block (emit-block db cursor slot channel playout-id opts)
       :flood (let [flood-end (next-slot-start
-                               slots
-                               (:schedule_slots/slot-index slot)
-                               (:next-start cursor)
-                               zone-id)]
+                              slots
+                              (:schedule-slots/slot-index slot)
+                              (:next-start cursor)
+                              zone-id)]
                (emit-flood db cursor slot channel playout-id
                            (assoc opts :flood-end flood-end)))
       (do (log/warn "Unknown fill mode, skipping slot" {:fill fill})
@@ -275,7 +275,7 @@
                       (pseudovision.db.schedules/list-slots db schedule-id))
         now         (t/now)
         horizon     (t/add-duration now (t/hours->duration
-                                          (get opts :lookahead-hours 72)))]
+                                         (get opts :lookahead-hours 72)))]
     (if (or (nil? schedule) (empty? slots))
       (do (log/warn "No schedule or slots; nothing to build"
                     {:playout-id playout-id})
@@ -296,16 +296,16 @@
                 (do
                   (playout-db/bulk-insert-events! tx events)
                   (playout-db/update-playout! tx playout-id
-                    {:cursor         (cursor/->json cursor)
-                     :last-built-at  now
-                     :build-success  true
-                     :build-message  nil})
+                                              {:cursor         (cursor/->json cursor)
+                                               :last-built-at  now
+                                               :build-success  true
+                                               :build-message  nil})
                   (log/info "Build complete" {:playout-id playout-id
                                               :events     (count events)}))
                 ;; Process this slot
                 (let [[new-events cursor'] (process-slot
-                                             tx cursor slot channel
-                                             playout-id slots opts)
+                                            tx cursor slot channel
+                                            playout-id slots opts)
                       cursor''  (cursor/advance-slot cursor' (count slots))]
                   (recur cursor'' (mod (inc slot-idx) (count slots))
                          (into events new-events)))))))))))

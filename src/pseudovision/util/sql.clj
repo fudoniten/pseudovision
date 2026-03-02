@@ -1,8 +1,13 @@
 (ns pseudovision.util.sql
   "HoneySQL / next.jdbc helpers for type coercion and common patterns."
-  (:require [honey.sql :as sql])
+  (:require [honey.sql :as sql]
+            [cheshire.core :as json]
+            [cheshire.generate :as json-gen]
+            [next.jdbc.prepare :as jdbc-prep])
   (:import [org.postgresql.util PGobject]
-           [java.util UUID]))
+           [java.util UUID]
+           [java.time Instant]
+           [java.sql Timestamp PreparedStatement]))
 
 ;; ---------------------------------------------------------------------------
 ;; PostgreSQL enum coercion
@@ -35,13 +40,13 @@
   [v]
   (doto (PGobject.)
     (.setType  "jsonb")
-    (.setValue (cheshire.core/generate-string v))))
+    (.setValue (json/generate-string v))))
 
 (defn <-jsonb
   "Parses a JSONB PGobject back to a Clojure value."
   [v]
   (if (instance? PGobject v)
-    (cheshire.core/parse-string (.getValue ^PGobject v) true)
+    (json/parse-string (.getValue ^PGobject v) true)
     v))
 
 ;; ---------------------------------------------------------------------------
@@ -56,3 +61,44 @@
         minutes (quot (rem seconds 3600) 60)
         secs    (rem  seconds 60)]
     (format "%d hours %d minutes %d seconds" hours minutes secs)))
+
+(defn ->pg-interval
+  "Wraps a string (e.g. '02:00:00' or '1 hour 30 minutes') as a PostgreSQL interval PGobject."
+  [s]
+  (doto (PGobject.)
+    (.setType "interval")
+    (.setValue (str s))))
+
+;; ---------------------------------------------------------------------------
+;; Timestamp coercion (java.time.Instant <-> java.sql.Timestamp)
+;; ---------------------------------------------------------------------------
+
+(defn instant->timestamp
+  "Converts a java.time.Instant to java.sql.Timestamp for PostgreSQL TIMESTAMPTZ columns."
+  [^Instant inst]
+  (when inst
+    (Timestamp/from inst)))
+
+;; Extend next.jdbc to automatically convert java.time.Instant to java.sql.Timestamp
+(extend-protocol jdbc-prep/SettableParameter
+  Instant
+  (set-parameter [^Instant v ^PreparedStatement ps ^long i]
+    (.setTimestamp ps i (Timestamp/from v))))
+
+;; ---------------------------------------------------------------------------
+;; JSON encoding for PostgreSQL types
+;; ---------------------------------------------------------------------------
+
+(json-gen/add-encoder
+ PGobject
+ (fn [^PGobject obj ^com.fasterxml.jackson.core.JsonGenerator gen]
+   (let [type  (.getType obj)
+         value (.getValue obj)]
+     (case type
+       ;; JSONB fields should be embedded as-is (already JSON)
+       "jsonb" (if value
+                 (.writeRawValue gen value)
+                 (.writeNull gen))
+       ;; Everything else (enums, etc.) should be written as strings
+       (.writeString gen value)))))
+
