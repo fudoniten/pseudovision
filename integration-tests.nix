@@ -393,7 +393,8 @@
 
       def event_start(ev):
           """Extract start timestamp from event (handling namespaced keys)."""
-          return (ev.get("playout_events/start_at")
+          return (ev.get("playout-events/start-at")
+                  or ev.get("playout_events/start_at")
                   or ev.get("start_at")
                   or ev.get("playout_events/start-at")
                   or ev.get("start-at"))
@@ -401,7 +402,8 @@
 
       def event_finish(ev):
           """Extract finish timestamp from event (handling namespaced keys)."""
-          return (ev.get("playout_events/finish_at")
+          return (ev.get("playout-events/finish-at")
+                  or ev.get("playout_events/finish_at")
                   or ev.get("finish_at")
                   or ev.get("playout_events/finish-at")
                   or ev.get("finish-at"))
@@ -409,7 +411,8 @@
 
       def event_media_id(ev):
           """Extract media_item_id from event."""
-          return (ev.get("playout_events/media_item_id")
+          return (ev.get("playout-events/media-item-id")
+                  or ev.get("playout_events/media_item_id")
                   or ev.get("media_item_id")
                   or ev.get("playout_events/media-item-id")
                   or ev.get("media-item-id"))
