@@ -58,8 +58,7 @@
   [slot after zone-id]
   (let [tod     (:schedule-slots/start-time slot)    ; java.time.Duration = offset from midnight
         zdt     (.atZone after (ZoneId/of zone-id))
-        midnight (.toInstant (.toLocalDate zdt)
-                             (ZoneId/of zone-id))
+        midnight (.toInstant zdt)
         candidate (.plus midnight tod)]
     (if (.isAfter candidate after)
       candidate
