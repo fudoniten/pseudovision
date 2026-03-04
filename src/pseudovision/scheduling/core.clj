@@ -164,9 +164,18 @@
               ;; Item overflows the block — respect tail_mode
               (let [tail-events
                     (case (:schedule-slots/tail-mode slot "none")
-                      "filler" []   ;; TODO: inject tail filler
+                      "filler" []   ;; TODO: inject filler content
                       "offline" []  ;; TODO: inject offline segment
-                      [])]          ;; "none": just leave the gap
+                      ;; "none": trim the overflowing item to fill the block
+                      ;; exactly, then replay it in full at the next block start.
+                      [{:playout-id    playout-id
+                        :media-item-id (:media-items/id item)
+                        :kind          (sql-util/->pg-enum "event_kind" "content")
+                        :start-at      cursor-time
+                        :finish-at     block-end
+                        :guide-group   guide
+                        :slot-id       (:schedule-slots/id slot)
+                        :is-manual     false}])]
                 (let [c' (-> cursor
                              (assoc :next-start block-end)
                              (cursor/save-enumerator ckey e)
