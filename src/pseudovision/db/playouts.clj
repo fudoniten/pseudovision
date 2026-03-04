@@ -42,7 +42,7 @@
                           sql/format)))
 
 (defn save-cursor! [ds playout-id cursor]
-  (update-playout! ds playout-id {:cursor (cheshire.core/generate-string cursor)}))
+  (update-playout! ds playout-id {:cursor (sql-util/->jsonb cursor)}))
 
 ;; ---------------------------------------------------------------------------
 ;; Playout events

@@ -3,6 +3,7 @@
    Serialises to/from the JSONB blob stored in playouts.cursor."
   (:require [cheshire.core :as json]
             [pseudovision.scheduling.enumerators :as enum]
+            [pseudovision.util.sql :as sql-util]
             [pseudovision.util.time :as t])
   (:import [java.time Instant]))
 
@@ -34,7 +35,7 @@
   (assoc initial-state :next-start start-time))
 
 (defn ->json [cursor]
-  (json/generate-string
+  (sql-util/->jsonb
    (-> cursor
        (update :next-start      #(some-> % .toString))
        (update :block-ends-at   #(some-> % .toString)))))
