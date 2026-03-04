@@ -14,11 +14,12 @@
       (handler req))))
 
 (defn wrap-json-response
-  "Serialises map response bodies to JSON and sets Content-Type."
+  "Serialises Clojure collection response bodies (maps, vectors, lists) to JSON
+   and sets Content-Type.  String and nil bodies are passed through unchanged."
   [handler]
   (fn [req]
     (let [resp (handler req)]
-      (if (map? (:body resp))
+      (if (coll? (:body resp))
         (-> resp
             (update :body json/generate-string)
             (assoc-in [:headers "Content-Type"] "application/json; charset=utf-8"))
