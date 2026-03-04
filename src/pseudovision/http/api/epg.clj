@@ -14,8 +14,8 @@
          (str "<group>" (clojure.string/replace group-name #"[<>&]" "") "</group>"))
        "</channel>"))
 
-(defn- event->xmltv [{:keys [playout_events/start-at playout_events/finish-at
-                               playout_events/custom-title channels/uuid
+(defn- event->xmltv [{:keys [playout-events/start-at playout-events/finish-at
+                               playout-events/custom-title channels/uuid
                                metadata/title metadata/plot]}]
   (let [display-title (or custom-title title "Unknown")]
     (str "<programme start=\"" (t/->xmltv-date start-at)

@@ -60,10 +60,11 @@
 (defn list-events-in-window
   "Returns events overlapping [from, to) across all playouts."
   [ds from to]
-  (db/query ds (-> (h/select :pe.* :c.uuid :c.name :c.number)
+  (db/query ds (-> (h/select :pe.* :c.uuid :c.name :c.number :m.title :m.plot)
                    (h/from [:playout-events :pe])
                    (h/join [:playouts :p] [:= :pe.playout-id :p.id])
                    (h/join [:channels  :c] [:= :p.channel-id :c.id])
+                   (h/left-join [:metadata :m] [:= :m.media-item-id :pe.media-item-id])
                    (h/where [:and
                              [:< :pe.start-at  to]
                              [:> :pe.finish-at from]])
