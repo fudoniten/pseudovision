@@ -23,6 +23,7 @@
             [pseudovision.db.collections :as col-db]
             [pseudovision.scheduling.cursor      :as cursor]
             [pseudovision.scheduling.enumerators :as enum]
+            [pseudovision.util.sql  :as sql-util]
             [pseudovision.util.time :as t]
             [taoensso.timbre        :as log])
   (:import [java.time Duration Instant ZoneId]))
@@ -81,7 +82,7 @@
         to      (t/add-duration from dur)
         event   {:playout-id    playout-id
                  :media-item-id (:media-items/id item)
-                 :kind          "content"
+                 :kind          (sql-util/->pg-enum "event_kind" "content")
                  :start-at      from
                  :finish-at     to
                  :guide-group   (:next-guide-group cursor)
@@ -117,7 +118,7 @@
           (recur (inc i) to e'
                  (conj events {:playout-id    playout-id
                                :media-item-id (:media-items/id item)
-                               :kind          "content"
+                               :kind          (sql-util/->pg-enum "event_kind" "content")
                                :start-at      from
                                :finish-at     to
                                :guide-group   guide
@@ -175,7 +176,7 @@
               (recur to e'
                      (conj events {:playout-id    playout-id
                                    :media-item-id (:media-items/id item)
-                                   :kind          "content"
+                                   :kind          (sql-util/->pg-enum "event_kind" "content")
                                    :start-at      cursor-time
                                    :finish-at     to
                                    :guide-group   guide
@@ -215,7 +216,7 @@
               (recur to e'
                      (conj events {:playout-id    playout-id
                                    :media-item-id (:media-items/id item)
-                                   :kind          "content"
+                                   :kind          (sql-util/->pg-enum "event_kind" "content")
                                    :start-at      cursor-time
                                    :finish-at     to
                                    :guide-group   guide
