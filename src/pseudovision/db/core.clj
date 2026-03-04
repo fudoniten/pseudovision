@@ -23,7 +23,10 @@
 (extend-protocol rs/ReadableColumn
   PGInterval
   (read-column-by-label [v _] (pg-interval->duration v))
-  (read-column-by-index [v _ _] (pg-interval->duration v)))
+  (read-column-by-index [v _ _] (pg-interval->duration v))
+  java.sql.Timestamp
+  (read-column-by-label [v _] (.toInstant v))
+  (read-column-by-index [v _ _] (.toInstant v)))
 
 ;; ---------------------------------------------------------------------------
 ;; Connection pool
