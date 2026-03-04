@@ -5,7 +5,25 @@
             [next.jdbc.result-set :as rs]
             [taoensso.timbre :as log]
             [aero.core       :as aero])
-  (:import [com.zaxxer.hikari HikariDataSource]))
+  (:import [com.zaxxer.hikari HikariDataSource]
+           [org.postgresql.util PGInterval]
+           [java.time Duration]))
+
+;; ---------------------------------------------------------------------------
+;; PostgreSQL type coercions
+;; ---------------------------------------------------------------------------
+
+(defn- pg-interval->duration [^PGInterval v]
+  (let [total-seconds (+ (* (.getDays v) 86400)
+                         (* (.getHours v) 3600)
+                         (* (.getMinutes v) 60)
+                         (.getSeconds v))]
+    (Duration/ofMillis (long (* total-seconds 1000)))))
+
+(extend-protocol rs/ReadableColumn
+  PGInterval
+  (read-column-by-label [v _] (pg-interval->duration v))
+  (read-column-by-index [v _ _] (pg-interval->duration v)))
 
 ;; ---------------------------------------------------------------------------
 ;; Connection pool
