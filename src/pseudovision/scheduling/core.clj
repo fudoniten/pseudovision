@@ -23,7 +23,6 @@
             [pseudovision.db.collections :as col-db]
             [pseudovision.scheduling.cursor      :as cursor]
             [pseudovision.scheduling.enumerators :as enum]
-            [pseudovision.scheduling.filler      :as filler]
             [pseudovision.util.time :as t]
             [taoensso.timbre        :as log])
   (:import [java.time Duration Instant ZoneId]))
