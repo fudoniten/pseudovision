@@ -12,9 +12,10 @@
   (fn [_ds collection] (keyword (:collections/kind collection))))
 
 (defmethod resolve-collection :manual [ds collection]
-  (db/query ds (-> (h/select :mi.*)
+  (db/query ds (-> (h/select :mi.* :mv.duration)
                    (h/from [:media-items :mi])
                    (h/join [:collection-items :ci] [:= :ci.media-item-id :mi.id])
+                   (h/left-join [:media-versions :mv] [:= :mv.media-item-id :mi.id])
                    (h/where [:= :ci.collection-id (:collections/id collection)])
                    (h/order-by [[:coalesce :ci.custom-order :mi.id]])
                    sql/format)))
