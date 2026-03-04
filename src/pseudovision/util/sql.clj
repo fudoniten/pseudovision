@@ -102,3 +102,12 @@
        ;; Everything else (enums, etc.) should be written as strings
        (.writeString gen value)))))
 
+(json-gen/add-encoder
+ java.time.Duration
+ (fn [^java.time.Duration d ^com.fasterxml.jackson.core.JsonGenerator gen]
+   (let [seconds (.getSeconds d)
+         hours   (quot seconds 3600)
+         minutes (quot (rem seconds 3600) 60)
+         secs    (rem  seconds 60)]
+     (.writeString gen (format "%02d:%02d:%02d" hours minutes secs)))))
+
