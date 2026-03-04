@@ -1,7 +1,12 @@
 (ns pseudovision.http.middleware
-  (:require [clojure.string :as str]
-            [cheshire.core   :as json]
-            [taoensso.timbre :as log]))
+  (:require [clojure.string    :as str]
+            [cheshire.core     :as json]
+            [cheshire.generate :as json-gen]
+            [taoensso.timbre   :as log])
+  (:import [java.time Instant]))
+
+(json-gen/add-encoder Instant
+  (fn [inst jg] (.writeString jg (.toString inst))))
 
 (defn wrap-json-body
   "Parses application/json request bodies into Clojure maps."
