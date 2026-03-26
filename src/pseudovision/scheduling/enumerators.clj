@@ -47,7 +47,8 @@
   {:items (vec items) :index 0 :playback-order :chronological})
 
 (defmethod make-enumerator :random [items _ {:keys [seed] :or {seed 0}}]
-  ;; Re-shuffle each pass; index just counts within the current shuffle.
+  ;; Re-shuffles on each full pass; seed advances by 1 each time so successive
+  ;; passes produce different orderings.
   {:items   (vec items)
    :index   0
    :seed    seed
@@ -55,7 +56,8 @@
    :playback-order :random})
 
 (defmethod make-enumerator :shuffle [items _ {:keys [seed] :or {seed 0}}]
-  ;; Like :random but uses a consistent shuffle order across rebuilds.
+  ;; Like :random but the shuffle order is fixed for the lifetime of the seed
+  ;; (i.e. the same seed always yields the same permutation across rebuilds).
   {:items   (vec items)
    :index   0
    :seed    seed
@@ -63,14 +65,15 @@
    :playback-order :shuffle})
 
 (defmethod make-enumerator :season-episode [items _ _opts]
-  ;; Sort by parent (season) position then episode position.
+  ;; Items are pre-sorted by (season-id, episode-position) so that next-item
+  ;; can delegate to the plain chronological walk.
   {:items          (vec (sort-by (juxt :media-items/parent_id
                                        :media-items/position) items))
    :index          0
    :playback-order :season-episode})
 
 (defmethod make-enumerator :default [items order _opts]
-  ;; Fall through to chronological for unimplemented orders.
+  ;; Unknown orders fall through to a plain chronological walk.
   {:items (vec items) :index 0 :playback-order order})
 
 ;; ---------------------------------------------------------------------------
@@ -88,9 +91,10 @@
     [item (assoc e :index (inc index))]))
 
 (defmethod next-item :random [{:keys [items index order seed] :as e}]
+  ;; On each new pass (pos wraps to 0) generate a fresh shuffle with an
+  ;; incremented seed so successive passes differ.
   (let [n   (count items)
         pos (mod index n)
-        ;; Re-shuffle when we wrap around to the start of a new pass
         [order' seed'] (if (zero? pos)
                          (let [new-seed (+ seed 1)]
                            [(shuffled-indices n new-seed) new-seed])
@@ -114,12 +118,16 @@
 ;; Cursor serialisation
 ;; ---------------------------------------------------------------------------
 
-(defn enumerator->cursor [{:keys [index seed playback-order]}]
+(defn enumerator->cursor
+  "Extracts the serializable resumption state from an enumerator (index, seed, order name)."
+  [{:keys [index seed playback-order]}]
   {:index          index
    :seed           (or seed 0)
    :playback-order (name playback-order)})
 
-(defn cursor->enumerator [items {:keys [index seed playback-order]}]
+(defn cursor->enumerator
+  "Rebuilds an enumerator from its cursor snapshot, restoring the exact position."
+  [items {:keys [index seed playback-order]}]
   (let [order (keyword playback-order)
         e     (make-enumerator items order {:seed seed})]
     (assoc e :index index)))

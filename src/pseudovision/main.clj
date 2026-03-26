@@ -19,12 +19,17 @@
     :parse-fn keyword]
    ["-h" "--help"]])
 
-(defn- deep-merge [& maps]
+(defn- deep-merge
+  "Recursively merges maps; non-map values from the right operand win."
+  [& maps]
   (apply merge-with
          (fn [l r] (if (map? l) (deep-merge l r) r))
          maps))
 
-(defn- load-config [paths]
+(defn- load-config
+  "Loads and deep-merges EDN config files from the given paths.
+   Falls back to the bundled config.edn resource when no paths are provided."
+  [paths]
   (if (seq paths)
     (apply deep-merge (map #(aero/read-config (io/file %)) paths))
     (aero/read-config (io/resource "config.edn"))))

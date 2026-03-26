@@ -113,6 +113,8 @@
 ;; ---------------------------------------------------------------------------
 
 (defn- upsert-item!
+  "Upserts a media item, version, and file record for a discovered file.
+   Runs inside a transaction; skips version/file upsert when ffprobe returned nil."
   [db library-path file media-kind probe]
   (let [path       (.getAbsolutePath ^File file)
         hash       (path-hash path)

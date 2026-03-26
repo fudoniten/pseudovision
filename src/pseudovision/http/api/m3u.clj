@@ -15,7 +15,9 @@
        "," name "\n"
        base-url "/stream/" uuid "\n"))
 
-(defn m3u-handler [{:keys [db]}]
+(defn m3u-handler
+  "Returns a Ring handler that generates an M3U playlist of all channels with stream URLs."
+  [{:keys [db]}]
   (fn [req]
     (let [base-url (str (name (:scheme req)) "://" (get-in req [:headers "host"]))
           channels (db/list-channels db)]
@@ -29,7 +31,10 @@
 ;; HDHomeRun device emulation (allows Plex/Emby/Jellyfin to auto-discover)
 ;; ---------------------------------------------------------------------------
 
-(defn hdhr-device-handler [_ctx]
+(defn hdhr-device-handler
+  "Returns the HDHomeRun device discovery JSON, enabling Plex/Emby/Jellyfin to
+   auto-discover this server as an HDHomeRun tuner."
+  [_ctx]
   (fn [req]
     (let [host (get-in req [:headers "host"])]
       {:status  200
@@ -45,7 +50,10 @@
                   :BaseURL         (str "http://" host)
                   :LineupURL       (str "http://" host "/lineup.json")})})))
 
-(defn hdhr-lineup-handler [{:keys [db]}]
+(defn hdhr-lineup-handler
+  "Returns the HDHomeRun lineup JSON with one entry per channel, each pointing
+   to its stream URL."
+  [{:keys [db]}]
   (fn [req]
     (let [host     (get-in req [:headers "host"])
           channels (db/list-channels db)]

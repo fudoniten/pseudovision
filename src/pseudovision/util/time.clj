@@ -6,6 +6,7 @@
 (defn now [] (t/now))
 
 (defn instant->zdt
+  "Converts an Instant to a ZonedDateTime, defaulting to UTC when no zone is given."
   ([inst] (instant->zdt inst "UTC"))
   ([inst zone-id]
    (.atZone ^Instant inst (ZoneId/of zone-id))))

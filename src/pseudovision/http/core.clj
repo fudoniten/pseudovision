@@ -75,7 +75,9 @@
    ["/lineup_status.json" {:get (m3u/hdhr-status-handler ctx)}]
    ["/iptv/channels.m3u" {:get (m3u/m3u-handler ctx)}]])
 
-(defn make-handler [ctx]
+(defn make-handler
+  "Creates the reitit Ring handler with JSON 404/405 fallback responses."
+  [ctx]
   (ring/ring-handler
    (ring/router (routes ctx))
    (ring/create-default-handler
@@ -83,6 +85,7 @@
      :method-not-allowed (fn [_] {:status 405 :body {:error "Method not allowed"}})})))
 
 (defn start-server!
+  "Assembles the handler context from opts and starts a non-blocking Jetty server."
   [{:keys [port db ffmpeg media scheduling] :as _opts}]
   (let [ctx     {:db db :ffmpeg ffmpeg :media media :scheduling scheduling}
         handler (make-handler ctx)]
