@@ -32,7 +32,11 @@
 ;; Helpers
 ;; ---------------------------------------------------------------------------
 
-(defn- collection-key [slot]
+(defn- collection-key
+  "Returns a stable string key identifying the content source for a slot.
+   Used to key enumerator states in the cursor so each slot's position is
+   tracked independently."
+  [slot]
   (str "collection:" (or (:schedule-slots/collection-id slot)
                          (str "item:" (:schedule-slots/media-item-id slot)))))
 
@@ -49,7 +53,9 @@
 
     :else []))
 
-(defn- item-duration [item]
+(defn- item-duration
+  "Returns the item's playback duration, or zero if the item has not been probed."
+  [item]
   (or (some-> (:media-versions/duration item))
       (Duration/ofSeconds 0)))
 

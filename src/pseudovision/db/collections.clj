@@ -27,8 +27,9 @@
   [])
 
 (defmethod resolve-collection :playlist [ds collection]
-  ;; Playlist items are stored in config JSONB; each item references
-  ;; another collection.  Flatten them in index order.
+  ;; Items are stored in the config JSONB as an ordered list of collection
+  ;; references; each referenced collection is resolved recursively and the
+  ;; results are concatenated in index order.
   (let [items (get-in collection [:collections/config "items"] [])]
     (mapcat (fn [{content-id "content_id" content-kind "content_kind"}]
               (let [child (db/query-one ds
@@ -44,6 +45,8 @@
             items)))
 
 (defmethod resolve-collection :multi [ds collection]
+  ;; A multi-collection merges several peer collections; each member is
+  ;; resolved recursively and the results are concatenated.
   (let [members (get-in collection [:collections/config "members"] [])]
     (mapcat (fn [{coll-id "collection_id"}]
               (let [child (db/query-one ds

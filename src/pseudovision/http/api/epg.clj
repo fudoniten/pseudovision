@@ -5,7 +5,9 @@
             [pseudovision.util.time   :as t])
   (:import [java.time Instant]))
 
-(defn- channel->xmltv [{:keys [channels/uuid channels/name channels/number
+(defn- channel->xmltv
+  "Renders a channel map as an XMLTV <channel> element string."
+  [{:keys [channels/uuid channels/name channels/number
                                 channels/group-name] :as ch}]
   (str "<channel id=\"" uuid "\">"
        "<display-name>" (clojure.string/replace name #"[<>&]" "") "</display-name>"
@@ -14,7 +16,9 @@
          (str "<group>" (clojure.string/replace group-name #"[<>&]" "") "</group>"))
        "</channel>"))
 
-(defn- event->xmltv [{:keys [playout-events/start-at playout-events/finish-at
+(defn- event->xmltv
+  "Renders a playout event as an XMLTV <programme> element string."
+  [{:keys [playout-events/start-at playout-events/finish-at
                                playout-events/custom-title channels/uuid
                                metadata/title metadata/plot]}]
   (let [display-title (or custom-title title "Unknown")]
@@ -26,7 +30,9 @@
            (str "<desc lang=\"en\">" (clojure.string/replace plot #"[<>&]" "") "</desc>"))
          "</programme>")))
 
-(defn xmltv-handler [{:keys [db]}]
+(defn xmltv-handler
+  "Returns a Ring handler that generates a full XMLTV document covering the next 7 days."
+  [{:keys [db]}]
   (fn [_req]
     (let [now     (t/now)
           horizon (t/add-duration now (t/hours->duration (* 24 7)))

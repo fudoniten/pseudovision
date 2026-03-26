@@ -26,7 +26,9 @@
 ;; UUID coercion
 ;; ---------------------------------------------------------------------------
 
-(defn ->uuid [s]
+(defn ->uuid
+  "Coerces a string or java.util.UUID to UUID; throws ex-info on unrecognized input."
+  [s]
   (cond (instance? UUID s) s
         (string? s)        (UUID/fromString s)
         :else              (throw (ex-info "Cannot coerce to UUID" {:value s}))))

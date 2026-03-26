@@ -34,30 +34,41 @@
   [start-time]
   (assoc initial-state :next-start start-time))
 
-(defn ->json [cursor]
+(defn ->json
+  "Serializes cursor to a JSONB PGobject; Instant fields are converted to ISO strings."
+  [cursor]
   (sql-util/->jsonb
    (-> cursor
        (update :next-start      #(some-> % .toString))
        (update :block-ends-at   #(some-> % .toString)))))
 
-(defn <-json [s]
+(defn <-json
+  "Deserializes a cursor from its stored JSONB string, parsing Instant fields back from ISO strings."
+  [s]
   (when s
     (-> (json/parse-string s true)
         (update :next-start      #(some-> % Instant/parse))
         (update :block-ends-at   #(some-> % Instant/parse)))))
 
-(defn advance-slot [cursor n-slots]
+(defn advance-slot
+  "Advances slot-index by 1, wrapping around modulo n-slots."
+  [cursor n-slots]
   (update cursor :slot-index #(mod (inc %) n-slots)))
 
 (defn bump-guide-group [cursor]
   (update cursor :next-guide-group inc))
 
-(defn get-enumerator [cursor collection-key items playback-order]
+(defn get-enumerator
+  "Returns the enumerator for collection-key, restoring from saved cursor state
+   if present, or constructing a fresh one with the given playback-order."
+  [cursor collection-key items playback-order]
   (let [saved (get-in cursor [:enumerator-states collection-key])]
     (if saved
       (enum/cursor->enumerator items saved)
       (enum/make-enumerator items playback-order {}))))
 
-(defn save-enumerator [cursor collection-key enumerator]
+(defn save-enumerator
+  "Persists the enumerator's resumable state back into the cursor under collection-key."
+  [cursor collection-key enumerator]
   (assoc-in cursor [:enumerator-states collection-key]
             (enum/enumerator->cursor enumerator)))
