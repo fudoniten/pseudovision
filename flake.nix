@@ -46,7 +46,7 @@
           };
 
           migrationContainer = helpers.deployContainers {
-            name = "pseudovision";
+            name = "pseudovision-migratus";
             repo = "registry.kube.sea.fudo.link";
             tags = [ "latest" ];
             entrypoint =
@@ -82,8 +82,10 @@
 
           default = updateDeps;
 
-          updateDeps =
-            pkgs.mkShell { buildInputs = [ (helpers.updateClojureDeps { aliases = ["test"]; }) ]; };
+          updateDeps = pkgs.mkShell {
+            buildInputs =
+              [ (helpers.updateClojureDeps { aliases = [ "test" ]; }) ];
+          };
 
           pseudovision = pkgs.mkShell {
             packages = with pkgs; [ clojure jdk21 ffmpeg postgresql ];
