@@ -36,6 +36,10 @@
   "Creates a HikariCP connection pool from a config map with keys
    :jdbc-url, :username, :password."
   [{:keys [jdbc-url username password]}]
+  (log/info "Creating datasource with:"
+            {:jdbc-url jdbc-url
+             :username username
+             :password-present? (boolean password)})
   (conn/->pool HikariDataSource
                {:jdbcUrl  jdbc-url
                 :username username
