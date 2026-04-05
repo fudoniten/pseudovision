@@ -26,17 +26,15 @@
 ;; ---------------------------------------------------------------------------
 
 (defmethod conn/->connection-config "jellyfin" [params]
-  {:api_key     (:api_key params)
+  {:api-key     (:api-key params)
    :connections (or (:connections params) [])})
 
 (defmethod conn/<-connection-config "jellyfin" [source]
-  (let [config (or (:media-sources/connection_config source)
-                   (:connection_config source)
-                   (:media-sources/connection-config source)
+  (let [config (or (:media-sources/connection-config source)
                    (:connection-config source))
         source-id (or (:media-sources/id source) (:id source))
         base-url (conn/active-uri (:connections config))
-        api-key  (:api_key config)]
+        api-key  (:api-key config)]
     (log/info "Extracting Jellyfin connection config"
               {:source-id source-id
                :has-config (boolean config)
@@ -444,16 +442,12 @@
               {:source-id source-id
                :has-base-url (boolean base-url)
                :has-api-key (boolean api-key)
-               :connection-config (or (:media-sources/connection_config source)
-                                      (:connection_config source)
-                                      (:media-sources/connection-config source)
+               :connection-config (or (:media-sources/connection-config source)
                                       (:connection-config source))})
     (when-not base-url
       (log/error "No active connection for Jellyfin source"
                  {:source-id source-id
-                  :connection-config (or (:media-sources/connection_config source)
-                                         (:connection_config source)
-                                         (:media-sources/connection-config source)
+                  :connection-config (or (:media-sources/connection-config source)
                                          (:connection-config source))})
       (throw (ex-info "No active connection for Jellyfin source"
                       {:source-id source-id})))
@@ -503,8 +497,8 @@
       (log/info "Connected to Jellyfin" {:server-name (:ServerName server-info)
                                          :version     (:Version server-info)}))
 
-    (let [jf-library-id  (or (:libraries/external_id library)
-                             (:external_id library))
+    (let [jf-library-id  (or (:libraries/external-id library)
+                             (:external-id library))
           library-id     (or (:libraries/id library) (:id library))
           ;; Use a synthetic path for the library_path row (Jellyfin has no local paths)
           synthetic-path (str base-url "/library/" jf-library-id)

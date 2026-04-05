@@ -12,8 +12,8 @@
   (fn [req]
     (let [params (:body-params req)
           config (conn/->connection-config params)
-          attrs  (-> (select-keys params [:name :kind :path_replacements])
-                     (cond-> config (assoc :connection_config config)))]
+          attrs  (-> (select-keys params [:name :kind :path-replacements])
+                     (cond-> config (assoc :connection-config config)))]
       {:status 201 :body (db/create-media-source! db attrs)})))
 
 (defn list-all-libraries-handler [{:keys [db]}]

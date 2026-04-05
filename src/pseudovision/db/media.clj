@@ -20,9 +20,9 @@
 
 (defn create-media-source! [ds attrs]
   (let [prepared (cond-> attrs
-                   (:kind attrs)               (update :kind #(sql-util/->pg-enum "media_source_kind" %))
-                   (:connection_config attrs)  (update :connection_config sql-util/->jsonb)
-                   (:path_replacements attrs)  (update :path_replacements sql-util/->jsonb))
+                   (:kind attrs)                (update :kind #(sql-util/->pg-enum "media_source_kind" %))
+                   (:connection-config attrs)   (update :connection-config sql-util/->jsonb)
+                   (:path-replacements attrs)   (update :path-replacements sql-util/->jsonb))
         result   (db/execute-one! ds (-> (h/insert-into :media-sources)
                                          (h/values [prepared])
                                          sql/format))]

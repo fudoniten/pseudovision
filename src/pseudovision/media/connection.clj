@@ -16,14 +16,14 @@
   "Returns the URI of the preferred connection from a connections list,
    falling back to the first entry."
   [connections]
-  (let [active-conn (first (filter :is_active connections))
+  (let [active-conn (first (filter :is-active connections))
         fallback-conn (first connections)
         uri (or (:uri active-conn) (:uri fallback-conn))]
     (log/info "Resolved active connection URI"
               {:uri uri
                :has-active (boolean active-conn)
                :total-connections (count connections)
-               :connections (mapv #(select-keys % [:uri :is_active]) connections)})
+               :connections (mapv #(select-keys % [:uri :is-active]) connections)})
     uri))
 
 ;; ---------------------------------------------------------------------------
