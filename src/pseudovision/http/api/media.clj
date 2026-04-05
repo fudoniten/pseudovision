@@ -42,6 +42,26 @@
           {:status 202 :body {:message "Scan triggered"}})
         {:status 404 :body {:error "Library not found"}}))))
 
+(defn discover-libraries-handler [{:keys [db]}]
+  (fn [req]
+    (let [source-id (parse-long (get-in req [:path-params :id]))
+          source    (db/get-media-source db source-id)]
+      (if (nil? source)
+        {:status 404 :body {:error "Media source not found"}}
+        (let [kind (keyword (str (:media-sources/kind source)))]
+          (if (not= kind :jellyfin)
+            {:status 400 :body {:error "Library discovery is only supported for Jellyfin sources"}}
+            (let [candidates   (jellyfin/discover-libraries! source)
+                  existing     (db/list-libraries-for-source db source-id)
+                  existing-ids (set (keep :libraries/external_id existing))
+                  new-libs     (remove #(existing-ids (:external-id %)) candidates)
+                  created      (mapv #(db/create-library! db (assoc % :media-source-id source-id))
+                                     new-libs)]
+              {:status 201
+               :body   {:discovered (count candidates)
+                        :created    (count created)
+                        :libraries  (into existing created)}})))))))
+
 (defn list-collections-handler [{:keys [db]}]
   (fn [_req] {:status 200 :body (db/list-collections db)}))
 

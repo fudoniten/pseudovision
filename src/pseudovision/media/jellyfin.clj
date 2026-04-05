@@ -11,6 +11,7 @@
      5. Upsert media_versions, media_files, media_streams, and metadata"
   (:require [clj-http.client       :as http]
             [cheshire.core         :as json]
+            [clojure.string        :as str]
             [next.jdbc             :as jdbc]
             [honey.sql             :as sql]
             [honey.sql.helpers     :as h]
@@ -352,6 +353,56 @@
                 item-row))))))))
 
 ;; ---------------------------------------------------------------------------
+;; Library discovery
+;; ---------------------------------------------------------------------------
+
+(defn- jf-collection-type->kind
+  "Maps a Jellyfin CollectionType string to a pseudovision library_kind string."
+  [collection-type]
+  (case (some-> collection-type str/lower-case)
+    "movies"       "movies"
+    "tvshows"      "shows"
+    "music"        "songs"
+    "musicvideos"  "music_videos"
+    "homevideos"   "other_videos"
+    "photos"       "images"
+    "books"        "other_videos"
+    "other_videos"))
+
+(defn- source-config
+  "Parses and returns the connection_config map from a media_sources row."
+  [source]
+  (let [raw (or (:media-sources/connection_config source)
+                (:connection_config source))]
+    (if (string? raw) (json/parse-string raw true) raw)))
+
+(defn discover-libraries!
+  "Connects to a Jellyfin source and returns a seq of library attribute maps
+   (`:name`, `:kind`, `:external-id`, `:should-sync`) ready to pass to
+   `db/create-library!` after associng `:media-source-id`.
+   Throws ex-info if the server is unreachable or misconfigured."
+  [source]
+  (let [config   (source-config source)
+        base-url (active-connection config)
+        api-key  (:api_key config)]
+    (when-not base-url
+      (throw (ex-info "No active connection for Jellyfin source"
+                      {:source-id (or (:media-sources/id source) (:id source))})))
+    (when-not api-key
+      (throw (ex-info "No API key configured for Jellyfin source"
+                      {:source-id (or (:media-sources/id source) (:id source))})))
+    (log/info "Discovering Jellyfin libraries" {:url base-url})
+    (let [folders (fetch-libraries base-url api-key)]
+      (when-not folders
+        (throw (ex-info "Failed to fetch libraries from Jellyfin" {:url base-url})))
+      (mapv (fn [folder]
+              {:name        (:Name folder)
+               :kind        (jf-collection-type->kind (:CollectionType folder))
+               :external-id (:ItemId folder)
+               :should-sync true})
+            folders))))
+
+;; ---------------------------------------------------------------------------
 ;; Public: scan a Jellyfin library
 ;; ---------------------------------------------------------------------------
 
@@ -360,9 +411,7 @@
    `source` must have :connection_config with an api_key and connections list.
    `library` must have :external_id set to the Jellyfin library ID."
   [db source library]
-  (let [config   (let [raw (or (:media-sources/connection_config source)
-                               (:connection_config source))]
-                   (if (string? raw) (json/parse-string raw true) raw))
+  (let [config   (source-config source)
         base-url (active-connection config)
         api-key  (:api_key config)]
     (when-not base-url
