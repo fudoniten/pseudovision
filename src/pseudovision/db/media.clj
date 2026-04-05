@@ -2,7 +2,8 @@
   (:require [honey.sql         :as sql]
             [honey.sql.helpers :as h]
             [pseudovision.db.core :as db]
-            [pseudovision.util.sql :as sql-util]))
+            [pseudovision.util.sql :as sql-util]
+            [taoensso.timbre :as log]))
 
 ;; ---------------------------------------------------------------------------
 ;; Media sources and libraries
@@ -21,10 +22,15 @@
   (let [prepared (cond-> attrs
                    (:kind attrs)               (update :kind #(sql-util/->pg-enum "media_source_kind" %))
                    (:connection_config attrs)  (update :connection_config sql-util/->jsonb)
-                   (:path_replacements attrs)  (update :path_replacements sql-util/->jsonb))]
-    (db/execute-one! ds (-> (h/insert-into :media-sources)
-                            (h/values [prepared])
-                            sql/format))))
+                   (:path_replacements attrs)  (update :path_replacements sql-util/->jsonb))
+        result   (db/execute-one! ds (-> (h/insert-into :media-sources)
+                                         (h/values [prepared])
+                                         sql/format))]
+    (log/info "Created media source"
+              {:source-id (:media-sources/id result)
+               :name      (:name attrs)
+               :kind      (:kind attrs)})
+    result))
 
 (defn list-libraries [ds]
   (db/query ds (-> (h/select :l.* :ms.name :ms.kind)
@@ -46,9 +52,16 @@
                        sql/format)))
 
 (defn create-library! [ds attrs]
-  (db/execute-one! ds (-> (h/insert-into :libraries)
-                          (h/values [(update attrs :kind #(sql-util/->pg-enum "library_kind" %))])
-                          sql/format)))
+  (let [result (db/execute-one! ds (-> (h/insert-into :libraries)
+                                       (h/values [(update attrs :kind #(sql-util/->pg-enum "library_kind" %))])
+                                       sql/format))]
+    (log/info "Created library"
+              {:library-id      (:libraries/id result)
+               :name            (:name attrs)
+               :kind            (:kind attrs)
+               :media-source-id (:media-source-id attrs)
+               :external-id     (:external-id attrs)})
+    result))
 
 (defn list-library-paths [ds library-id]
   (db/query ds (-> (h/select :*)
@@ -57,9 +70,14 @@
                    sql/format)))
 
 (defn create-library-path! [ds attrs]
-  (db/execute-one! ds (-> (h/insert-into :library-paths)
-                          (h/values [attrs])
-                          sql/format)))
+  (let [result (db/execute-one! ds (-> (h/insert-into :library-paths)
+                                       (h/values [attrs])
+                                       sql/format))]
+    (log/info "Created library path"
+              {:library-path-id (:library-paths/id result)
+               :library-id      (:library-id attrs)
+               :path            (:path attrs)})
+    result))
 
 ;; ---------------------------------------------------------------------------
 ;; Media items
@@ -67,7 +85,7 @@
 
 (defn get-media-item [ds id]
   (db/query-one ds (-> (h/select :mi.* :m.title :m.year :m.release-date
-                                  :m.plot :m.content-rating)
+                                 :m.plot :m.content-rating)
                        (h/from [:media-items :mi])
                        (h/left-join [:metadata :m] [:= :m.media-item-id :mi.id])
                        (h/where [:= :mi.id id])
@@ -98,11 +116,18 @@
                        sql/format)))
 
 (defn upsert-media-item! [ds attrs]
-  (db/execute-one! ds (-> (h/insert-into :media-items)
-                          (h/values [attrs])
-                          (h/on-conflict :library-path-id :remote-key)
-                          (h/do-update-set :state :remote-etag :position)
-                          sql/format)))
+  (let [result (db/execute-one! ds (-> (h/insert-into :media-items)
+                                       (h/values [attrs])
+                                       (h/on-conflict :library-path-id :remote-key)
+                                       (h/do-update-set :state :remote-etag :position)
+                                       sql/format))]
+    (log/info "Upserted media item"
+              {:media-item-id   (:media-items/id result)
+               :kind            (:kind attrs)
+               :library-path-id (:library-path-id attrs)
+               :remote-key      (:remote-key attrs)
+               :parent-id       (:parent-id attrs)})
+    result))
 
 ;; ---------------------------------------------------------------------------
 ;; Collections
@@ -121,17 +146,26 @@
                        sql/format)))
 
 (defn create-collection! [ds attrs]
-  (db/execute-one! ds (-> (h/insert-into :collections)
-                          (h/values [(update attrs :kind #(sql-util/->pg-enum "collection_kind" %))])
-                          sql/format)))
+  (let [result (db/execute-one! ds (-> (h/insert-into :collections)
+                                       (h/values [(update attrs :kind #(sql-util/->pg-enum "collection_kind" %))])
+                                       sql/format))]
+    (log/info "Created collection"
+              {:collection-id (:collections/id result)
+               :name          (:name attrs)
+               :kind          (:kind attrs)})
+    result))
 
 (defn add-item-to-collection! [ds collection-id media-item-id]
-  (db/execute-one! ds (-> (h/insert-into :collection-items)
-                          (h/values [{:collection-id collection-id
-                                      :media-item-id media-item-id}])
-                          (h/on-conflict :collection-id :media-item-id)
-                          (h/do-nothing)
-                          sql/format)))
+  (let [result (db/execute-one! ds (-> (h/insert-into :collection-items)
+                                       (h/values [{:collection-id collection-id
+                                                   :media-item-id media-item-id}])
+                                       (h/on-conflict :collection-id :media-item-id)
+                                       (h/do-nothing)
+                                       sql/format))]
+    (log/info "Added item to collection"
+              {:collection-id collection-id
+               :media-item-id media-item-id})
+    result))
 
 (defn remove-item-from-collection! [ds collection-id media-item-id]
   (db/execute-one! ds (-> (h/delete-from :collection-items)

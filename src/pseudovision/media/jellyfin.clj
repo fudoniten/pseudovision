@@ -31,9 +31,19 @@
 
 (defmethod conn/<-connection-config "jellyfin" [source]
   (let [config (or (:media-sources/connection_config source)
-                   (:connection_config source))]
-    {:base-url (conn/active-uri (:connections config))
-     :api-key  (:api_key config)}))
+                   (:connection_config source))
+        source-id (or (:media-sources/id source) (:id source))
+        base-url (conn/active-uri (:connections config))
+        api-key  (:api_key config)]
+    (log/info "Extracting Jellyfin connection config"
+              {:source-id source-id
+               :has-config (boolean config)
+               :has-connections (boolean (:connections config))
+               :connections-count (count (:connections config))
+               :has-base-url (boolean base-url)
+               :has-api-key (boolean api-key)})
+    {:base-url base-url
+     :api-key  api-key}))
 
 ;; ---------------------------------------------------------------------------
 ;; Jellyfin API client
@@ -65,12 +75,26 @@
 (defn check-server
   "Verifies connectivity with the Jellyfin server. Returns server info or nil."
   [base-url api-key]
-  (jellyfin-get base-url "/System/Info" api-key))
+  (log/info "Checking Jellyfin server connectivity" {:url base-url})
+  (let [result (jellyfin-get base-url "/System/Info" api-key)]
+    (if result
+      (log/info "Jellyfin server check successful"
+                {:url base-url
+                 :server-name (:ServerName result)
+                 :version (:Version result)})
+      (log/warn "Jellyfin server check failed" {:url base-url}))
+    result))
 
 (defn fetch-libraries
   "Fetches the virtual folder (library) list from Jellyfin."
   [base-url api-key]
-  (jellyfin-get base-url "/Library/VirtualFolders" api-key))
+  (log/info "Fetching libraries from Jellyfin" {:url base-url})
+  (let [result (jellyfin-get base-url "/Library/VirtualFolders" api-key)]
+    (if result
+      (log/info "Successfully fetched Jellyfin libraries"
+                {:url base-url :count (count result)})
+      (log/warn "Failed to fetch Jellyfin libraries" {:url base-url}))
+    result))
 
 ;; ---------------------------------------------------------------------------
 ;; Item fetching
@@ -256,22 +280,38 @@
                                        {:return-keys true})
           ver-id    (:media-versions/id ver)]
       (when ver-id
+        (log/info "Created media version"
+                  {:media-version-id ver-id
+                   :media-item-id item-id
+                   :width (:width ver-attrs)
+                   :height (:height ver-attrs)
+                   :duration (str (:duration ver-attrs))})
         ;; Insert file
-        (jdbc/execute-one! tx
-                           (sql/format
-                            (-> (h/insert-into :media-files)
-                                (h/values [{:media-version-id ver-id
-                                            :path             (:Path item)
-                                            :path-hash        (path-hash (:Path item))}])
-                                (h/on-conflict :path-hash)
-                                (h/do-update-set :media-version-id :path))))
+        (let [file-result (jdbc/execute-one! tx
+                                             (sql/format
+                                              (-> (h/insert-into :media-files)
+                                                  (h/values [{:media-version-id ver-id
+                                                              :path             (:Path item)
+                                                              :path-hash        (path-hash (:Path item))}])
+                                                  (h/on-conflict :path-hash)
+                                                  (h/do-update-set :media-version-id :path))))]
+          (log/info "Upserted media file"
+                    {:media-file-id (:media-files/id file-result)
+                     :media-version-id ver-id
+                     :path (:Path item)}))
         ;; Insert streams
         (let [streams (map-indexed jellyfin-stream->attrs (:MediaStreams item []))]
           (when (seq streams)
             (jdbc/execute! tx
                            (sql/format
                             (-> (h/insert-into :media-streams)
-                                (h/values (mapv #(assoc % :media-version-id ver-id) streams))))))))
+                                (h/values (mapv #(assoc % :media-version-id ver-id) streams)))))
+            (log/info "Created media streams"
+                      {:media-version-id ver-id
+                       :stream-count (count streams)
+                       :video-streams (count (filter #(= "video" (:kind %)) streams))
+                       :audio-streams (count (filter #(= "audio" (:kind %)) streams))
+                       :subtitle-streams (count (filter #(= "subtitle" (:kind %)) streams))}))))
       ver-id)))
 
 (defn- upsert-metadata!
@@ -295,6 +335,12 @@
                                          (h/where [:= :media-item-id item-id]))))
         meta-id  (:metadata/id meta-row)]
     (when meta-id
+      (log/info "Upserted metadata"
+                {:metadata-id meta-id
+                 :media-item-id item-id
+                 :title (:Name item)
+                 :year (:ProductionYear item)
+                 :kind (name kind)})
       ;; Genres
       (when (seq (:Genres item))
         (jdbc/execute-one! tx
@@ -305,7 +351,11 @@
                        (sql/format
                         (-> (h/insert-into :metadata-genres)
                             (h/values (mapv (fn [g] {:metadata-id meta-id :name g})
-                                            (:Genres item)))))))
+                                            (:Genres item))))))
+        (log/info "Added metadata genres"
+                  {:metadata-id meta-id
+                   :genre-count (count (:Genres item))
+                   :genres (:Genres item)}))
       ;; Studios
       (when (seq (:Studios item))
         (jdbc/execute-one! tx
@@ -316,7 +366,11 @@
                        (sql/format
                         (-> (h/insert-into :metadata-studios)
                             (h/values (mapv (fn [s] {:metadata-id meta-id :name (:Name s)})
-                                            (:Studios item))))))))))
+                                            (:Studios item))))))
+        (log/info "Added metadata studios"
+                  {:metadata-id meta-id
+                   :studio-count (count (:Studios item))
+                   :studios (mapv :Name (:Studios item))})))))
 
 ;; ---------------------------------------------------------------------------
 ;; Single item upsert
@@ -382,17 +436,36 @@
    `db/create-library!` after associng `:media-source-id`.
    Throws ex-info if the server is unreachable or misconfigured."
   [source]
-  (let [{:keys [base-url api-key]} (conn/<-connection-config source)]
+  (let [source-id (or (:media-sources/id source) (:id source))
+        {:keys [base-url api-key]} (conn/<-connection-config source)]
+    (log/info "Attempting to discover Jellyfin libraries"
+              {:source-id source-id
+               :has-base-url (boolean base-url)
+               :has-api-key (boolean api-key)
+               :connection-config (or (:media-sources/connection_config source)
+                                      (:connection_config source))})
     (when-not base-url
+      (log/error "No active connection for Jellyfin source"
+                 {:source-id source-id
+                  :connection-config (or (:media-sources/connection_config source)
+                                         (:connection_config source))})
       (throw (ex-info "No active connection for Jellyfin source"
-                      {:source-id (or (:media-sources/id source) (:id source))})))
+                      {:source-id source-id})))
     (when-not api-key
+      (log/error "No API key configured for Jellyfin source"
+                 {:source-id source-id})
       (throw (ex-info "No API key configured for Jellyfin source"
-                      {:source-id (or (:media-sources/id source) (:id source))})))
-    (log/info "Discovering Jellyfin libraries" {:url base-url})
+                      {:source-id source-id})))
+    (log/info "Discovering Jellyfin libraries" {:url base-url :source-id source-id})
     (let [folders (fetch-libraries base-url api-key)]
       (when-not folders
+        (log/error "Failed to fetch libraries from Jellyfin"
+                   {:url base-url :source-id source-id})
         (throw (ex-info "Failed to fetch libraries from Jellyfin" {:url base-url})))
+      (log/info "Discovered Jellyfin libraries"
+                {:count (count folders)
+                 :libraries (mapv #(select-keys % [:Name :CollectionType :ItemId]) folders)
+                 :source-id source-id})
       (mapv (fn [folder]
               {:name        (:Name folder)
                :kind        (jf-collection-type->kind (:CollectionType folder))

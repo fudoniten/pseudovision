@@ -5,7 +5,8 @@
    that translate between flat request params and the `connection_config` JSONB
    column in `media_sources`.
 
-   Dispatch is on the source kind string (\"jellyfin\", \"plex\", etc.).")
+   Dispatch is on the source kind string (\"jellyfin\", \"plex\", etc.)."
+  (:require [taoensso.timbre :as log]))
 
 ;; ---------------------------------------------------------------------------
 ;; Shared helper
@@ -15,8 +16,15 @@
   "Returns the URI of the preferred connection from a connections list,
    falling back to the first entry."
   [connections]
-  (or (:uri (first (filter :is_active connections)))
-      (:uri (first connections))))
+  (let [active-conn (first (filter :is_active connections))
+        fallback-conn (first connections)
+        uri (or (:uri active-conn) (:uri fallback-conn))]
+    (log/info "Resolved active connection URI"
+              {:uri uri
+               :has-active (boolean active-conn)
+               :total-connections (count connections)
+               :connections (mapv #(select-keys % [:uri :is_active]) connections)})
+    uri))
 
 ;; ---------------------------------------------------------------------------
 ;; Write: request params → connection_config JSONB map
