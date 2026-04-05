@@ -2,31 +2,33 @@
   (:require [clojure.string    :as str]
             [cheshire.core     :as json]
             [cheshire.generate :as json-gen]
+            [camel-snake-kebab.core :as csk]
             [taoensso.timbre   :as log])
   (:import [java.time Instant]))
 
 (json-gen/add-encoder Instant
-  (fn [inst jg] (.writeString jg (.toString inst))))
+                      (fn [inst jg] (.writeString jg (.toString inst))))
 
 (defn wrap-json-body
-  "Parses application/json request bodies into Clojure maps."
+  "Parses application/json request bodies into Clojure maps with kebab-case keys."
   [handler]
   (fn [req]
     (if (some-> (get-in req [:headers "content-type"])
                 (str/starts-with? "application/json"))
-      (let [body (-> req :body slurp (json/parse-string true))]
+      (let [body (-> req :body slurp (json/parse-string csk/->kebab-case-keyword))]
         (handler (assoc req :body-params body)))
       (handler req))))
 
 (defn wrap-json-response
   "Serialises Clojure collection response bodies (maps, vectors, lists) to JSON
-   and sets Content-Type.  String and nil bodies are passed through unchanged."
+   with kebab-case keys and sets Content-Type. String and nil bodies are passed 
+   through unchanged."
   [handler]
   (fn [req]
     (let [resp (handler req)]
       (if (coll? (:body resp))
         (-> resp
-            (update :body json/generate-string)
+            (update :body #(json/generate-string % {:key-fn csk/->kebab-case-string}))
             (assoc-in [:headers "Content-Type"] "application/json; charset=utf-8"))
         resp))))
 
