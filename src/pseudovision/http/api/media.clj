@@ -11,9 +11,12 @@
 (defn create-source-handler [{:keys [db]}]
   (fn [req]
     (let [params (:body-params req)
+          _      (log/info "create-source-handler received params" {:params params})
           config (conn/->connection-config params)
+          _      (log/info "connection config" {:config config})
           attrs  (-> (select-keys params [:name :kind :path-replacements])
                      (cond-> config (assoc :connection-config config)))]
+      (log/info "final attrs" {:attrs attrs})
       {:status 201 :body (db/create-media-source! db attrs)})))
 
 (defn list-all-libraries-handler [{:keys [db]}]
