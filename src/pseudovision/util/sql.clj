@@ -3,6 +3,7 @@
   (:require [honey.sql :as sql]
             [cheshire.core :as json]
             [cheshire.generate :as json-gen]
+            [camel-snake-kebab.core :as csk]
             [next.jdbc.prepare :as jdbc-prep])
   (:import [org.postgresql.util PGobject]
            [java.util UUID]
@@ -38,17 +39,19 @@
 ;; ---------------------------------------------------------------------------
 
 (defn ->jsonb
-  "Converts a Clojure map/vec to a PGobject with type 'jsonb'."
+  "Converts a Clojure map/vec to a PGobject with type 'jsonb'.
+   Keys are converted to snake_case for consistency with database columns."
   [v]
   (doto (PGobject.)
     (.setType  "jsonb")
-    (.setValue (json/generate-string v))))
+    (.setValue (json/generate-string v {:key-fn csk/->snake_case_string}))))
 
 (defn <-jsonb
-  "Parses a JSONB PGobject back to a Clojure value."
+  "Parses a JSONB PGobject back to a Clojure value.
+   Keys are converted from snake_case to kebab-case for consistency."
   [v]
   (if (instance? PGobject v)
-    (json/parse-string (.getValue ^PGobject v) true)
+    (json/parse-string (.getValue ^PGobject v) csk/->kebab-case-keyword)
     v))
 
 ;; ---------------------------------------------------------------------------
