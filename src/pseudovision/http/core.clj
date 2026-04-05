@@ -57,6 +57,8 @@
    ["/api/media/sources"
     {:get  (med/list-sources-handler  ctx)
      :post (med/create-source-handler ctx)}]
+   ["/api/media/libraries"
+    {:get  (med/list-all-libraries-handler ctx)}]
    ["/api/media/sources/:id/libraries"
     {:get  (med/list-libraries-handler  ctx)
      :post (med/create-library-handler ctx)}]
@@ -80,11 +82,13 @@
 (defn make-handler
   "Creates the reitit Ring handler with JSON 404/405 fallback responses."
   [ctx]
-  (ring/ring-handler
-   (ring/router (routes ctx))
-   (ring/create-default-handler
-    {:not-found          (fn [_] {:status 404 :body {:error "Not found"}})
-     :method-not-allowed (fn [_] {:status 405 :body {:error "Method not allowed"}})})))
+  (-> (ring/ring-handler
+       (ring/router (routes ctx))
+       (ring/create-default-handler
+        {:not-found          (fn [_] {:status 404 :body {:error "Not found"}})
+         :method-not-allowed (fn [_] {:status 405 :body {:error "Method not allowed"}})}))
+      mw/wrap-json-response
+      mw/wrap-error-handler))
 
 (defn start-server!
   "Assembles the handler context from opts and starts a non-blocking Jetty server."

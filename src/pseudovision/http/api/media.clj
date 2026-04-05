@@ -16,6 +16,9 @@
                      (cond-> config (assoc :connection_config config)))]
       {:status 201 :body (db/create-media-source! db attrs)})))
 
+(defn list-all-libraries-handler [{:keys [db]}]
+  (fn [_req] {:status 200 :body (db/list-libraries db)}))
+
 (defn list-libraries-handler [{:keys [db]}]
   (fn [req]
     (let [source-id (parse-long (get-in req [:path-params :id]))]
