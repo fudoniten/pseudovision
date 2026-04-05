@@ -18,9 +18,13 @@
                        sql/format)))
 
 (defn create-media-source! [ds attrs]
-  (db/execute-one! ds (-> (h/insert-into :media-sources)
-                          (h/values [(update attrs :kind #(sql-util/->pg-enum "media_source_kind" %))])
-                          sql/format)))
+  (let [prepared (cond-> attrs
+                   (:kind attrs)               (update :kind #(sql-util/->pg-enum "media_source_kind" %))
+                   (:connection_config attrs)  (update :connection_config sql-util/->jsonb)
+                   (:path_replacements attrs)  (update :path_replacements sql-util/->jsonb))]
+    (db/execute-one! ds (-> (h/insert-into :media-sources)
+                            (h/values [prepared])
+                            sql/format))))
 
 (defn list-libraries [ds]
   (db/query ds (-> (h/select :l.* :ms.name :ms.kind)

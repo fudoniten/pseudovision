@@ -3,10 +3,11 @@
             [next.jdbc       :as jdbc]
             [next.jdbc.connection :as conn]
             [next.jdbc.result-set :as rs]
+            [cheshire.core   :as json]
             [taoensso.timbre :as log]
             [aero.core       :as aero])
   (:import [com.zaxxer.hikari HikariDataSource]
-           [org.postgresql.util PGInterval]
+           [org.postgresql.util PGInterval PGobject]
            [java.time Duration]))
 
 ;; ---------------------------------------------------------------------------
@@ -26,7 +27,16 @@
   (read-column-by-index [v _ _] (pg-interval->duration v))
   java.sql.Timestamp
   (read-column-by-label [v _] (.toInstant v))
-  (read-column-by-index [v _ _] (.toInstant v)))
+  (read-column-by-index [v _ _] (.toInstant v))
+  PGobject
+  (read-column-by-label [v _]
+    (if (= "jsonb" (.getType v))
+      (json/parse-string (.getValue v) true)
+      (.getValue v)))
+  (read-column-by-index [v _ _]
+    (if (= "jsonb" (.getType v))
+      (json/parse-string (.getValue v) true)
+      (.getValue v))))
 
 ;; ---------------------------------------------------------------------------
 ;; Connection pool

@@ -60,6 +60,8 @@
    ["/api/media/sources/:id/libraries"
     {:get  (med/list-libraries-handler  ctx)
      :post (med/create-library-handler ctx)}]
+   ["/api/media/sources/:id/libraries/discover"
+    {:post (med/discover-libraries-handler ctx)}]
    ["/api/media/libraries/:id/scan"
     {:post (med/trigger-scan-handler ctx)}]
    ["/api/media/collections"
