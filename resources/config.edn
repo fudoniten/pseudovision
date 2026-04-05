@@ -1,6 +1,6 @@
 {:log-level #or [#env PSEUDOVISION_LOG_LEVEL :info]
 
- :server {:port #or [#env PSEUDOVISION_PORT 8080]}
+ :server {:port #or [#env PSEUDOVISION_HTTP_PORT 8080]}
 
  :database {:jdbc-url  #or [#env PSEUDOVISION_DB_URL
                             "jdbc:postgresql://localhost:5432/pseudovision"]
