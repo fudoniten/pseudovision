@@ -34,6 +34,13 @@
                  :kind      (:kind attrs)})
       result)))
 
+(defn delete-media-source! [ds id]
+  (let [result (db/execute-one! ds (-> (h/delete-from :media-sources)
+                                       (h/where [:= :id id])
+                                       sql/format))]
+    (log/info "Deleted media source" {:source-id id})
+    result))
+
 (defn list-libraries [ds]
   (db/query ds (-> (h/select :l.* :ms.name :ms.kind)
                    (h/from [:libraries :l])

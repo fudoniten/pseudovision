@@ -19,6 +19,12 @@
       (log/info "final attrs" {:attrs attrs})
       {:status 201 :body (db/create-media-source! db attrs)})))
 
+(defn delete-source-handler [{:keys [db]}]
+  (fn [req]
+    (let [source-id (parse-long (get-in req [:path-params :id]))]
+      (db/delete-media-source! db source-id)
+      {:status 204})))
+
 (defn list-all-libraries-handler [{:keys [db]}]
   (fn [_req] {:status 200 :body (db/list-libraries db)}))
 

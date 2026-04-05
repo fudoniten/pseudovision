@@ -57,6 +57,8 @@
    ["/api/media/sources"
     {:get  (med/list-sources-handler  ctx)
      :post (med/create-source-handler ctx)}]
+   ["/api/media/sources/:id"
+    {:delete (med/delete-source-handler ctx)}]
    ["/api/media/libraries"
     {:get  (med/list-all-libraries-handler ctx)}]
    ["/api/media/sources/:id/libraries"
