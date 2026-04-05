@@ -31,7 +31,9 @@
 
 (defmethod conn/<-connection-config "jellyfin" [source]
   (let [config (or (:media-sources/connection_config source)
-                   (:connection_config source))
+                   (:connection_config source)
+                   (:media-sources/connection-config source)
+                   (:connection-config source))
         source-id (or (:media-sources/id source) (:id source))
         base-url (conn/active-uri (:connections config))
         api-key  (:api_key config)]
@@ -443,12 +445,16 @@
                :has-base-url (boolean base-url)
                :has-api-key (boolean api-key)
                :connection-config (or (:media-sources/connection_config source)
-                                      (:connection_config source))})
+                                      (:connection_config source)
+                                      (:media-sources/connection-config source)
+                                      (:connection-config source))})
     (when-not base-url
       (log/error "No active connection for Jellyfin source"
                  {:source-id source-id
                   :connection-config (or (:media-sources/connection_config source)
-                                         (:connection_config source))})
+                                         (:connection_config source)
+                                         (:media-sources/connection-config source)
+                                         (:connection-config source))})
       (throw (ex-info "No active connection for Jellyfin source"
                       {:source-id source-id})))
     (when-not api-key
