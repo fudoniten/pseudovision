@@ -1,15 +1,20 @@
 (ns pseudovision.http.api.media
-  (:require [pseudovision.db.media       :as db]
-            [pseudovision.media.scanner  :as scanner]
-            [pseudovision.media.jellyfin :as jellyfin]
-            [taoensso.timbre             :as log]))
+  (:require [pseudovision.db.media          :as db]
+            [pseudovision.media.scanner     :as scanner]
+            [pseudovision.media.jellyfin    :as jellyfin]
+            [pseudovision.media.connection  :as conn]
+            [taoensso.timbre                :as log]))
 
 (defn list-sources-handler [{:keys [db]}]
   (fn [_req] {:status 200 :body (db/list-media-sources db)}))
 
 (defn create-source-handler [{:keys [db]}]
   (fn [req]
-    {:status 201 :body (db/create-media-source! db (:body-params req))}))
+    (let [params (:body-params req)
+          config (conn/->connection-config params)
+          attrs  (-> (select-keys params [:name :kind :path_replacements])
+                     (cond-> config (assoc :connection_config config)))]
+      {:status 201 :body (db/create-media-source! db attrs)})))
 
 (defn list-libraries-handler [{:keys [db]}]
   (fn [req]
