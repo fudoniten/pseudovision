@@ -29,7 +29,7 @@ clojure -M:run
 clojure -M:run -c /path/to/my-config.edn
 ```
 
-The server starts on port 8080 (configurable via `PSEUDOVISION_PORT`).
+The server starts on port 8080 (configurable via `PSEUDOVISION_HTTP_PORT`).
 
 ---
 
@@ -37,14 +37,15 @@ The server starts on port 8080 (configurable via `PSEUDOVISION_PORT`).
 
 Copy `resources/config.edn` and override with environment variables:
 
-| Variable              | Default                                         | Description                    |
-|-----------------------|-------------------------------------------------|--------------------------------|
-| `PSEUDOVISION_PORT`   | `8080`                                          | HTTP server port               |
-| `PSEUDOVISION_DB_URL` | `jdbc:postgresql://localhost:5432/pseudovision` | JDBC connection URL            |
-| `PSEUDOVISION_DB_USER`| `pseudovision`                                  | Database username              |
-| `PSEUDOVISION_DB_PASS`| `pseudovision`                                  | Database password              |
-| `FFMPEG_PATH`         | `/usr/bin/ffmpeg`                               | ffmpeg binary                  |
-| `FFPROBE_PATH`        | `/usr/bin/ffprobe`                              | ffprobe binary                 |
+| Variable                   | Default                                         | Description                    |
+|----------------------------|-------------------------------------------------|--------------------------------|
+| `PSEUDOVISION_HTTP_PORT`   | `8080`                                          | HTTP server port               |
+| `PSEUDOVISION_LOG_LEVEL`   | `info`                                          | Log level (trace/debug/info/warn/error) |
+| `PSEUDOVISION_DB_URL`      | `jdbc:postgresql://localhost:5432/pseudovision` | JDBC connection URL            |
+| `PSEUDOVISION_DB_USER`     | `pseudovision`                                  | Database username              |
+| `PSEUDOVISION_DB_PASS`     | `pseudovision`                                  | Database password              |
+| `FFMPEG_PATH`              | `/usr/bin/ffmpeg`                               | ffmpeg binary                  |
+| `FFPROBE_PATH`             | `/usr/bin/ffprobe`                              | ffprobe binary                 |
 
 ---
 
