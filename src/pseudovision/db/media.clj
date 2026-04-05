@@ -23,14 +23,16 @@
                    (:kind attrs)                (update :kind #(sql-util/->pg-enum "media_source_kind" %))
                    (:connection-config attrs)   (update :connection-config sql-util/->jsonb)
                    (:path-replacements attrs)   (update :path-replacements sql-util/->jsonb))
-        result   (db/execute-one! ds (-> (h/insert-into :media-sources)
-                                         (h/values [prepared])
-                                         sql/format))]
-    (log/info "Created media source"
-              {:source-id (:media-sources/id result)
-               :name      (:name attrs)
-               :kind      (:kind attrs)})
-    result))
+        sql-map  (-> (h/insert-into :media-sources)
+                     (h/values [prepared])
+                     sql/format)]
+    (log/info "Creating media source" {:attrs attrs :prepared prepared :sql sql-map})
+    (let [result (db/execute-one! ds sql-map)]
+      (log/info "Created media source"
+                {:source-id (:media-sources/id result)
+                 :name      (:name attrs)
+                 :kind      (:kind attrs)})
+      result)))
 
 (defn list-libraries [ds]
   (db/query ds (-> (h/select :l.* :ms.name :ms.kind)
