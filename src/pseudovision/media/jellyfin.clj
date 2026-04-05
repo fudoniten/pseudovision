@@ -9,28 +9,35 @@
      3. Upsert media_items using remote_key (Jellyfin item ID)
      4. Skip unchanged items via remote_etag (Jellyfin Etag header)
      5. Upsert media_versions, media_files, media_streams, and metadata"
-  (:require [clj-http.client       :as http]
-            [cheshire.core         :as json]
-            [clojure.string        :as str]
-            [next.jdbc             :as jdbc]
-            [honey.sql             :as sql]
-            [honey.sql.helpers     :as h]
-            [pseudovision.db.media :as db]
-            [taoensso.timbre       :as log])
+  (:require [clj-http.client              :as http]
+            [cheshire.core               :as json]
+            [clojure.string              :as str]
+            [next.jdbc                   :as jdbc]
+            [honey.sql                   :as sql]
+            [honey.sql.helpers           :as h]
+            [pseudovision.db.media       :as db]
+            [pseudovision.media.connection :as conn]
+            [taoensso.timbre             :as log])
   (:import [java.security MessageDigest]
            [java.util HexFormat]))
 
 ;; ---------------------------------------------------------------------------
-;; Jellyfin API client
+;; Connection config multimethods
 ;; ---------------------------------------------------------------------------
 
-(defn- active-connection
-  "Returns the first active connection URI from a media source's connection_config,
-   or the first connection if none is marked active."
-  [connection-config]
-  (let [conns (:connections connection-config)]
-    (or (:uri (first (filter :is_active conns)))
-        (:uri (first conns)))))
+(defmethod conn/->connection-config "jellyfin" [params]
+  {:api_key     (:api_key params)
+   :connections (or (:connections params) [])})
+
+(defmethod conn/<-connection-config "jellyfin" [source]
+  (let [config (or (:media-sources/connection_config source)
+                   (:connection_config source))]
+    {:base-url (conn/active-uri (:connections config))
+     :api-key  (:api_key config)}))
+
+;; ---------------------------------------------------------------------------
+;; Jellyfin API client
+;; ---------------------------------------------------------------------------
 
 (defn- jellyfin-get
   "Performs an authenticated GET against the Jellyfin server.
@@ -369,22 +376,13 @@
     "books"        "other_videos"
     "other_videos"))
 
-(defn- source-config
-  "Parses and returns the connection_config map from a media_sources row."
-  [source]
-  (let [raw (or (:media-sources/connection_config source)
-                (:connection_config source))]
-    (if (string? raw) (json/parse-string raw true) raw)))
-
 (defn discover-libraries!
   "Connects to a Jellyfin source and returns a seq of library attribute maps
    (`:name`, `:kind`, `:external-id`, `:should-sync`) ready to pass to
    `db/create-library!` after associng `:media-source-id`.
    Throws ex-info if the server is unreachable or misconfigured."
   [source]
-  (let [config   (source-config source)
-        base-url (active-connection config)
-        api-key  (:api_key config)]
+  (let [{:keys [base-url api-key]} (conn/<-connection-config source)]
     (when-not base-url
       (throw (ex-info "No active connection for Jellyfin source"
                       {:source-id (or (:media-sources/id source) (:id source))})))
@@ -408,12 +406,10 @@
 
 (defn scan-library!
   "Scans a single library from a Jellyfin media source and upserts all items.
-   `source` must have :connection_config with an api_key and connections list.
+   `source` must be a media_sources row with connection_config.
    `library` must have :external_id set to the Jellyfin library ID."
   [db source library]
-  (let [config   (source-config source)
-        base-url (active-connection config)
-        api-key  (:api_key config)]
+  (let [{:keys [base-url api-key]} (conn/<-connection-config source)]
     (when-not base-url
       (throw (ex-info "No active connection for Jellyfin source"
                       {:source-id (:media-sources/id source)})))
