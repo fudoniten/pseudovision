@@ -27,8 +27,6 @@
 
 (defmethod ig/init-key :pseudovision/db [_ opts]
   (let [ds (db/make-datasource opts)]
-    (log/info "Running pending migrations…")
-    (db/migrate! ds)
     (log/info "Database ready")
     ds))
 
