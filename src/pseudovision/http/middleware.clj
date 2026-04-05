@@ -13,11 +13,15 @@
   "Parses application/json request bodies into Clojure maps with kebab-case keys."
   [handler]
   (fn [req]
-    (if (some-> (get-in req [:headers "content-type"])
-                (str/starts-with? "application/json"))
-      (let [body (-> req :body slurp (json/parse-string csk/->kebab-case-keyword))]
-        (handler (assoc req :body-params body)))
-      (handler req))))
+    (let [content-type (get-in req [:headers "content-type"])]
+      (if (some-> content-type (str/starts-with? "application/json"))
+        (let [body (-> req :body slurp (json/parse-string csk/->kebab-case-keyword))]
+          (handler (assoc req :body-params body)))
+        (do
+          (log/debug "Skipping JSON body parsing"
+                     {:content-type content-type
+                      :headers (:headers req)})
+          (handler req))))))
 
 (defn wrap-json-response
   "Serialises Clojure collection response bodies (maps, vectors, lists) to JSON
