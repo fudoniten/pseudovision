@@ -36,8 +36,11 @@
 (defn create-library-handler [{:keys [db]}]
   (fn [req]
     (let [source-id (parse-long (get-in req [:path-params :id]))
-          attrs     (assoc (:body-params req) :media-source-id source-id)]
-      {:status 201 :body (db/create-library! db attrs)})))
+          params    (:body-params req)
+          attrs     (assoc params :media-source-id source-id)]
+      (if (and (:name params) (:kind params))
+        {:status 201 :body (db/create-library! db attrs)}
+        {:status 400 :body {:error "Missing required fields: name and kind"}}))))
 
 (defn trigger-scan-handler [{:keys [db media ffmpeg]}]
   (fn [req]
