@@ -243,25 +243,25 @@
   "Looks up the parent media_item by its Jellyfin ID (remote_key) in our DB."
   [tx library-path-id parent-jf-id]
   (when parent-jf-id
-    (jdbc/execute-one! tx
-                       (sql/format
-                        (-> (h/select :id)
-                            (h/from :media-items)
-                            (h/where [:and
-                                      [:= :library-path-id library-path-id]
-                                      [:= :remote-key parent-jf-id]]))))))
+    (db/query-one tx
+                  (-> (h/select :id)
+                      (h/from :media-items)
+                      (h/where [:and
+                                [:= :library-path-id library-path-id]
+                                [:= :remote-key parent-jf-id]])
+                      sql/format))))
 
 (defn- item-unchanged?
   "Returns true if the item already exists with the same etag."
   [tx library-path-id jf-id etag]
-  (let [existing (jdbc/execute-one! tx
-                                    (sql/format
-                                     (-> (h/select :id :remote-etag)
-                                         (h/from :media-items)
-                                         (h/where [:and
-                                                   [:= :library-path-id library-path-id]
-                                                   [:= :remote-key jf-id]]))))]
-    (and existing (= (:media-items/remote_etag existing) etag))))
+  (let [existing (db/query-one tx
+                               (-> (h/select :id :remote-etag)
+                                   (h/from :media-items)
+                                   (h/where [:and
+                                             [:= :library-path-id library-path-id]
+                                             [:= :remote-key jf-id]])
+                                   sql/format))]
+    (and existing (= (:media-items/remote-etag existing) etag))))
 
 (defn- upsert-version-and-file!
   "Upserts a media version and its backing file for an item with a physical path."
@@ -407,7 +407,7 @@
 
                                                       (some? (:IndexNumber item))
                                                       (assoc :position (:IndexNumber item))))
-                    item-id  (:media-items/id item-row)]
+                    item-id  (:id item-row)]
                 (when item-id
                   (upsert-version-and-file! tx item-id item)
                   (upsert-metadata! tx item-id item kind))
