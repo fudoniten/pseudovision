@@ -69,7 +69,13 @@
    :db        {:datasource ds}})
 
 (defn migrate! [ds]
-  (migratus/migrate (migratus-config ds)))
+  (let [cfg     (migratus-config ds)
+        pending (migratus/pending-list cfg)]
+    (if (seq pending)
+      (log/info "Pending migrations to apply:" (mapv :id pending))
+      (log/info "No pending migrations"))
+    (migratus/migrate cfg)
+    (log/info "Migrations complete")))
 
 (defn rollback! [ds]
   (migratus/rollback (migratus-config ds)))
