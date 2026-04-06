@@ -14,6 +14,7 @@
             [cheshire.core     :as json]
             [next.jdbc         :as jdbc]
             [pseudovision.db.media :as db]
+            [pseudovision.util.sql :as sql-util]
             [taoensso.timbre   :as log])
   (:import [java.io File]
            [java.nio.file Files Path Paths]
@@ -109,41 +110,62 @@
    (:streams probe)))
 
 ;; ---------------------------------------------------------------------------
-;; Item upsert
+;; Batch upsert
 ;; ---------------------------------------------------------------------------
 
-(defn- upsert-item!
-  "Upserts a media item, version, and file record for a discovered file.
-   Runs inside a transaction; skips version/file upsert when ffprobe returned nil."
-  [db library-path file media-kind probe]
-  (let [path       (.getAbsolutePath ^File file)
-        hash       (path-hash path)
-        item-kind  (case media-kind
-                     :video :movie       ;; simplification — NFO/parent dir needed for shows
-                     :audio :song
-                     :image :image
-                     :other-video)]
-    (jdbc/with-transaction [tx db]
-      (let [item (db/upsert-media-item! tx
-                                        {:kind           (name item-kind)
-                                         :state          "normal"
-                                         :library-path-id (:library-paths/id library-path)})]
-        (when probe
-          (let [ver (jdbc/execute-one! tx
-                                       (-> (honey.sql.helpers/insert-into :media-versions)
-                                           (honey.sql.helpers/values [(assoc (probe->version probe)
-                                                                             :media-item-id (:media-items/id item))])
-                                           honey.sql/format)
-                                       {:return-keys true})]
-            (jdbc/execute-one! tx
-                               (-> (honey.sql.helpers/insert-into :media-files)
-                                   (honey.sql.helpers/values [{:media-version-id (:media-versions/id ver)
-                                                               :path              path
-                                                               :path-hash         hash}])
-                                   (honey.sql.helpers/on-conflict :path-hash)
-                                   (honey.sql.helpers/do-nothing)
-                                   honey.sql/format))))
-        item))))
+(def ^:private batch-size 100)
+
+(defn- upsert-batch!
+  "Bulk-upserts a batch of media items in a single transaction.
+   `batch` is a seq of {:file File :kind keyword :probe map-or-nil}.
+   Inserts media_items for all entries, then media_versions and media_files
+   only for entries where ffprobe succeeded."
+  [db library-path batch]
+  (jdbc/with-transaction [tx db]
+    ;; 1. Bulk-insert media_items
+    (let [item-rows (mapv (fn [{:keys [kind]}]
+                            (let [item-kind (case kind
+                                              :video :movie
+                                              :audio :song
+                                              :image :image
+                                              :other-video)]
+                              {:kind            (sql-util/->pg-enum "media_item_kind" (name item-kind))
+                               :state           (sql-util/->pg-enum "media_item_state" "normal")
+                               :library-path-id (:library-paths/id library-path)}))
+                          batch)
+          db-items  (jdbc/execute! tx
+                                   (-> (honey.sql.helpers/insert-into :media-items)
+                                       (honey.sql.helpers/values item-rows)
+                                       honey.sql/format)
+                                   {:return-keys true})
+          ;; Keep only entries that have probe data, paired with their inserted item
+          probed    (filterv (fn [[{:keys [probe]} _]] (some? probe))
+                             (map vector batch db-items))]
+
+      ;; 2. Bulk-insert media_versions for entries with probe data
+      (when (seq probed)
+        (let [ver-rows (mapv (fn [[{:keys [probe]} db-item]]
+                               (assoc (probe->version probe)
+                                      :media-item-id (:media-items/id db-item)))
+                             probed)
+              db-vers  (jdbc/execute! tx
+                                      (-> (honey.sql.helpers/insert-into :media-versions)
+                                          (honey.sql.helpers/values ver-rows)
+                                          honey.sql/format)
+                                      {:return-keys true})
+              ;; 3. Bulk-insert media_files
+              file-rows (mapv (fn [[{:keys [file]} _] db-ver]
+                                (let [path (.getAbsolutePath ^File file)]
+                                  {:media-version-id (:media-versions/id db-ver)
+                                   :path             path
+                                   :path-hash        (path-hash path)}))
+                              probed db-vers)]
+          (jdbc/execute! tx
+                         (-> (honey.sql.helpers/insert-into :media-files)
+                             (honey.sql.helpers/values file-rows)
+                             (honey.sql.helpers/on-conflict :path-hash)
+                             (honey.sql.helpers/do-nothing)
+                             honey.sql/format)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Public: scan a library
@@ -159,13 +181,18 @@
           (log/warn "Library path is not a directory" {:path (.getPath root)})
           (do
             (log/info "Scanning" {:path (.getPath root)})
-            (let [files (walk-directory root)]
-              (doseq [f files]
-                (when-let [kind (media-kind f media-config)]
-                  (let [probe (run-ffprobe (.getAbsolutePath f) ffmpeg-config)]
-                    (try
-                      (upsert-item! db lp f kind probe)
-                      (catch Exception e
-                        (log/error e "Failed to upsert item" {:path (.getAbsolutePath f)}))))))
+            (let [files       (walk-directory root)
+                  media-files (keep (fn [f]
+                                      (when-let [kind (media-kind f media-config)]
+                                        {:file  f
+                                         :kind  kind
+                                         :probe (run-ffprobe (.getAbsolutePath f) ffmpeg-config)}))
+                                    files)]
+              (doseq [batch (partition-all batch-size media-files)]
+                (try
+                  (upsert-batch! db lp batch)
+                  (catch Exception e
+                    (log/error e "Failed to upsert batch"
+                               {:paths (mapv #(.getAbsolutePath ^File (:file %)) batch)}))))
               (log/info "Scan complete" {:path  (.getPath root)
                                          :files (count files)}))))))))
