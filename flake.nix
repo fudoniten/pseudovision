@@ -45,13 +45,21 @@
               in [ "${pseudovision}/bin/pseudovision" ];
           };
 
-          migrationContainer = helpers.deployContainers {
+          deployMigrationContainer = helpers.deployContainers {
             name = "pseudovision-migratus";
             repo = "registry.kube.sea.fudo.link";
             tags = [ "latest" ];
             entrypoint =
               let migratus = self.packages."${system}".migratusRunner;
               in [ "${migratus}/bin/migratus-runner" ];
+          };
+
+          deployContainersScript = pkgs.writeShellApplication {
+            name = "deployContainers";
+            text = ''
+              ${self.packages."${system}".deployContainer}/bin/deployContainers
+              ${self.packages."${system}".deployMigrationContainer}/bin/deployContainers
+            '';
           };
         };
 
@@ -70,11 +78,17 @@
               let deployContainer = self.packages."${system}".deployContainer;
               in "${deployContainer}/bin/deployContainers";
           };
-          migrationContainer = {
+          deployMigrationContainer = {
             type = "app";
             program = let
-              migrationContainer = self.packages."${system}".migrationContainer;
-            in "${migrationContainer}/bin/deployContainers";
+              deployMigrationContainer = self.packages."${system}".deployMigrationContainer;
+            in "${deployMigrationContainer}/bin/deployContainers";
+          };
+          deployContainers = {
+            type = "app";
+            program = let
+              deployContainersScript = self.packages."${system}".deployContainersScript;
+            in "${deployContainersScript}/bin/deployContainers";
           };
         };
 
