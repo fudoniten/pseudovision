@@ -4,6 +4,7 @@
             [next.jdbc.connection :as conn]
             [next.jdbc.result-set :as rs]
             [cheshire.core   :as json]
+            [camel-snake-kebab.core :as csk]
             [taoensso.timbre :as log]
             [aero.core       :as aero])
   (:import [com.zaxxer.hikari HikariDataSource]
@@ -31,11 +32,11 @@
   PGobject
   (read-column-by-label [v _]
     (if (= "jsonb" (.getType v))
-      (json/parse-string (.getValue v) true)
+      (json/parse-string (.getValue v) csk/->kebab-case-keyword)
       (.getValue v)))
   (read-column-by-index [v _ _]
     (if (= "jsonb" (.getType v))
-      (json/parse-string (.getValue v) true)
+      (json/parse-string (.getValue v) csk/->kebab-case-keyword)
       (.getValue v))))
 
 ;; ---------------------------------------------------------------------------
