@@ -42,20 +42,30 @@
         {:status 201 :body (db/create-library! db attrs)}
         {:status 400 :body {:error "Missing required fields: name and kind"}}))))
 
+(defn list-library-items-handler [{:keys [db]}]
+  (fn [req]
+    (let [library-id (parse-long (get-in req [:path-params :id]))]
+      {:status 200 :body (db/list-items-for-library db library-id)})))
+
 (defn trigger-scan-handler [{:keys [db media ffmpeg]}]
   (fn [req]
     (let [library-id (parse-long (get-in req [:path-params :id]))
           library    (db/get-library db library-id)]
       (if library
-        (let [source (db/get-media-source db (:libraries/media_source_id library))
+        (let [source (db/get-media-source db (:libraries/media-source-id library))
               kind   (keyword (:media-sources/kind source))]
+          (log/info "Triggering library scan" {:library-id library-id
+                                               :library-name (:libraries/name library)
+                                               :kind kind})
           ;; Run the scan asynchronously so the HTTP request returns quickly.
           (future
             (try
+              (log/info "Starting library scan" {:library-id library-id :kind kind})
               (case kind
                 :jellyfin (jellyfin/scan-library! db source library)
                 ;; Default to local filesystem scanner for :local and others
                 (scanner/scan-library! db media ffmpeg library))
+              (log/info "Library scan completed" {:library-id library-id :kind kind})
               (catch Exception e
                 (log/error e "Library scan failed" {:library-id library-id
                                                     :kind       kind}))))

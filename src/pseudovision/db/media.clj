@@ -106,6 +106,14 @@
                    (h/where [:= :library-path-id library-path-id])
                    sql/format)))
 
+(defn list-items-for-library [ds library-id]
+  (db/query ds (-> (h/select :mi.*)
+                   (h/from [:media-items :mi])
+                   (h/join [:library-paths :lp] [:= :lp.id :mi.library-path-id])
+                   (h/where [:= :lp.library-id library-id])
+                   (h/order-by :mi.id)
+                   sql/format)))
+
 (defn list-items-for-collection
   "Returns all media items in a manual collection, in playback order."
   [ds collection-id]
