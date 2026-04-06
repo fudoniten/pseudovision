@@ -163,21 +163,13 @@
 
 (defn- item-parent-jf-id
   "Returns the Jellyfin ID of an item's logical parent.
-   Episodes use SeasonId (not ParentId, which is unreliable in recursive scans).
-   Seasons use SeriesId. Other types fall back to ParentId."
+   Episodes use SeasonId, falling back to SeriesId when the episode has no Season
+   (e.g. flat Jellyfin libraries). Seasons use SeriesId. Other types use ParentId."
   [item kind]
   (let [result (case kind
-                 :episode (or (:SeasonId item) (:ParentId item))
+                 :episode (or (:SeasonId item) (:SeriesId item) (:ParentId item))
                  :season  (or (:SeriesId item) (:ParentId item))
                  (:ParentId item))]
-    (when (and (nil? result) (needs-parent? kind))
-      (log/debug "item-parent-jf-id: no parent ID found — dumping item keys"
-                 {:id       (:Id item)
-                  :type     (:Type item)
-                  :SeasonId (:SeasonId item)
-                  :SeriesId (:SeriesId item)
-                  :ParentId (:ParentId item)
-                  :all-keys (keys item)}))
     result))
 
 ;; ---------------------------------------------------------------------------
@@ -230,7 +222,10 @@
   [item]
   (let [streams (:MediaStreams item [])
         video   (first (filter #(= "Video" (:Type %)) streams))]
-    {:duration             (ticks->duration (:RunTimeTicks item))
+    {:duration             (-> (:RunTimeTicks item)
+                               ticks->duration
+                               sql-util/duration->pg-interval
+                               sql-util/->pg-interval)
      :width                (or (:Width video) 0)
      :height               (or (:Height video) 0)
      :r-frame-rate         (some-> (:RealFrameRate video) str)
@@ -266,21 +261,13 @@
   "Looks up the parent media_item by its Jellyfin ID (remote_key) in our DB."
   [tx library-path-id parent-jf-id]
   (when parent-jf-id
-    (let [row (db/query-one tx
-                            (-> (h/select :id)
-                                (h/from :media-items)
-                                (h/where [:and
-                                          [:= :library-path-id library-path-id]
-                                          [:= :remote-key parent-jf-id]])
-                                sql/format))]
-      (log/debug "find-parent-item result"
-                 {:parent-jf-id     parent-jf-id
-                  :library-path-id  library-path-id
-                  :row              row
-                  :row-keys         (some-> row keys)
-                  :extracted-id     (:media-items/id row)
-                  :unqualified-id   (:id row)})
-      row)))
+    (db/query-one tx
+                  (-> (h/select :id)
+                      (h/from :media-items)
+                      (h/where [:and
+                                [:= :library-path-id library-path-id]
+                                [:= :remote-key parent-jf-id]])
+                      sql/format))))
 
 (defn- item-unchanged?
   "Returns true if the item already exists with the same etag."
