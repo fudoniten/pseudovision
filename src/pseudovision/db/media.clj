@@ -135,21 +135,33 @@
 (defn upsert-media-item! [ds attrs]
   (let [prepared (cond-> attrs
                    (:kind attrs)  (update :kind #(sql-util/->pg-enum "media_item_kind" %))
-                   (:state attrs) (update :state #(sql-util/->pg-enum "media_item_state" %)))
-        sql-vec  (-> (h/insert-into :media-items)
-                     (h/values [prepared])
-                     (h/on-conflict :library-path-id :remote-key)
-                     (h/do-update-set :state :remote-etag :position)
-                     sql/format)]
-    (log/info "Media item upsert SQL" {:sql (first sql-vec)})
-    (let [result (db/execute-one! ds sql-vec)]
-      (log/info "Upserted media item"
-                {:media-item-id   (:media-items/id result)
-                 :kind            (:kind attrs)
-                 :library-path-id (:library-path-id attrs)
-                 :remote-key      (:remote-key attrs)
-                 :parent-id       (:parent-id attrs)})
-      result)))
+                   (:state attrs) (update :state #(sql-util/->pg-enum "media_item_state" %)))]
+    (if (:remote-key attrs)
+      ;; For items with remote_key, use ON CONFLICT
+      (let [sql-vec  (-> (h/insert-into :media-items)
+                         (h/values [prepared])
+                         (h/on-conflict :library-path-id :remote-key)
+                         (h/do-update-set :state :remote-etag :position)
+                         sql/format)]
+        (log/info "Media item upsert SQL (with remote-key)" {:sql (first sql-vec)})
+        (let [result (db/execute-one! ds sql-vec)]
+          (log/info "Upserted media item"
+                    {:media-item-id   (:media-items/id result)
+                     :kind            (:kind attrs)
+                     :library-path-id (:library-path-id attrs)
+                     :remote-key      (:remote-key attrs)
+                     :parent-id       (:parent-id attrs)})
+          result))
+      ;; For items without remote_key, just insert
+      (let [result (db/execute-one! ds (-> (h/insert-into :media-items)
+                                           (h/values [prepared])
+                                           sql/format))]
+        (log/info "Inserted media item (no remote-key)"
+                  {:media-item-id   (:media-items/id result)
+                   :kind            (:kind attrs)
+                   :library-path-id (:library-path-id attrs)
+                   :parent-id       (:parent-id attrs)})
+        result))))
 
 ;; ---------------------------------------------------------------------------
 ;; Collections
