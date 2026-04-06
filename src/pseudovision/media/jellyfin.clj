@@ -10,7 +10,6 @@
      4. Skip unchanged items via remote_etag (Jellyfin Etag header)
      5. Upsert media_versions, media_files, media_streams, and metadata"
   (:require [clj-http.client              :as http]
-            [cheshire.core               :as json]
             [clojure.string              :as str]
             [next.jdbc                   :as jdbc]
             [honey.sql                   :as sql]

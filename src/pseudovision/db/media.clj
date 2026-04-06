@@ -9,6 +9,8 @@
 ;; Media sources and libraries
 ;; ---------------------------------------------------------------------------
 
+(def query-one db/query-one)
+
 (defn list-media-sources [ds]
   (db/query ds (-> (h/select :*) (h/from :media-sources) sql/format)))
 
