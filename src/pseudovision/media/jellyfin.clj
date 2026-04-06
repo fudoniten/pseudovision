@@ -243,13 +243,21 @@
   "Looks up the parent media_item by its Jellyfin ID (remote_key) in our DB."
   [tx library-path-id parent-jf-id]
   (when parent-jf-id
-    (db/query-one tx
-                  (-> (h/select :id)
-                      (h/from :media-items)
-                      (h/where [:and
-                                [:= :library-path-id library-path-id]
-                                [:= :remote-key parent-jf-id]])
-                      sql/format))))
+    (let [row (db/query-one tx
+                            (-> (h/select :id)
+                                (h/from :media-items)
+                                (h/where [:and
+                                          [:= :library-path-id library-path-id]
+                                          [:= :remote-key parent-jf-id]])
+                                sql/format))]
+      (log/debug "find-parent-item result"
+                 {:parent-jf-id     parent-jf-id
+                  :library-path-id  library-path-id
+                  :row              row
+                  :row-keys         (some-> row keys)
+                  :extracted-id     (:media-items/id row)
+                  :unqualified-id   (:id row)})
+      row)))
 
 (defn- item-unchanged?
   "Returns true if the item already exists with the same etag."
@@ -388,13 +396,16 @@
       (jdbc/with-transaction [tx db]
         (when-not (item-unchanged? tx library-path-id jf-id etag)
           ;; Resolve parent for hierarchical items
-          (let [parent-id (when (needs-parent? kind)
-                            (:media-items/id
-                             (find-parent-item tx library-path-id (:ParentId item))))]
+          (let [parent-row (when (needs-parent? kind)
+                             (find-parent-item tx library-path-id (:ParentId item)))
+                parent-id  (or (:media-items/id parent-row) (:id parent-row))]
             (if (and (needs-parent? kind) (nil? parent-id))
               ;; Parent not yet synced — skip for now
               (do (log/debug "Skipping item — parent not yet synced"
-                             {:id jf-id :type jf-type})
+                             {:id           jf-id
+                              :type         jf-type
+                              :parent-jf-id (:ParentId item)
+                              :parent-row   parent-row})
                   nil)
               (let [item-row (db/upsert-media-item! tx
                                                     (cond-> {:kind             (name kind)
