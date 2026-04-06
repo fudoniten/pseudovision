@@ -103,7 +103,8 @@
   "Fields to request from the Jellyfin /Items endpoint."
   (str "Path,Overview,Genres,Studios,People,MediaStreams,Chapters,"
        "DateCreated,ProviderIds,OfficialRating,CommunityRating,"
-       "ProductionYear,PremiereDate,SortName,MediaSources"))
+       "ProductionYear,PremiereDate,SortName,MediaSources,"
+       "SeasonId,SeriesId"))
 
 (def ^:private include-item-types
   "Jellyfin item types to include when scanning."
@@ -157,6 +158,16 @@
   "Returns true for item kinds that require a parent_id in the schema."
   [kind]
   (contains? #{:season :episode :music_video} kind))
+
+(defn- item-parent-jf-id
+  "Returns the Jellyfin ID of an item's logical parent.
+   Episodes use SeasonId (not ParentId, which is unreliable in recursive scans).
+   Seasons use SeriesId. Other types fall back to ParentId."
+  [item kind]
+  (case kind
+    :episode    (or (:SeasonId item) (:ParentId item))
+    :season     (or (:SeriesId item) (:ParentId item))
+    (:ParentId item)))
 
 ;; ---------------------------------------------------------------------------
 ;; Stream mapping
@@ -395,15 +406,16 @@
       (jdbc/with-transaction [tx db]
         (when-not (item-unchanged? tx library-path-id jf-id etag)
           ;; Resolve parent for hierarchical items
-          (let [parent-row (when (needs-parent? kind)
-                             (find-parent-item tx library-path-id (:ParentId item)))
-                parent-id  (or (:media-items/id parent-row) (:id parent-row))]
+          (let [parent-jf-id (item-parent-jf-id item kind)
+                parent-row   (when (needs-parent? kind)
+                               (find-parent-item tx library-path-id parent-jf-id))
+                parent-id    (or (:media-items/id parent-row) (:id parent-row))]
             (if (and (needs-parent? kind) (nil? parent-id))
               ;; Parent not yet synced — skip for now
               (do (log/debug "Skipping item — parent not yet synced"
                              {:id           jf-id
                               :type         jf-type
-                              :parent-jf-id (:ParentId item)
+                              :parent-jf-id parent-jf-id
                               :parent-row   parent-row})
                   nil)
               (let [item-row (db/upsert-media-item! tx
