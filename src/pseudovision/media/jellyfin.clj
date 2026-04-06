@@ -16,6 +16,7 @@
             [honey.sql.helpers           :as h]
             [pseudovision.db.media       :as db]
             [pseudovision.media.connection :as conn]
+            [pseudovision.util.sql       :as sql-util]
             [taoensso.timbre             :as log])
   (:import [java.security MessageDigest]
            [java.util HexFormat]))
@@ -164,10 +165,19 @@
    Episodes use SeasonId (not ParentId, which is unreliable in recursive scans).
    Seasons use SeriesId. Other types fall back to ParentId."
   [item kind]
-  (case kind
-    :episode    (or (:SeasonId item) (:ParentId item))
-    :season     (or (:SeriesId item) (:ParentId item))
-    (:ParentId item)))
+  (let [result (case kind
+                 :episode (or (:SeasonId item) (:ParentId item))
+                 :season  (or (:SeriesId item) (:ParentId item))
+                 (:ParentId item))]
+    (when (and (nil? result) (needs-parent? kind))
+      (log/debug "item-parent-jf-id: no parent ID found — dumping item keys"
+                 {:id       (:Id item)
+                  :type     (:Type item)
+                  :SeasonId (:SeasonId item)
+                  :SeriesId (:SeriesId item)
+                  :ParentId (:ParentId item)
+                  :all-keys (keys item)}))
+    result))
 
 ;; ---------------------------------------------------------------------------
 ;; Stream mapping
@@ -200,10 +210,12 @@
 ;; ---------------------------------------------------------------------------
 
 (defn- ticks->duration
-  "Converts Jellyfin RunTimeTicks (100ns units) to a java.time.Duration."
+  "Converts Jellyfin RunTimeTicks (100ns units) to a java.time.Duration.
+   Returns Duration/ZERO when ticks is nil (e.g. for Season/Series items)."
   [ticks]
-  (when ticks
-    (java.time.Duration/ofMillis (quot ticks 10000))))
+  (if ticks
+    (java.time.Duration/ofMillis (quot ticks 10000))
+    java.time.Duration/ZERO))
 
 (defn- path-hash
   "SHA-256 hex of a path string for deduplication."
@@ -335,7 +347,9 @@
 (defn- upsert-metadata!
   "Upserts metadata, genres, and studios for an item."
   [tx item-id item kind]
-  (let [meta-attrs (assoc (item->metadata-attrs item kind) :media-item-id item-id)]
+  (let [meta-attrs (-> (item->metadata-attrs item kind)
+                       (assoc :media-item-id item-id)
+                       (update :kind #(sql-util/->pg-enum "media_item_kind" %)))]
     (jdbc/execute-one! tx
                        (sql/format
                         (-> (h/insert-into :metadata)
