@@ -136,26 +136,11 @@
   (let [prepared (cond-> attrs
                    (:kind attrs)  (update :kind #(sql-util/->pg-enum "media_item_kind" %))
                    (:state attrs) (update :state #(sql-util/->pg-enum "media_item_state" %)))
-        ;; Check if item already exists
-        existing (when (and (:library-path-id attrs) (:remote-key attrs))
-                   (db/query-one ds (-> (h/select :id)
-                                        (h/from :media-items)
-                                        (h/where [:and
-                                                  [:= :library-path-id (:library-path-id attrs)]
-                                                  [:= :remote-key (:remote-key attrs)]])
-                                        sql/format)))
-        result   (if existing
-                   ;; Update existing item
-                   (do
-                     (db/execute-one! ds (-> (h/update :media-items)
-                                             (h/set (select-keys prepared [:state :remote-etag :position]))
-                                             (h/where [:= :id (:media-items/id existing)])
-                                             sql/format))
-                     existing)
-                   ;; Insert new item
-                   (db/execute-one! ds (-> (h/insert-into :media-items)
-                                           (h/values [prepared])
-                                           sql/format)))]
+        result   (db/execute-one! ds (-> (h/insert-into :media-items)
+                                         (h/values [prepared])
+                                         (h/on-conflict :library-path-id :remote-key)
+                                         (h/do-update-set :state :remote-etag :position)
+                                         sql/format))]
     (log/info "Upserted media item"
               {:media-item-id   (:media-items/id result)
                :kind            (:kind attrs)
