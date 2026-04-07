@@ -1,5 +1,6 @@
 (ns pseudovision.http.api.media
-  (:require [pseudovision.db.media          :as db]
+  (:require [clojure.string                 :as str]
+            [pseudovision.db.media          :as db]
             [pseudovision.media.scanner     :as scanner]
             [pseudovision.media.jellyfin    :as jellyfin]
             [pseudovision.media.connection  :as conn]
@@ -42,10 +43,28 @@
         {:status 201 :body (db/create-library! db attrs)}
         {:status 400 :body {:error "Missing required fields: name and kind"}}))))
 
+(defn- parse-attrs
+  "Splits a comma-separated attrs string into a seq of trimmed strings, or
+   returns nil if the input is blank/nil."
+  [s]
+  (when (not (str/blank? s))
+    (->> (str/split s #",")
+         (map str/trim)
+         (remove str/blank?)
+         seq)))
+
 (defn list-library-items-handler [{:keys [db]}]
   (fn [req]
-    (let [library-id (parse-long (get-in req [:path-params :id]))]
-      {:status 200 :body (db/list-items-for-library db library-id)})))
+    (let [library-id (parse-long (get-in req [:path-params :id]))
+          qp         (:query-params req)
+          attrs      (parse-attrs (get qp "attrs"))
+          item-type  (not-empty (get qp "type"))
+          parent-str (get qp "parent-id")
+          opts       (cond-> {}
+                       attrs                    (assoc :attrs attrs)
+                       item-type                (assoc :type item-type)
+                       (contains? qp "parent-id") (assoc :parent-id (some-> parent-str parse-long)))]
+      {:status 200 :body (db/list-media-items db library-id opts)})))
 
 (defn trigger-scan-handler [{:keys [db media ffmpeg]}]
   (fn [req]

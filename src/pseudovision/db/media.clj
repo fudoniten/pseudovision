@@ -94,6 +94,63 @@
 ;; Media items
 ;; ---------------------------------------------------------------------------
 
+(def ^:private item-attr->col
+  "Maps attribute keyword → HoneySQL select expression."
+  {:id              :mi.id
+   :kind            :mi.kind
+   :state           :mi.state
+   :parent-id       :mi.parent-id
+   :position        :mi.position
+   :library-path-id :mi.library-path-id
+   :name            [:m.title :name]
+   :year            :m.year
+   :release-date    :m.release-date
+   :plot            :m.plot
+   :tagline         :m.tagline
+   :content-rating  :m.content-rating})
+
+(def ^:private metadata-attrs
+  "Attributes that require a LEFT JOIN with the metadata table."
+  #{:name :year :release-date :plot :tagline :content-rating})
+
+(def ^:private default-item-attrs [:id :name])
+
+(defn list-media-items
+  "List media items in a library with optional attribute selection and filtering.
+
+   opts:
+   - :attrs     - seq of attribute name strings/keywords to include
+                  (default: [:id :name]). Special value: :child-count adds a
+                  correlated subquery counting direct children of each item.
+   - :type      - media_item_kind keyword or string to filter by (e.g. :movie)
+   - :parent-id - when present in opts (even if nil), adds a WHERE clause on
+                  parent_id; pass an integer to list children of that item."
+  [ds library-id opts]
+  (let [attrs       (mapv keyword (or (seq (:attrs opts)) default-item-attrs))
+        need-meta?  (some metadata-attrs attrs)
+        need-count? (some #{:child-count} attrs)
+        col-attrs   (remove #{:child-count} attrs)
+        select-cols (cond-> (mapv item-attr->col (filter item-attr->col col-attrs))
+                      need-count?
+                      (conj [{:select [[:%count.*]]
+                              :from   [[:media-items :ch]]
+                              :where  [:= :ch.parent-id :mi.id]}
+                             :child-count]))
+        base        (-> (apply h/select select-cols)
+                        (h/from [:media-items :mi])
+                        (h/join [:library-paths :lp] [:= :lp.id :mi.library-path-id])
+                        (h/where [:= :lp.library-id library-id]))
+        with-meta   (cond-> base
+                      need-meta?
+                      (h/left-join [:metadata :m] [:= :m.media-item-id :mi.id]))
+        with-type   (cond-> with-meta
+                      (:type opts)
+                      (h/where [:= :mi.kind (sql-util/->pg-enum "media_item_kind" (name (:type opts)))]))
+        with-parent (cond-> with-type
+                      (contains? opts :parent-id)
+                      (h/where [:= :mi.parent-id (:parent-id opts)]))]
+    (db/query ds (-> with-parent (h/order-by :mi.id) sql/format))))
+
 (defn get-media-item [ds id]
   (db/query-one ds (-> (h/select :mi.* :m.title :m.year :m.release-date
                                  :m.plot :m.content-rating)
