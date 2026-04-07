@@ -142,6 +142,28 @@
           probed    (filterv (fn [[{:keys [probe]} _]] (some? probe))
                              (map vector batch db-items))]
 
+      ;; 1b. Bulk-insert minimal metadata rows so items have a name
+      (let [meta-rows (mapv (fn [{:keys [file kind]} db-item]
+                              (let [item-kind (case kind
+                                               :video :movie
+                                               :audio :song
+                                               :image :image
+                                               :movie)
+                                    fname     (.getName ^File file)
+                                    title     (let [dot (.lastIndexOf ^String fname ".")]
+                                                (if (pos? dot) (subs fname 0 dot) fname))]
+                                {:media-item-id (or (:media-items/id db-item)
+                                                    (:media_items/id db-item))
+                                 :kind          (sql-util/->pg-enum "media_item_kind" (name item-kind))
+                                 :title         title}))
+                            batch db-items)]
+        (jdbc/execute! tx
+                       (-> (honey.sql.helpers/insert-into :metadata)
+                           (honey.sql.helpers/values meta-rows)
+                           (honey.sql.helpers/on-conflict :media-item-id)
+                           (honey.sql.helpers/do-update-set :title)
+                           honey.sql/format)))
+
       ;; 2. Bulk-insert media_versions for entries with probe data
       (when (seq probed)
         (let [ver-rows (mapv (fn [[{:keys [probe]} db-item]]
