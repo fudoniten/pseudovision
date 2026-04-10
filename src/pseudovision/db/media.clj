@@ -159,6 +159,22 @@
                        (h/where [:= :mi.id id])
                        sql/format)))
 
+(defn get-media-item-with-source
+  "Returns a media item joined to its media source, including the source kind
+   and connection_config needed to construct a playback URL."
+  [ds id]
+  (db/query-one ds (-> (h/select :mi.id :mi.kind :mi.state :mi.remote-key
+                                 :m.title
+                                 :ms.id   :ms.kind
+                                 :ms.connection-config)
+                       (h/from [:media-items :mi])
+                       (h/join [:library-paths :lp] [:= :lp.id :mi.library-path-id])
+                       (h/join [:libraries :l]      [:= :l.id :lp.library-id])
+                       (h/join [:media-sources :ms]  [:= :ms.id :l.media-source-id])
+                       (h/left-join [:metadata :m]   [:= :m.media-item-id :mi.id])
+                       (h/where [:= :mi.id id])
+                       sql/format)))
+
 (defn list-items-for-library-path [ds library-path-id]
   (db/query ds (-> (h/select :*)
                    (h/from :media-items)

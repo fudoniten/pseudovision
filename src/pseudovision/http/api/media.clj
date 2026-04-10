@@ -6,6 +6,26 @@
             [pseudovision.media.connection  :as conn]
             [taoensso.timbre                :as log]))
 
+;; ---------------------------------------------------------------------------
+;; Playback URL helpers
+;; ---------------------------------------------------------------------------
+
+(defmulti ^:private build-stream-url
+  "Builds a direct-play stream URL for a media item given its source kind.
+   Dispatches on the source kind string."
+  (fn [_item _conn-config kind] kind))
+
+(defmethod build-stream-url "jellyfin" [item conn-config _kind]
+  (let [base-url (conn/active-uri (:connections conn-config))
+        api-key  (:api-key conn-config)
+        item-id  (or (:media-items/remote-key item) (:remote-key item))]
+    (when (and base-url api-key item-id)
+      (str base-url "/Videos/" item-id "/stream?static=true&api_key=" api-key))))
+
+(defmethod build-stream-url :default [_item _conn-config kind]
+  (log/warn "Playback URL not supported for source kind" {:kind kind})
+  nil)
+
 (defn list-sources-handler [{:keys [db]}]
   (fn [_req] {:status 200 :body (db/list-media-sources db)}))
 
@@ -117,3 +137,30 @@
 (defn create-collection-handler [{:keys [db]}]
   (fn [req]
     {:status 201 :body (db/create-collection! db (:body-params req))}))
+
+;; ---------------------------------------------------------------------------
+;; Single item + playback URL
+;; ---------------------------------------------------------------------------
+
+(defn get-media-item-handler [{:keys [db]}]
+  (fn [req]
+    (let [item-id (parse-long (get-in req [:path-params :id]))
+          item    (db/get-media-item db item-id)]
+      (if item
+        {:status 200 :body item}
+        {:status 404 :body {:error "Media item not found"}}))))
+
+(defn get-item-stream-url-handler [{:keys [db]}]
+  (fn [req]
+    (let [item-id (parse-long (get-in req [:path-params :id]))
+          row     (db/get-media-item-with-source db item-id)]
+      (if (nil? row)
+        {:status 404 :body {:error "Media item not found"}}
+        (let [kind        (or (some-> row :media-sources/kind str) "")
+              conn-config (or (:media-sources/connection-config row)
+                              (:connection-config row))
+              url         (build-stream-url row conn-config kind)]
+          (if url
+            {:status 200 :body {:url url :kind kind}}
+            {:status 422 :body {:error (str "Playback URL not supported for source kind: " kind)}}))))))
+

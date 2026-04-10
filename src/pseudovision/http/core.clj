@@ -70,6 +70,10 @@
     {:get (med/list-library-items-handler ctx)}]
    ["/api/media/libraries/:id/scan"
     {:post (med/trigger-scan-handler ctx)}]
+   ["/api/media/items/:id"
+    {:get (med/get-media-item-handler ctx)}]
+   ["/api/media/items/:id/stream-url"
+    {:get (med/get-item-stream-url-handler ctx)}]
    ["/api/media/collections"
     {:get  (med/list-collections-handler  ctx)
      :post (med/create-collection-handler ctx)}]
