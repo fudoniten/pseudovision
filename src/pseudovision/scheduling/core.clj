@@ -18,8 +18,10 @@
      :fixed      — slot starts at a specific wall-clock time of day
      :sequential — slot starts immediately when the previous one ends"
   (:require [next.jdbc                   :as jdbc]
+            [pseudovision.db.channels    :as channels-db]
             [pseudovision.db.media       :as media-db]
             [pseudovision.db.playouts    :as playout-db]
+            [pseudovision.db.schedules   :as schedules-db]
             [pseudovision.db.collections :as col-db]
             [pseudovision.scheduling.cursor      :as cursor]
             [pseudovision.scheduling.enumerators :as enum]
@@ -282,11 +284,11 @@
         schedule-id (:playouts/schedule-id playout)
         playout-id  (:playouts/id playout)
         channel     (when channel-id
-                      (pseudovision.db.channels/get-channel db channel-id))
+                      (channels-db/get-channel db channel-id))
         schedule    (when schedule-id
-                      (pseudovision.db.schedules/get-schedule db schedule-id))
+                      (schedules-db/get-schedule db schedule-id))
         slots       (when schedule-id
-                      (pseudovision.db.schedules/list-slots db schedule-id))
+                      (schedules-db/list-slots db schedule-id))
         now         (t/now)
         horizon     (t/add-duration now (t/hours->duration
                                          (get opts :lookahead-hours 72)))]
