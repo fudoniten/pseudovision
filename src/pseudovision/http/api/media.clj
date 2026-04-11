@@ -1,10 +1,12 @@
 (ns pseudovision.http.api.media
   (:require [clojure.string                 :as str]
+            [clj-http.client                :as http]
             [pseudovision.db.media          :as db]
             [pseudovision.media.scanner     :as scanner]
             [pseudovision.media.jellyfin    :as jellyfin]
             [pseudovision.media.connection  :as conn]
-            [taoensso.timbre                :as log]))
+            [taoensso.timbre                :as log])
+  (:import [java.io InputStream]))
 
 ;; ---------------------------------------------------------------------------
 ;; Playback URL helpers
@@ -167,12 +169,52 @@
         (nil? (:url result)) {:status 422 :body {:error (str "Playback URL not supported for source kind: " (:kind result))}}
         :else            {:status 200 :body result}))))
 
+(defmulti ^:private stream-media
+  "Streams media content for a given source kind. Returns a Ring response map
+   with the proxied stream as the body."
+  (fn [_item _conn-config kind _req] kind))
+
+(defmethod stream-media "jellyfin" [item conn-config _kind req]
+  (let [base-url (conn/active-uri (:connections conn-config))
+        api-key  (:api-key conn-config)
+        item-id  (or (:media-items/remote-key item) (:remote-key item))]
+    (when (and base-url api-key item-id)
+      (let [stream-url (str base-url "/Videos/" item-id "/stream?static=true&api_key=" api-key)]
+        (log/info "Proxying stream from Jellyfin" {:url stream-url :item-id item-id})
+        (try
+          (let [response (http/get stream-url
+                                   {:as :stream
+                                    :throw-exceptions false
+                                    :headers (select-keys (:headers req) ["range" "Range"])})
+                status (:status response)]
+            (if (<= 200 status 299)
+              {:status status
+               :headers (select-keys (:headers response)
+                                     ["content-type" "content-length" "accept-ranges"
+                                      "content-range" "Content-Type" "Content-Length"
+                                      "Accept-Ranges" "Content-Range"])
+               :body (:body response)}
+              (do
+                (log/error "Failed to fetch stream from Jellyfin"
+                           {:status status :url stream-url})
+                {:status 502 :body {:error "Failed to fetch stream from upstream server"}})))
+          (catch Exception e
+            (log/error e "Exception while proxying stream" {:url stream-url})
+            {:status 502 :body {:error "Failed to proxy stream"}}))))))
+
+(defmethod stream-media :default [_item _conn-config kind _req]
+  (log/warn "Stream proxying not supported for source kind" {:kind kind})
+  {:status 422 :body {:error (str "Stream proxying not supported for source kind: " kind)}})
+
 (defn redirect-to-stream-handler [{:keys [db]}]
   (fn [req]
-    (let [item-id (parse-long (get-in req [:path-params :id]))
-          result  (resolve-stream-url db item-id)]
-      (cond
-        (nil? result)        {:status 404 :body {:error "Media item not found"}}
-        (nil? (:url result)) {:status 422 :body {:error (str "Playback URL not supported for source kind: " (:kind result))}}
-        :else                {:status 302 :headers {"Location" (:url result)} :body nil}))))
+    (let [item-id (parse-long (get-in req [:path-params :id]))]
+      (if-let [row (db/get-media-item-with-source db item-id)]
+        (let [kind        (or (some-> row :media-sources/kind str) "")
+              conn-config (or (:media-sources/connection-config row)
+                              (:connection-config row))]
+          (if (str/blank? kind)
+            {:status 404 :body {:error "Media item not found"}}
+            (stream-media row conn-config kind req)))
+        {:status 404 :body {:error "Media item not found"}}))))
 

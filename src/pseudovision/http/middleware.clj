@@ -4,7 +4,8 @@
             [cheshire.generate :as json-gen]
             [camel-snake-kebab.core :as csk]
             [taoensso.timbre   :as log])
-  (:import [java.time Instant]))
+  (:import [java.time Instant]
+           [java.io InputStream]))
 
 (json-gen/add-encoder Instant
                       (fn [inst jg] (.writeString jg (.toString inst))))
@@ -25,8 +26,8 @@
 
 (defn wrap-json-response
   "Serialises Clojure collection response bodies (maps, vectors, lists) to JSON
-   with kebab-case keys and sets Content-Type. String and nil bodies are passed 
-   through unchanged."
+   with kebab-case keys and sets Content-Type. String, nil, and InputStream bodies
+   are passed through unchanged."
   [handler]
   (fn [req]
     (let [resp (handler req)]
