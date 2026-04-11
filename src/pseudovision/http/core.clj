@@ -74,6 +74,8 @@
     {:get (med/get-media-item-handler ctx)}]
    ["/api/media/items/:id/stream-url"
     {:get (med/get-item-stream-url-handler ctx)}]
+   ["/api/media/items/:id/stream"
+    {:get (med/redirect-to-stream-handler ctx)}]
    ["/api/media/collections"
     {:get  (med/list-collections-handler  ctx)
      :post (med/create-collection-handler ctx)}]
