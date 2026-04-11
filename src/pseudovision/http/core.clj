@@ -7,7 +7,8 @@
             [pseudovision.http.api.playouts   :as pl]
             [pseudovision.http.api.epg        :as epg]
             [pseudovision.http.api.m3u        :as m3u]
-            [pseudovision.http.api.media      :as med]))
+            [pseudovision.http.api.media      :as med]
+            [pseudovision.http.api.streaming  :as streaming]))
 
 (defn- routes [ctx]
   [""
@@ -87,7 +88,10 @@
     {:get (m3u/hdhr-device-handler ctx)}]
    ["/lineup.json"    {:get (m3u/hdhr-lineup-handler ctx)}]
    ["/lineup_status.json" {:get (m3u/hdhr-status-handler ctx)}]
-   ["/iptv/channels.m3u" {:get (m3u/m3u-handler ctx)}]])
+   ["/iptv/channels.m3u" {:get (m3u/m3u-handler ctx)}]
+   
+   ;; ── Streaming ───────────────────────────────────────────────────────────
+   ["/stream/:uuid"   {:get (streaming/stream-handler ctx)}]])
 
 (defn make-handler
   "Creates the reitit Ring handler with JSON 404/405 fallback responses."
