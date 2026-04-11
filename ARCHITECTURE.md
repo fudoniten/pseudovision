@@ -2,8 +2,27 @@
 
 This document outlines the critical architectural decisions for implementing live channel streaming in Pseudovision.
 
-**Status:** 🚧 Under Discussion  
-**Last Updated:** 2026-04-10
+**Status:** ✅ Decisions Confirmed  
+**Last Updated:** 2026-04-10  
+**Confirmed By:** niten
+
+---
+
+## Decisions Summary
+
+All architectural decisions have been confirmed. The recommended approach for each decision has been accepted:
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| **1. Process Management** | ✅ Integrant Component (Option C) | Production-ready, proper lifecycle management |
+| **2. Segment Storage** | ✅ Temp Directory (Option A) | Simple, debuggable, FFmpeg-native |
+| **3. FFmpeg Invocation** | ✅ ProcessBuilder (Option B) | Non-blocking, full process control |
+| **4. Event Transitions** | ✅ Stop/Restart (Option A) → Discontinuity (Option B) | Start simple, improve in v1.1 |
+| **5. Concurrency Model** | ✅ Atom with swap! (Option A) | Idiomatic Clojure, simple |
+| **6. Configuration** | ✅ Extend config.edn (Option A) | Follows existing pattern |
+| **7. Error Recovery** | ✅ Fallback Filler (Option C) | Better UX than errors |
+
+See detailed analysis below for implementation guidance.
 
 ---
 
@@ -623,42 +642,112 @@ Based on the analysis above, here's the recommended starting architecture:
 
 ## Action Items
 
-**Before implementation starts:**
+**Architectural decisions:** ✅ All confirmed (see summary above)
 
-- [ ] **Decision 1:** Confirm Integrant component approach (Option C)
-- [ ] **Decision 2:** Confirm temp directory storage (Option A)
-- [ ] **Decision 3:** Confirm ProcessBuilder usage (Option B)
-- [ ] **Decision 4:** Confirm stop/restart for MVP, plan discontinuity markers
-- [ ] **Decision 5:** Confirm atom-based concurrency (Option A)
-- [ ] **Decision 6:** Confirm config.edn extension (Option A)
-- [ ] **Decision 7:** Confirm fallback filler support from day 1
-
-**Create issues/subtasks for:**
-- [ ] Streaming component implementation
-- [ ] FFmpeg command builder module
-- [ ] Segment serving handler
-- [ ] Event transition logic
-- [ ] Cleanup background task
-- [ ] Fallback filler integration
+**Implementation tasks (ready to start):**
+- [ ] Create `:pseudovision/streaming` Integrant component in `system.clj`
+- [ ] Add streaming config to `config.clj` (segment duration, temp dir, etc.)
+- [ ] Implement FFmpeg command builder module (`src/pseudovision/ffmpeg/hls.clj`)
+- [ ] Implement streaming handlers (`src/pseudovision/http/api/streaming.clj`)
+  - [ ] Master playlist handler (`/stream/{uuid}`)
+  - [ ] Segment handler (`/stream/{uuid}/segment-{n}.ts`)
+- [ ] Implement process lifecycle management
+  - [ ] Stream startup (FFmpeg ProcessBuilder)
+  - [ ] Process monitoring and cleanup
+  - [ ] Idle stream detection and termination
+- [ ] Implement event transition logic
+  - [ ] Detect when current event changes
+  - [ ] Stop old FFmpeg, start new one
+  - [ ] (v1.1) Add discontinuity marker support
+- [ ] Implement fallback filler integration
+  - [ ] Query `channels.fallback_filler_id` on errors
+  - [ ] Resolve filler media items
+  - [ ] Stream filler when no events available
+- [ ] Add routes to `src/pseudovision/http/core.clj`
+- [ ] Write integration tests (see TODO.md Testing Plan)
 
 ---
 
-## Open Questions
+## Implementation Guidelines
 
-1. **Should we support MPEG-TS direct streaming in MVP, or HLS only?**
-   - Recommendation: HLS only for MVP, TS in v1.1
+Based on confirmed decisions, here are the implementation guidelines:
 
-2. **What should happen if playout has no events?**
-   - Recommendation: Serve fallback filler if configured, else 503
+### 1. **Streaming Protocol**
+✅ **Confirmed:** HLS only for MVP
+- Implement `/stream/{uuid}` as HLS master playlist
+- MPEG-TS direct streaming deferred to v1.1
+- Ensures browser compatibility and widest client support
 
-3. **Should segment cleanup be time-based or space-based?**
-   - Recommendation: Time-based (delete segments >60s old)
+### 2. **Playout Gaps**
+✅ **Confirmed:** Use fallback filler, else 503
+- Query `channels.fallback_filler_id` when no events available
+- If fallback filler exists, stream it
+- If NULL, return `503 Service Unavailable` with helpful message
 
-4. **How do we handle FFmpeg transcoding profiles from database?**
-   - Recommendation: Start with hardcoded sensible defaults, add profile support in v1.1
+### 3. **Segment Cleanup**
+✅ **Confirmed:** Time-based (60 seconds)
+- Use FFmpeg `hls_list_size` and `hls_flags delete_segments`
+- FFmpeg automatically deletes segments older than 60s
+- Background task cleans up abandoned temp directories
 
-5. **Should we log FFmpeg stderr for debugging?**
-   - Recommendation: Yes, but rate-limited to avoid log spam
+### 4. **FFmpeg Profiles**
+✅ **Confirmed:** Hardcoded defaults for MVP
+- Use sensible defaults: H.264 video, AAC audio, 6s segments
+- Database `ffmpeg_profiles` table integration deferred to v1.1
+- Simplifies initial implementation
+
+### 5. **FFmpeg Logging**
+✅ **Confirmed:** Log stderr with rate limiting
+- Capture FFmpeg stderr for debugging
+- Log first 10 lines on errors
+- Avoid log spam during normal operation
+
+---
+
+## Next Steps
+
+### Phase 1: Core Streaming (Week 1)
+1. **Component Setup** (Day 1)
+   - Create `:pseudovision/streaming` Integrant component
+   - Add streaming config to `config.edn`
+   - Wire component into HTTP handlers
+
+2. **FFmpeg Integration** (Day 2-3)
+   - Implement `ProcessBuilder` wrapper
+   - Build HLS command with hardcoded defaults
+   - Test FFmpeg process lifecycle (start/stop/cleanup)
+
+3. **HTTP Handlers** (Day 3-4)
+   - Implement playlist handler (`/stream/{uuid}`)
+   - Implement segment handler (`/stream/{uuid}/segment-{n}.ts`)
+   - Add routes to `core.clj`
+
+4. **Testing & Debugging** (Day 4-5)
+   - Test with VLC, web browser
+   - Verify segment cleanup
+   - Fix edge cases
+
+### Phase 2: Production Readiness (Week 2)
+1. **Event Transitions**
+   - Implement event change detection
+   - Handle stop/restart of FFmpeg
+   - Test timeline progression
+
+2. **Error Handling**
+   - Implement fallback filler support
+   - Handle FFmpeg crashes gracefully
+   - Add proper logging
+
+3. **Integration Tests**
+   - Add tests from TODO.md Testing Plan
+   - Verify multi-client scenarios
+   - Performance testing
+
+### Phase 3: Enhancements (Future)
+- HLS discontinuity markers (seamless transitions)
+- Database FFmpeg profile support
+- MPEG-TS direct streaming
+- Timeshift/DVR features
 
 ---
 
@@ -668,3 +757,4 @@ Based on the analysis above, here's the recommended starting architecture:
 - **HLS spec:** https://datatracker.ietf.org/doc/html/rfc8216
 - **FFmpeg HLS options:** https://ffmpeg.org/ffmpeg-formats.html#hls-2
 - **Clojure ProcessBuilder:** https://clojuredocs.org/clojure.java.io/ProcessBuilder
+- **Ring streaming:** https://github.com/ring-clojure/ring/wiki/Streaming
