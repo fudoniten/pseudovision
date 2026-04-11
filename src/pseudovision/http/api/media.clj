@@ -150,17 +150,29 @@
         {:status 200 :body item}
         {:status 404 :body {:error "Media item not found"}}))))
 
-(defn get-item-stream-url-handler [{:keys [db]}]
+(defn- resolve-stream-url [db item-id]
+  (when-let [row (db/get-media-item-with-source db item-id)]
+    (let [kind        (or (some-> row :media-sources/kind str) "")
+          conn-config (or (:media-sources/connection-config row)
+                          (:connection-config row))]
+      {:url  (build-stream-url row conn-config kind)
+       :kind kind})))
+
+(defn get-item-playback-url-handler [{:keys [db]}]
   (fn [req]
     (let [item-id (parse-long (get-in req [:path-params :id]))
-          row     (db/get-media-item-with-source db item-id)]
-      (if (nil? row)
-        {:status 404 :body {:error "Media item not found"}}
-        (let [kind        (or (some-> row :media-sources/kind str) "")
-              conn-config (or (:media-sources/connection-config row)
-                              (:connection-config row))
-              url         (build-stream-url row conn-config kind)]
-          (if url
-            {:status 200 :body {:url url :kind kind}}
-            {:status 422 :body {:error (str "Playback URL not supported for source kind: " kind)}}))))))
+          result  (resolve-stream-url db item-id)]
+      (cond
+        (nil? result)    {:status 404 :body {:error "Media item not found"}}
+        (nil? (:url result)) {:status 422 :body {:error (str "Playback URL not supported for source kind: " (:kind result))}}
+        :else            {:status 200 :body result}))))
+
+(defn redirect-to-stream-handler [{:keys [db]}]
+  (fn [req]
+    (let [item-id (parse-long (get-in req [:path-params :id]))
+          result  (resolve-stream-url db item-id)]
+      (cond
+        (nil? result)        {:status 404 :body {:error "Media item not found"}}
+        (nil? (:url result)) {:status 422 :body {:error (str "Playback URL not supported for source kind: " (:kind result))}}
+        :else                {:status 302 :headers {"Location" (:url result)} :body nil}))))
 
