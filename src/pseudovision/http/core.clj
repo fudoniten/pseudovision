@@ -85,6 +85,8 @@
    ;; ── Test Utilities ──────────────────────────────────────────────────────
    ["/api/test/info"
     {:get (test/test-info-handler ctx)}]
+   ["/api/test/collection"
+    {:post (test/create-test-collection-handler ctx)}]
    ["/api/test/channels"
     {:get  (test/list-test-channels-handler ctx)
      :post (test/create-test-channel-handler ctx)}]

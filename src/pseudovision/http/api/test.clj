@@ -130,6 +130,70 @@
          :body {:error "Failed to list test channels"
                 :message (.getMessage e)}}))))
 
+(defn create-test-collection-handler
+  "POST /api/test/collection
+   
+   Creates a manual collection with ALL media items from all libraries.
+   This is a convenience endpoint for quick testing.
+   
+   Request body (optional):
+   {
+     \"name\": \"My Test Collection\"  // default: \"Test Collection (All Media)\"
+   }
+   
+   Response:
+   {
+     \"collection\": {...},
+     \"item_count\": 42
+   }"
+  [{:keys [db]}]
+  (fn [req]
+    (try
+      (let [params (:body-params req)
+            coll-name (or (:name params) "Test Collection (All Media)")
+            
+            ;; Create manual collection
+            collection (pseudovision.db.core/execute-one! 
+                        db
+                        ["INSERT INTO collections (kind, name, config) VALUES (?, ?, ?::jsonb) RETURNING *"
+                         "manual"
+                         coll-name
+                         "{}"])
+            
+            collection-id (:collections/id collection)
+            
+            ;; Add ALL media items to it
+            _ (pseudovision.db.core/execute! 
+               db
+               ["INSERT INTO collection_items (collection_id, media_item_id)
+                 SELECT ?, id FROM media_items
+                 ON CONFLICT (collection_id, media_item_id) DO NOTHING"
+                collection-id])
+            
+            ;; Count items
+            count-result (pseudovision.db.core/query-one
+                          db
+                          ["SELECT COUNT(*) as count FROM collection_items WHERE collection_id = ?"
+                           collection-id])
+            
+            item-count (:count count-result)]
+        
+        (log/info "Created test collection with all media" 
+                  {:collection-id collection-id
+                   :name coll-name
+                   :item-count item-count})
+        
+        {:status 201
+         :body {:collection collection
+                :item_count item-count
+                :message (str "Created collection with " item-count " items")}})
+      
+      (catch Exception e
+        (log/error e "Failed to create test collection via API")
+        {:status 500
+         :body {:error "Failed to create test collection"
+                :message (.getMessage e)}}))))
+
 (defn test-info-handler
   "GET /api/test/info
    
