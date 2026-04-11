@@ -72,8 +72,8 @@
     {:post (med/trigger-scan-handler ctx)}]
    ["/api/media/items/:id"
     {:get (med/get-media-item-handler ctx)}]
-   ["/api/media/items/:id/stream-url"
-    {:get (med/get-item-stream-url-handler ctx)}]
+   ["/api/media/items/:id/playback-url"
+    {:get (med/get-item-playback-url-handler ctx)}]
    ["/api/media/items/:id/stream"
     {:get (med/redirect-to-stream-handler ctx)}]
    ["/api/media/collections"

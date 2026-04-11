@@ -158,7 +158,7 @@
       {:url  (build-stream-url row conn-config kind)
        :kind kind})))
 
-(defn get-item-stream-url-handler [{:keys [db]}]
+(defn get-item-playback-url-handler [{:keys [db]}]
   (fn [req]
     (let [item-id (parse-long (get-in req [:path-params :id]))
           result  (resolve-stream-url db item-id)]
