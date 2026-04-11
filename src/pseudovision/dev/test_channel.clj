@@ -8,7 +8,7 @@
             [pseudovision.db.media :as db-media]
             [pseudovision.db.core :as db]
             [pseudovision.util.sql :as sql-util]
-            [pseudovision.scheduling.builder :as builder]
+            [pseudovision.scheduling.core :as sched]
             [taoensso.timbre :as log]))
 
 (defn- get-or-create-default-ffmpeg-profile!
@@ -108,12 +108,13 @@
            
            (log/info "Created playout" {:id playout-id})
            
-           ;; Build playout events
-           (try
-             (builder/rebuild-playout! ds playout-id)
-             (log/info "Built playout events for test channel")
-             (catch Exception e
-               (log/warn e "Failed to build playout events - you may need to run rebuild manually")))
+            ;; Build playout events
+            (try
+              ;; Default scheduling options (72 hour lookahead)
+              (sched/rebuild! ds {:lookahead-hours 72} playout)
+              (log/info "Built playout events for test channel")
+              (catch Exception e
+                (log/warn e "Failed to build playout events - you may need to run rebuild manually")))
            
            ;; Return info
            (let [result {:channel channel
