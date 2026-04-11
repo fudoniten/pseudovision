@@ -40,6 +40,7 @@
             name = "pseudovision";
             repo = "registry.kube.sea.fudo.link";
             tags = [ "latest" ];
+            environmentPackages = [ pkgs.ffmpeg ];
             entrypoint =
               let pseudovision = self.packages."${system}".pseudovision;
               in [ "${pseudovision}/bin/pseudovision" ];
@@ -58,7 +59,9 @@
             name = "deployContainers";
             text = ''
               ${self.packages."${system}".deployContainer}/bin/deployContainers
-              ${self.packages."${system}".deployMigrationContainer}/bin/deployContainers
+              ${
+                self.packages."${system}".deployMigrationContainer
+              }/bin/deployContainers
             '';
           };
         };
@@ -81,13 +84,15 @@
           deployMigrationContainer = {
             type = "app";
             program = let
-              deployMigrationContainer = self.packages."${system}".deployMigrationContainer;
+              deployMigrationContainer =
+                self.packages."${system}".deployMigrationContainer;
             in "${deployMigrationContainer}/bin/deployContainers";
           };
           deployContainers = {
             type = "app";
             program = let
-              deployContainersScript = self.packages."${system}".deployContainersScript;
+              deployContainersScript =
+                self.packages."${system}".deployContainersScript;
             in "${deployContainersScript}/bin/deployContainers";
           };
         };
