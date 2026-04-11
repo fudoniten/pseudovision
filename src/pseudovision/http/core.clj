@@ -8,7 +8,8 @@
             [pseudovision.http.api.epg        :as epg]
             [pseudovision.http.api.m3u        :as m3u]
             [pseudovision.http.api.media      :as med]
-            [pseudovision.http.api.streaming  :as streaming]))
+            [pseudovision.http.api.streaming  :as streaming]
+            [pseudovision.http.api.test       :as test]))
 
 (defn- routes [ctx]
   [""
@@ -80,6 +81,15 @@
    ["/api/media/collections"
     {:get  (med/list-collections-handler  ctx)
      :post (med/create-collection-handler ctx)}]
+
+   ;; ── Test Utilities ──────────────────────────────────────────────────────
+   ["/api/test/info"
+    {:get (test/test-info-handler ctx)}]
+   ["/api/test/channels"
+    {:get  (test/list-test-channels-handler ctx)
+     :post (test/create-test-channel-handler ctx)}]
+   ["/api/test/channels/:identifier"
+    {:delete (test/delete-test-channel-handler ctx)}]
 
    ;; ── Output formats ──────────────────────────────────────────────────────
    ["/xmltv"          {:get (epg/xmltv-handler ctx)}]

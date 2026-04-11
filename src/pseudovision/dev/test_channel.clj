@@ -35,12 +35,14 @@
    - :number - Channel number (default: \"999\")
    - :name - Channel name (default: \"Test Channel\")
    - :collection-id - Collection to play from (default: first available)
+   - :verbose - Print console output (default: true)
    
    Returns: {:channel {...}, :schedule {...}, :playout {...}, :uuid \"...\"}"
   ([ds] (create-test-channel! ds {}))
-  ([ds {:keys [number name collection-id]
+  ([ds {:keys [number name collection-id verbose]
         :or {number "999"
-             name "Test Channel"}}]
+             name "Test Channel"
+             verbose true}}]
    (log/info "Creating test channel" {:number number :name name})
    
    ;; Get or create FFmpeg profile
@@ -141,23 +143,30 @@
 (defn delete-test-channel!
   "Deletes a test channel by UUID or channel number.
    
+   Options:
+   - :verbose - Print console output (default: true)
+   
    Usage:
      (delete-test-channel! ds \"999\")
-     (delete-test-channel! ds uuid)"
-  [ds identifier]
-  (let [channel (or (db-channels/get-channel-by-uuid ds identifier)
-                    (db-channels/get-channel-by-number ds identifier))]
-    (if channel
-      (let [channel-id (:channels/id channel)
-            channel-name (:channels/name channel)]
-        (db-channels/delete-channel! ds channel-id)
-        (log/info "Deleted test channel" {:id channel-id :name channel-name})
-        (println (format "✅ Deleted channel: %s" channel-name))
-        channel)
-      (do
-        (log/warn "Channel not found" {:identifier identifier})
-        (println (format "❌ Channel not found: %s" identifier))
-        nil))))
+     (delete-test-channel! ds uuid)
+     (delete-test-channel! ds \"999\" {:verbose false})"
+  ([ds identifier] (delete-test-channel! ds identifier {}))
+  ([ds identifier {:keys [verbose] :or {verbose true}}]
+   (let [channel (or (db-channels/get-channel-by-uuid ds identifier)
+                     (db-channels/get-channel-by-number ds identifier))]
+     (if channel
+       (let [channel-id (:channels/id channel)
+             channel-name (:channels/name channel)]
+         (db-channels/delete-channel! ds channel-id)
+         (log/info "Deleted test channel" {:id channel-id :name channel-name})
+         (when verbose
+           (println (format "✅ Deleted channel: %s" channel-name)))
+         channel)
+       (do
+         (log/warn "Channel not found" {:identifier identifier})
+         (when verbose
+           (println (format "❌ Channel not found: %s" identifier)))
+         nil)))))
 
 ;; Usage in REPL:
 ;;
