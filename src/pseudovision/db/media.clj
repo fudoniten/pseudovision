@@ -256,7 +256,9 @@
 
 (defn create-collection! [ds attrs]
   (let [result (db/execute-one! ds (-> (h/insert-into :collections)
-                                       (h/values [(update attrs :kind #(sql-util/->pg-enum "collection_kind" %))])
+                                       (h/values [(cond-> attrs
+                                                    (:kind attrs)   (update :kind #(sql-util/->pg-enum "collection_kind" %))
+                                                    (:config attrs) (update :config sql-util/->jsonb))])
                                        sql/format))]
     (log/info "Created collection"
               {:collection-id (:collections/id result)
