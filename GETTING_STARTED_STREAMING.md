@@ -2,12 +2,13 @@
 
 This guide walks you through implementing live channel streaming in Pseudovision, starting from the minimal working example we've just created.
 
-## Current Status
+## Current Status (Updated 2026-04-12)
 
-✅ **Step 1 Complete:** Minimal `/stream/{uuid}` endpoint created
-- Returns a basic HLS playlist
-- Validates channel exists
-- Returns 404 for invalid UUIDs
+✅ **Steps 1-4 Complete:** Basic HLS streaming working with test stream
+- Created `/stream/{uuid}` endpoint with FFmpeg integration
+- HLS playlist generation and segment serving functional
+- FFmpeg process management and caching implemented
+- Multiple clients can share same stream process
 
 **Test it:**
 ```bash
@@ -19,7 +20,12 @@ curl http://localhost:8080/stream/550e8400-e29b-41d4-a716-446655440000
 
 # Test with invalid UUID (should return 404)
 curl http://localhost:8080/stream/invalid-uuid
+
+# Test in VLC
+vlc http://localhost:8080/stream/550e8400-e29b-41d4-a716-446655440000
 ```
+
+⚠️ **Current Limitation:** Using hardcoded test stream URL. Next step is to integrate with actual playout timeline and Jellyfin media sources.
 
 ---
 
@@ -27,38 +33,33 @@ curl http://localhost:8080/stream/invalid-uuid
 
 We're building this incrementally using a "walking skeleton" - the thinnest possible end-to-end implementation. Each step adds one critical piece while keeping everything testable.
 
-### Phase 0: Walking Skeleton ✅ In Progress
+### Phase 0: Walking Skeleton ✅ MOSTLY COMPLETE
 
 **Goal:** Get ONE channel streaming with minimal implementation
 
 #### ✅ Step 1: Minimal Endpoint (Complete)
 - Created `src/pseudovision/http/api/streaming.clj`
 - Added route to `src/pseudovision/http/core.clj`
-- Returns placeholder HLS playlist
+- Validates channel exists and returns 404 for invalid UUIDs
+- **Location:** core.clj:106-107, streaming.clj:66-109
 
 **What you can test:**
 ```bash
 curl http://localhost:8080/stream/{uuid}
-# Should return:
-# #EXTM3U
-# #EXT-X-VERSION:3
-# #EXT-X-TARGETDURATION:6
-# #EXT-X-MEDIA-SEQUENCE:0
-# # TODO: Implement FFmpeg streaming
-# # Channel: {channel-name}
+# Returns actual HLS playlist with rewritten segment URLs
 ```
 
 ---
 
-#### 📋 Step 2: FFmpeg Command Builder (Next - 1-2 hours)
+#### ✅ Step 2: FFmpeg Command Builder (Complete)
 
 **What:** Create a module that builds FFmpeg commands for HLS streaming
 
 **Why:** This is the core logic that turns a media URL into a live stream
 
-**Create:** `src/pseudovision/ffmpeg/hls.clj`
+**Status:** ✅ **IMPLEMENTED** in `src/pseudovision/ffmpeg/hls.clj`
 
-**Example implementation:**
+**Actual implementation:**
 ```clojure
 (ns pseudovision.ffmpeg.hls
   (:import [java.lang ProcessBuilder]
@@ -153,18 +154,20 @@ curl http://localhost:8080/stream/{uuid}
 
 ---
 
-#### 📋 Step 3: Integrate FFmpeg into Streaming Handler (1-2 hours)
+#### ✅ Step 3: Integrate FFmpeg into Streaming Handler (Complete)
 
 **What:** Update `streaming.clj` to actually start FFmpeg and serve segments
 
-**Key changes:**
-1. Create temp directory for channel
-2. Query current playout event
-3. Resolve media source URL
-4. Start FFmpeg if not already running
-5. Serve playlist from temp directory
+**Status:** ✅ **IMPLEMENTED** with test stream URL
 
-**Example:**
+**Key changes completed:**
+1. ✅ Create temp directory for channel
+2. ⚠️ Query current playout event (TODO - using test stream for now)
+3. ⚠️ Resolve media source URL (TODO - using test stream for now)
+4. ✅ Start FFmpeg if not already running
+5. ✅ Serve playlist from temp directory
+
+**Actual implementation:**
 ```clojure
 (ns pseudovision.http.api.streaming
   (:require [pseudovision.db.channels :as db-channels]
@@ -247,18 +250,20 @@ ls -la /tmp/pseudovision/streams/{uuid}/
 ```
 
 **Acceptance criteria:**
-- [ ] FFmpeg starts when stream requested
-- [ ] Segments written to temp directory
-- [ ] Playlist served from disk
-- [ ] VLC can open stream (test with `vlc http://localhost:8080/stream/{uuid}`)
+- [x] FFmpeg starts when stream requested ✅
+- [x] Segments written to temp directory ✅
+- [x] Playlist served from disk ✅
+- [x] VLC can open stream (test with `vlc http://localhost:8080/stream/{uuid}`) ✅
 
 ---
 
-#### 📋 Step 4: Serve Segments (30 min)
+#### ✅ Step 4: Serve Segments (Complete)
 
 **What:** Add route to serve `.ts` segment files
 
-**Add to `streaming.clj`:**
+**Status:** ✅ **IMPLEMENTED** in streaming.clj:111-135 and core.clj:107
+
+**Actual implementation:**
 ```clojure
 (defn segment-handler [{:keys [db]}]
   (fn [req]
@@ -297,7 +302,9 @@ file /tmp/test.ts
 
 ---
 
-#### 📋 Step 5: Test End-to-End (30 min)
+#### ✅ Step 5: Test End-to-End (Complete)
+
+**Status:** ✅ **WORKING** with test stream
 
 **Try in VLC:**
 ```bash
@@ -321,16 +328,19 @@ vlc http://localhost:8080/stream/{uuid}
 </html>
 ```
 
-**Expected result:**
-✅ Video plays!
+**Achieved results:**
+✅ Video plays with test stream!
 ✅ Segments load progressively
 ✅ Stream continues indefinitely
+✅ Multiple clients share same FFmpeg process
 
 ---
 
-## Phase 1: Real Playout Integration
+## Phase 1: Real Playout Integration ⚠️ IN PROGRESS
 
-Once the walking skeleton works with test media, integrate with actual playout:
+**Current status:** Walking skeleton works with hardcoded test stream. Next step is to integrate with actual playout timeline and Jellyfin media sources.
+
+**What needs to be done:**
 
 ### Step 6: Query Current Event
 ```clojure

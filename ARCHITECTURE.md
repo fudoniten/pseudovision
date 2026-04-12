@@ -2,25 +2,25 @@
 
 This document outlines the critical architectural decisions for implementing live channel streaming in Pseudovision.
 
-**Status:** ✅ Decisions Confirmed  
-**Last Updated:** 2026-04-10  
+**Status:** ✅ Decisions Confirmed, ⚠️ Partially Implemented  
+**Last Updated:** 2026-04-12 (Implementation Status Update)  
 **Confirmed By:** niten
 
 ---
 
-## Decisions Summary
+## Implementation Status Summary
 
-All architectural decisions have been confirmed. The recommended approach for each decision has been accepted:
+| Decision | Choice | Implementation Status |
+|----------|--------|----------------------|
+| **1. Process Management** | ✅ Integrant Component (Option C) | ⚠️ Currently using atom (Option B), Integrant TODO |
+| **2. Segment Storage** | ✅ Temp Directory (Option A) | ✅ Implemented (`/tmp/pseudovision/streams/{uuid}/`) |
+| **3. FFmpeg Invocation** | ✅ ProcessBuilder (Option B) | ✅ Implemented (ffmpeg/hls.clj) |
+| **4. Event Transitions** | ✅ Stop/Restart (Option A) → Discontinuity (Option B) | ❌ Not yet implemented |
+| **5. Concurrency Model** | ✅ Atom with swap! (Option A) | ✅ Implemented (streaming.clj:14) |
+| **6. Configuration** | ✅ Extend config.edn (Option A) | ❌ Not yet implemented (hardcoded) |
+| **7. Error Recovery** | ✅ Fallback Filler (Option C) | ❌ Not yet implemented |
 
-| Decision | Choice | Rationale |
-|----------|--------|-----------|
-| **1. Process Management** | ✅ Integrant Component (Option C) | Production-ready, proper lifecycle management |
-| **2. Segment Storage** | ✅ Temp Directory (Option A) | Simple, debuggable, FFmpeg-native |
-| **3. FFmpeg Invocation** | ✅ ProcessBuilder (Option B) | Non-blocking, full process control |
-| **4. Event Transitions** | ✅ Stop/Restart (Option A) → Discontinuity (Option B) | Start simple, improve in v1.1 |
-| **5. Concurrency Model** | ✅ Atom with swap! (Option A) | Idiomatic Clojure, simple |
-| **6. Configuration** | ✅ Extend config.edn (Option A) | Follows existing pattern |
-| **7. Error Recovery** | ✅ Fallback Filler (Option C) | Better UX than errors |
+**Walking Skeleton Complete:** Basic HLS streaming works with test stream URL. Next step is playout integration.
 
 See detailed analysis below for implementation guidance.
 

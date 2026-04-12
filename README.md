@@ -130,6 +130,7 @@ Filler presets bridge gaps. Each preset has:
 | `/iptv/channels.m3u` | M3U playlist for all channels |
 | `/xmltv` or `/epg.xml` | XMLTV EPG (7 day lookahead) |
 | `/lineup.json` | HDHomeRun lineup (for Plex/Emby/Jellyfin auto-discovery) |
+| `/stream/:uuid` | ⚠️ HLS live stream (basic implementation, uses test stream) |
 
 ---
 
@@ -170,6 +171,9 @@ src/pseudovision/
       epg.clj           XMLTV generation
       m3u.clj           M3U + HDHomeRun device emulation
       media.clj         Media/library/collection API handlers
+      streaming.clj     HLS live streaming handlers
+  ffmpeg/
+    hls.clj             FFmpeg HLS command builder and process management
   scheduling/
     core.clj            Build engine (Schedule → Playout)
     cursor.clj          Cursor serialisation / resumption

@@ -10,6 +10,45 @@ This document tracks the completion status of XMLTV, M3U, and live streaming fun
 
 ---
 
+## 📚 Related Documentation
+
+- **TODO.md** (this file) — Comprehensive implementation checklist
+- **ARCHITECTURE.md** — Architectural decisions and rationale
+- **GETTING_STARTED_STREAMING.md** — Step-by-step implementation guide
+- **SESSION_STATE.md** — Session history and current status
+- **TESTING_STREAMING.md** — Testing procedures and scenarios
+- **API_TEST_CHANNELS.md** — Test channel creation and management
+- **COLLECTIONS_GUIDE.md** — Collections configuration guide
+
+---
+
+## ⚡ Recent Progress Summary (Updated 2026-04-12)
+
+**✅ COMPLETED (as of recent commits):**
+1. **Basic HLS Streaming Infrastructure** (Sections 1, 4-6)
+   - Created `/stream/{uuid}` endpoint and segment serving (core.clj:106-107)
+   - Implemented `streaming.clj` with stream/segment handlers
+   - Built FFmpeg HLS command builder (ffmpeg/hls.clj)
+   - Process management and segment caching working
+   - Multiple clients can share same stream process
+
+2. **Walking Skeleton Status**
+   - ✅ HTTP routes configured
+   - ✅ FFmpeg process spawning works
+   - ✅ HLS playlist generation and URL rewriting
+   - ✅ Segment serving with proper Content-Type headers
+   - ✅ Basic error handling (404s, 503s)
+
+**🚨 CRITICAL GAPS (blocking real usage):**
+1. **Playout Timeline Integration** (Section 2) — Currently using hardcoded test stream
+2. **Media Source Resolution** (Section 3) — Not fetching actual Jellyfin URLs
+3. **Event Transitions** (Section 7) — No support for switching between media items
+4. **Fallback Handling** (Section 8) — No filler support for gaps
+
+**Next Priority:** Implement playout timeline query and Jellyfin media resolution to replace the hardcoded test stream URL (streaming.clj:48).
+
+---
+
 ## 🚨 BLOCKING: Live Streaming Implementation
 
 ### Overview
@@ -21,101 +60,111 @@ The M3U playlist (`/iptv/channels.m3u`) and HDHomeRun lineup (`/lineup.json`) ad
 
 ### 1. Route & Handler Setup 🚨 BLOCKING
 
-- [ ] **Add route in `src/pseudovision/http/core.clj`**
+- [x] **Add route in `src/pseudovision/http/core.clj`** ✅ DONE
   - Add `["/stream/:uuid" {:get (streaming/stream-handler ctx)}]` around line 90
   - Requires namespace `[pseudovision.http.api.streaming :as streaming]`
+  - **Location:** src/pseudovision/http/core.clj:106
   
-- [ ] **Create `src/pseudovision/http/api/streaming.clj`**
+- [x] **Create `src/pseudovision/http/api/streaming.clj`** ✅ DONE
   - Create new namespace for streaming handlers
   - Implement `stream-handler` function accepting `{:keys [db ffmpeg]}`
   - Extract `:uuid` from route params
   - Return HLS master playlist (`.m3u8`)
+  - **Location:** src/pseudovision/http/api/streaming.clj
 
-- [ ] **Add helper in `src/pseudovision/db/channels.clj`**
+- [x] **Add helper in `src/pseudovision/db/channels.clj`** ✅ DONE
   - Use existing `get-channel-by-uuid` (line 24) to look up channel
   - Return 404 if channel doesn't exist
+  - **Already implemented:** streaming.clj:75 uses `db-channels/get-channel-by-uuid`
 
-**Test checkpoint:** `curl http://localhost:8080/stream/{uuid}` should return 200 with valid channel, 404 with invalid UUID
+**Test checkpoint:** `curl http://localhost:8080/stream/{uuid}` should return 200 with valid channel, 404 with invalid UUID ✅ IMPLEMENTED
 
 ---
 
 ### 2. Playout Timeline Query 🚨 BLOCKING
 
-- [ ] **Query current event for channel**
+- [ ] **Query current event for channel** ⚠️ TODO
   - Use `get-channel` to find channel by UUID
   - Get playout for channel: `get-playout-for-channel` (src/pseudovision/db/playouts.clj:18)
   - Get current event: `get-current-event` (src/pseudovision/db/playouts.clj:74-83)
     - Pass playout ID and `(t/now)`
     - Returns event where `start_at <= now < finish_at`
+  - **Status:** Currently using hardcoded test stream (streaming.clj:48)
   
-- [ ] **Handle missing/future events**
+- [ ] **Handle missing/future events** ⚠️ TODO
   - If no current event, check `get-upcoming-events` for next event
   - If no events at all, use fallback filler (from `channels.fallback_filler_id`)
   - If fallback filler is NULL, return 503 Service Unavailable with message
+  - **Status:** Not yet implemented
 
-**Test checkpoint:** Query should return current media item or fallback gracefully
+**Test checkpoint:** Query should return current media item or fallback gracefully ❌ NOT IMPLEMENTED
 
 ---
 
 ### 3. Media Item Resolution 🚨 BLOCKING
 
-- [ ] **Resolve playback URL for media item**
+- [ ] **Resolve playback URL for media item** ⚠️ TODO
   - Use event's `media_item_id` to query media_items table
   - Join with `media_sources` to get Jellyfin connection details
   - Join with `media_libraries` for library metadata
   - Use existing logic from `src/pseudovision/http/api/media.clj:172-219` (redirect-to-stream-handler)
+  - **Status:** Currently using hardcoded test stream URL
   
-- [ ] **Calculate playback position**
+- [ ] **Calculate playback position** ⚠️ TODO
   - Calculate elapsed time: `now - event.start_at`
   - Convert to seconds for FFmpeg `-ss` parameter
   - Handle case where elapsed > item duration (should not happen, but handle gracefully)
+  - **Status:** FFmpeg command builder supports `-ss` parameter (hls.clj:22), but not yet integrated with playout
 
-**Test checkpoint:** Should retrieve valid Jellyfin stream URL and calculate correct position
+**Test checkpoint:** Should retrieve valid Jellyfin stream URL and calculate correct position ❌ NOT IMPLEMENTED
 
 ---
 
 ### 4. FFmpeg Command Builder 🚨 BLOCKING
 
-- [ ] **Create `src/pseudovision/ffmpeg/hls.clj` namespace**
+- [x] **Create `src/pseudovision/ffmpeg/hls.clj` namespace** ✅ DONE
   - Create `build-hls-command` function
   - Accept: source URL, start position, channel config, FFmpeg profile
   - Return: FFmpeg command vector for `ProcessBuilder`
+  - **Location:** src/pseudovision/ffmpeg/hls.clj:5-34
   
-- [ ] **Load FFmpeg profile from database**
+- [ ] **Load FFmpeg profile from database** ⚠️ TODO
   - Query `ffmpeg_profiles` table using `channels.ffmpeg_profile_id`
   - Parse JSONB `config` field (contains FFmpeg parameters)
   - Apply profile settings to command
+  - **Status:** Currently using hardcoded defaults (libx264, aac, veryfast preset)
   
-- [ ] **Build base HLS command**
+- [x] **Build base HLS command** ✅ DONE
   ```clojure
   ["ffmpeg"
-   "-ss" (str elapsed-seconds)              ; Start position
-   "-i" source-url                          ; Input from Jellyfin
-   "-c:v" "libx264"                         ; Video codec (from profile)
-   "-c:a" "aac"                             ; Audio codec (from profile)
-   "-f" "hls"                               ; HLS output format
-   "-hls_time" "6"                          ; 6-second segments
-   "-hls_list_size" "10"                    ; Keep 10 segments in playlist
-   "-hls_flags" "delete_segments"           ; Clean up old segments
-   "-hls_segment_filename" "segment-%03d.ts"
-   "playlist.m3u8"]
+   "-ss" (str elapsed-seconds)              ; Start position ✅
+   "-i" source-url                          ; Input from Jellyfin ✅
+   "-c:v" "libx264"                         ; Video codec ✅
+   "-c:a" "aac"                             ; Audio codec ✅
+   "-f" "hls"                               ; HLS output format ✅
+   "-hls_time" "6"                          ; 6-second segments ✅
+   "-hls_list_size" "10"                    ; Keep 10 segments in playlist ✅
+   "-hls_flags" "delete_segments"           ; Clean up old segments ✅
+   "-hls_segment_filename" "segment-%03d.ts" ✅
+   "playlist.m3u8"]                         ✅
   ```
+  - **Location:** src/pseudovision/ffmpeg/hls.clj:20-34
   
-- [ ] **Handle channel streaming mode** (from `channels.streaming_mode` enum)
+- [ ] **Handle channel streaming mode** ⚠️ TODO (from `channels.streaming_mode` enum)
   - `ts` — Output MPEG-TS directly (single stream, no HLS)
   - `ts_hybrid` — MPEG-TS with HLS fallback (implement HLS first)
   - `hls_direct` — HLS passthrough (no transcode, direct copy)
   - `hls_segmenter` — HLS with live segmenter (full transcode)
-  - **For MVP, implement `hls_segmenter` only**
+  - **For MVP, implement `hls_segmenter` only** — Currently hardcoded to this mode
 
-**Test checkpoint:** Command should generate valid FFmpeg command that runs without errors
+**Test checkpoint:** Command should generate valid FFmpeg command that runs without errors ✅ PARTIALLY IMPLEMENTED (basic command works)
 
 ---
 
 ### 5. HLS Playlist Generation 🚨 BLOCKING
 
-- [ ] **Generate master playlist** (`.m3u8`)
-  - Return `Content-Type: application/vnd.apple.mpegurl`
+- [x] **Generate master playlist** (`.m3u8`) ✅ DONE
+  - Return `Content-Type: application/vnd.apple.mpegurl` ✅
   - Simple single-variant playlist for MVP:
     ```
     #EXTM3U
@@ -128,81 +177,94 @@ The M3U playlist (`/iptv/channels.m3u`) and HDHomeRun lineup (`/lineup.json`) ad
     /stream/{uuid}/segment-001.ts
     ...
     ```
+  - **Location:** streaming.clj:66-96 (serves and rewrites FFmpeg-generated playlist)
+  - **Implementation:** FFmpeg generates playlist, handler rewrites segment URLs (streaming.clj:23-30)
   
-- [ ] **Implement segment serving** 
-  - Add route `["/stream/:uuid/segment-:n.ts" {:get (streaming/segment-handler ctx)}]`
-  - Serve FFmpeg-generated `.ts` segments
-  - Return `Content-Type: video/MP2T`
-  - Return 404 if segment doesn't exist (expired or not yet generated)
+- [x] **Implement segment serving** ✅ DONE
+  - Add route `["/stream/:uuid/segment-:n.ts" {:get (streaming/segment-handler ctx)}]` ✅
+  - Serve FFmpeg-generated `.ts` segments ✅
+  - Return `Content-Type: video/MP2T` ✅
+  - Return 404 if segment doesn't exist (expired or not yet generated) ✅
+  - **Location:** streaming.clj:111-135, route at core.clj:107
 
-**Test checkpoint:** HLS playlist should load in VLC or browser with HLS.js
+**Test checkpoint:** HLS playlist should load in VLC or browser with HLS.js ✅ IMPLEMENTED (basic functionality working)
 
 ---
 
 ### 6. Segment Management 🚨 BLOCKING
 
-- [ ] **Decide segment storage strategy**
+- [x] **Decide segment storage strategy** ✅ DONE
   - **Option A:** Pipe FFmpeg output to response stream (stateless, no disk)
-  - **Option B:** Write segments to temp directory, serve from disk (cacheable)
+  - **Option B:** Write segments to temp directory, serve from disk (cacheable) ✅ CHOSEN
   - **Recommended:** Option B for MVP (easier debugging, allows caching)
+  - **Implementation:** streaming.clj:16-21 creates temp directories
   
-- [ ] **Implement segment cache**
-  - Create temp directory per channel: `/tmp/pseudovision/streams/{uuid}/`
-  - FFmpeg writes segments to this directory
-  - Clean up segments older than 60 seconds
-  - Handle multiple concurrent viewers (share FFmpeg process per channel)
+- [x] **Implement segment cache** ✅ PARTIALLY DONE
+  - Create temp directory per channel: `/tmp/pseudovision/streams/{uuid}/` ✅
+  - FFmpeg writes segments to this directory ✅
+  - Clean up segments older than 60 seconds ✅ (FFmpeg's `-hls_flags delete_segments` handles this)
+  - Handle multiple concurrent viewers (share FFmpeg process per channel) ✅
+  - **Location:** streaming.clj:14-60 (active-streams atom tracks processes)
   
-- [ ] **Handle playlist updates**
-  - FFmpeg continuously updates `playlist.m3u8`
-  - Serve updated playlist on each request
-  - Implement rolling window (keep last 10 segments)
+- [x] **Handle playlist updates** ✅ DONE
+  - FFmpeg continuously updates `playlist.m3u8` ✅
+  - Serve updated playlist on each request ✅
+  - Implement rolling window (keep last 10 segments) ✅ (configured in hls.clj:31)
+  - **Location:** streaming.clj:78-91
 
-**Test checkpoint:** Multiple clients can stream same channel without spawning multiple FFmpeg processes
+**Test checkpoint:** Multiple clients can stream same channel without spawning multiple FFmpeg processes ✅ IMPLEMENTED (streaming.clj:32-60 reuses existing streams)
 
 ---
 
 ### 7. Event Transitions 🚨 BLOCKING
 
-- [ ] **Detect event boundaries**
+- [ ] **Detect event boundaries** ❌ NOT IMPLEMENTED
   - Check if current time > `event.finish_at`
   - If so, stop FFmpeg process for old event
   - Query next event and start new FFmpeg process
+  - **Status:** Not yet implemented (requires playout integration first)
   
-- [ ] **Implement discontinuity markers**
+- [ ] **Implement discontinuity markers** ❌ NOT IMPLEMENTED
   - Insert `#EXT-X-DISCONTINUITY` in playlist when event changes
   - Signals to client that stream properties may change (codec, resolution, etc.)
+  - **Status:** Not yet implemented
   
-- [ ] **Handle filler injection**
+- [ ] **Handle filler injection** ❌ NOT IMPLEMENTED
   - Check if event has filler (pre/mid/post-roll)
   - Create temporary playout sequence: `[pre-filler, content, post-filler]`
   - Treat as single continuous stream with discontinuities
+  - **Status:** Not yet implemented
 
-**Test checkpoint:** Stream should transition smoothly from one media item to the next
+**Test checkpoint:** Stream should transition smoothly from one media item to the next ❌ NOT IMPLEMENTED
 
 ---
 
 ### 8. Error Handling & Resilience 🚨 BLOCKING
 
-- [ ] **Handle missing media sources**
+- [ ] **Handle missing media sources** ⚠️ PARTIAL
   - If Jellyfin source is unreachable, return fallback filler
   - Log error with channel ID and source ID
+  - **Status:** Basic error handling exists (streaming.clj:98-102), but no fallback filler logic
   
-- [ ] **Handle FFmpeg failures**
-  - Catch FFmpeg process exit codes
-  - Return 503 Service Unavailable with retry-after header
-  - Log stderr output for debugging
+- [x] **Handle FFmpeg failures** ✅ PARTIALLY DONE
+  - Catch FFmpeg process exit codes ✅
+  - Return 503 Service Unavailable with retry-after header ✅ (streaming.clj:93-96)
+  - Log stderr output for debugging ⚠️ (stderr redirected but not actively monitored)
+  - **Location:** streaming.clj:76-102
   
-- [ ] **Handle playout gaps**
+- [ ] **Handle playout gaps** ❌ NOT IMPLEMENTED
   - If no current or upcoming events, use `channels.fallback_filler_id`
   - If no fallback filler, return offline slate (static image/video)
   - Consider implementing "technical difficulties" placeholder
+  - **Status:** Not yet implemented (requires playout integration)
   
-- [ ] **Process cleanup**
-  - Kill FFmpeg processes on stream disconnect
-  - Implement timeout (e.g., kill process if no clients for 30s)
-  - Clean up temp files on shutdown
+- [ ] **Process cleanup** ⚠️ PARTIAL
+  - Kill FFmpeg processes on stream disconnect ⚠️ (process tracked but no cleanup daemon)
+  - Implement timeout (e.g., kill process if no clients for 30s) ❌
+  - Clean up temp files on shutdown ⚠️ (FFmpeg deletes segments, but directory not cleaned)
+  - **Status:** hls.clj:49-56 has stop-ffmpeg function, but not actively used
 
-**Test checkpoint:** Server should handle errors gracefully without crashes
+**Test checkpoint:** Server should handle errors gracefully without crashes ✅ PARTIALLY IMPLEMENTED (basic error handling works)
 
 ---
 
@@ -505,9 +567,11 @@ assert "#EXTM3U" in m3u_out
 | Database schema (channels, events, metadata) | ✅ Complete | No |
 | EPG filtering (`show_in_epg`) | ⚠️ Field exists, not queried | No |
 | Guide time support (`guide_start_at`) | ⚠️ Field exists, not used | No |
-| Stream endpoint (`/stream/{uuid}`) | ❌ Not implemented | **YES** |
-| HLS playlist generation | ❌ Not implemented | **YES** |
-| FFmpeg transcoding pipeline | ❌ Not implemented | **YES** |
+| Stream endpoint (`/stream/{uuid}`) | ✅ Implemented (basic) | No |
+| HLS playlist generation | ✅ Implemented (basic) | No |
+| FFmpeg transcoding pipeline | ✅ Implemented (basic) | No |
+| **Playout timeline integration** | ❌ Not implemented | **YES** |
+| **Media source resolution** | ❌ Not implemented | **YES** |
 | Event transitions & discontinuity | ❌ Not implemented | **YES** |
 
 ---

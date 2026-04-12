@@ -1,14 +1,16 @@
 # Pseudovision Streaming Implementation - Session State
 
-**Session Date:** 2026-04-10  
-**Status:** Ready to begin implementation  
-**Current Step:** Walking Skeleton - Step 2 (FFmpeg Command Builder)
+**Session Date:** 2026-04-10 (Initial), Updated 2026-04-12  
+**Status:** Walking Skeleton Complete - Ready for Playout Integration  
+**Current Step:** Phase 1 - Real Playout Integration (Steps 6-8)
 
 ---
 
 ## 📋 Session Summary
 
-This session focused on understanding XMLTV/M3U formats and planning the streaming implementation for Pseudovision. All architectural decisions have been made and documented.
+Initial session (2026-04-10) focused on planning and architecture. Follow-up implementation (2026-04-11 to 2026-04-12) completed the walking skeleton with basic HLS streaming functionality.
+
+**Update (2026-04-12):** Walking skeleton is now complete. Basic HLS streaming works with test stream. Next priority is integrating with actual playout timeline and Jellyfin media sources.
 
 ---
 
@@ -59,33 +61,46 @@ This session focused on understanding XMLTV/M3U formats and planning the streami
 - Phase 1: Real Playout Integration (Steps 6-8) - Connect to actual media
 - Phase 2: Production Readiness (Steps 9-12) - Polish and scale
 
-### 2. Code Implemented
+### 2. Code Implemented (Initial + Updates)
 
-#### **src/pseudovision/http/api/streaming.clj** (NEW)
-- Minimal streaming handler
-- Returns placeholder HLS playlist
-- Validates channel exists by UUID
-- Returns 404 for invalid channels
-- Ready to be extended with FFmpeg integration
+#### **src/pseudovision/http/api/streaming.clj** (NEW - ENHANCED)
+- ✅ Full streaming handler with FFmpeg integration
+- ✅ Validates channel exists by UUID
+- ✅ Returns 404 for invalid channels
+- ✅ Manages FFmpeg processes via atom state
+- ✅ Implements process sharing (multiple clients → one FFmpeg)
+- ✅ URL rewriting for HLS segments
+- ✅ Segment serving handler
+- **Location:** 136 lines, fully functional
+
+#### **src/pseudovision/ffmpeg/hls.clj** (NEW)
+- ✅ FFmpeg command builder
+- ✅ Process management (start/stop/alive check)
+- ✅ HLS-specific configuration
+- **Location:** 62 lines, fully functional
 
 #### **src/pseudovision/http/core.clj** (MODIFIED)
-- Added streaming namespace import
-- Added route: `["/stream/:uuid" {:get (streaming/stream-handler ctx)}]`
-- Route positioned after M3U/XMLTV endpoints
+- ✅ Added streaming namespace import
+- ✅ Added route: `["/stream/:uuid" {:get (streaming/stream-handler ctx)}]`
+- ✅ Added route: `["/stream/:uuid/:segment" {:get (streaming/segment-handler ctx)}]`
+- **Location:** core.clj:106-107
 
 **Test command:**
 ```bash
 curl http://localhost:8080/stream/{uuid}
+# OR
+vlc http://localhost:8080/stream/{uuid}
 ```
 
-**Expected response:**
+**Actual response:**
 ```
 #EXTM3U
 #EXT-X-VERSION:3
-#EXT-X-TARGETDURATION:6
-#EXT-X-MEDIA-SEQUENCE:0
-# TODO: Implement FFmpeg streaming
-# Channel: {channel-name}
+#EXTINF:6.0,
+/stream/{uuid}/segment-000.ts
+#EXTINF:6.0,
+/stream/{uuid}/segment-001.ts
+...
 ```
 
 ---
@@ -113,21 +128,24 @@ curl http://localhost:8080/stream/{uuid}
 - Status: `/lineup_status.json`
 - Enables Plex/Emby/Jellyfin auto-discovery
 
-✅ **Stream endpoint (minimal)**
+✅ **Stream endpoint (WORKING)** - Updated 2026-04-12
 - Route exists and responds
 - Validates channel UUID
-- Returns placeholder playlist
-- **Does not stream video yet** ⚠️
+- ✅ FFmpeg integration complete
+- ✅ HLS segment generation working
+- ✅ Multiple clients share same stream
+- ⚠️ **Uses test stream URL** (playout integration TODO)
 
-### What's Missing (Blocking)
+### What's Missing (Blocking Real Usage)
 
-❌ **Live streaming implementation**
-- No FFmpeg integration
-- No HLS segment generation
-- No playout timeline → stream conversion
-- Stream URLs return placeholder, not video
+⚠️ **Playout timeline integration**
+- ✅ FFmpeg integration complete
+- ✅ HLS segment generation working
+- ❌ No playout timeline → stream conversion
+- ❌ Uses hardcoded test stream instead of Jellyfin sources
+- ❌ No event transitions
 
-**Impact:** IPTV clients can load channel list and EPG, but cannot play video.
+**Impact:** Streaming works, but only with test content. Cannot play actual media library content yet.
 
 ### What Needs Enhancement (Non-blocking)
 
@@ -148,31 +166,43 @@ curl http://localhost:8080/stream/{uuid}
 
 ---
 
-## 📍 Where We Left Off
+## 📍 Where We Left Off (Updated 2026-04-12)
 
-### Current Position: Walking Skeleton - Step 1 Complete ✅
+### Current Position: Walking Skeleton Complete ✅
 
-**Just completed:**
-- Minimal `/stream/{uuid}` endpoint created
-- Route added to HTTP server
-- Returns placeholder HLS playlist
-- Can be tested with curl
+**Completed (Steps 1-5):**
+- ✅ `/stream/{uuid}` endpoint fully functional
+- ✅ FFmpeg command builder module (`ffmpeg/hls.clj`)
+- ✅ Process management with atom state
+- ✅ HLS playlist generation and URL rewriting
+- ✅ Segment serving endpoint
+- ✅ Multiple clients share same FFmpeg process
+- ✅ Basic error handling (404, 503, 500)
+- ✅ Can stream test content in VLC/browsers
 
-### Next Immediate Step: Walking Skeleton - Step 2
+**Commits implementing this:**
+- `f73a67e` - Implement FFmpeg-based HLS streaming (Steps 2-4)
+- `55c2c2e` - Add walking skeleton for streaming implementation
+- Plus supporting commits for test channels and utilities
 
-**Goal:** Implement FFmpeg command builder module
+### Next Immediate Step: Phase 1 - Playout Integration (Step 6)
 
-**Create:** `src/pseudovision/ffmpeg/hls.clj`
+**Goal:** Replace hardcoded test stream with actual playout timeline queries
 
-**Functions needed:**
-1. `build-hls-command` - Builds FFmpeg command array for ProcessBuilder
-2. `start-ffmpeg` - Starts FFmpeg process, returns process info
-3. `stop-ffmpeg` - Gracefully stops FFmpeg process
-4. `process-alive?` - Checks if process is running
+**What to implement:**
+1. Query current playout event for channel
+2. Resolve Jellyfin media source URL from event
+3. Calculate playback position based on event start time
+4. Pass real source URL to FFmpeg instead of test stream
 
-**Estimated time:** 1-2 hours
+**Key location to modify:** `streaming.clj:46-49` (currently hardcoded)
 
-**Code example provided in:** `GETTING_STARTED_STREAMING.md` (Step 2)
+**Estimated time:** 2-3 hours
+
+**References:**
+- `src/pseudovision/db/playouts.clj` - Query functions
+- `src/pseudovision/http/api/media.clj:172-219` - Media URL resolution example
+- `TODO.md` Section 2-3 for detailed requirements
 
 **Test approach:**
 ```clojure
