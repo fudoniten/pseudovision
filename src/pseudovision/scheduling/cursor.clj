@@ -46,9 +46,12 @@
   "Deserializes a cursor from its stored JSONB string, parsing Instant fields back from ISO strings."
   [s]
   (when s
-    (-> (json/parse-string s true)
-        (update :next-start      #(some-> % Instant/parse))
-        (update :block-ends-at   #(some-> % Instant/parse)))))
+    (let [parsed (if (string? s) 
+                   (json/parse-string s true)
+                   s)]  ; Already deserialized (next.jdbc returns JSONB as maps)
+      (-> parsed
+          (update :next-start      #(some-> % Instant/parse))
+          (update :block-ends-at   #(some-> % Instant/parse))))))
 
 (defn advance-slot
   "Advances slot-index by 1, wrapping around modulo n-slots."
