@@ -112,7 +112,8 @@
   "Serves HLS segment files (.ts) for active streams."
   [{:keys [db]}]
   (fn [req]
-    (let [uuid (get-in req [:path-params :uuid])
+    (let [uuid-str (get-in req [:path-params :uuid])
+          uuid (java.util.UUID/fromString uuid-str)
           segment-name (get-in req [:path-params :segment])]
       (log/debug "Segment request" {:uuid uuid :segment segment-name})
       
