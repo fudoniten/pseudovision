@@ -96,7 +96,8 @@
    ["/api/version"
     {:get (fn [_] {:status 200 
                    :body {:version (or (System/getenv "GIT_COMMIT") "dev")
-                          :timestamp (System/getenv "BUILD_TIMESTAMP")}})}]
+                          :timestamp (System/getenv "BUILD_TIMESTAMP")
+                          :code-version "2026-04-13-v2"}})}]
 
    ;; ── Test Utilities ──────────────────────────────────────────────────────
    ["/api/test/info"
