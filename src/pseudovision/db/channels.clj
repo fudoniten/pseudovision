@@ -24,7 +24,7 @@
 (defn get-channel-by-uuid [ds uuid]
   (db/query-one ds (-> (h/select :*)
                        (h/from :channels)
-                       (h/where [:= :uuid (str uuid)])
+                       (h/where [:= :uuid [:cast (str uuid) :uuid]])
                        sql/format)))
 
 (defn create-channel! [ds attrs]
