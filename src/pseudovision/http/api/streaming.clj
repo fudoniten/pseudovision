@@ -134,3 +134,4 @@
           (log/warn "Stream not active for segment request" {:uuid uuid})
           {:status 404
            :body {:error "Stream not active"}})))))
+;; Updated Mon Apr 13 10:07:12 AM PDT 2026
