@@ -17,8 +17,8 @@
                           :or {start-position-secs 0
                                segment-duration 6
                                playlist-size 10}}]
-  (into-array String
-    ["ffmpeg"
+   (into-array String
+    [(or (System/getenv "FFMPEG_PATH") "ffmpeg")
      "-ss" (str start-position-secs)           ; Start position
      "-i" source-url                            ; Input URL
      "-c:v" "libx264"                           ; H.264 video

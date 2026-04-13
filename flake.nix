@@ -44,6 +44,8 @@
             environment = {
               GIT_COMMIT = self.rev or self.dirtyRev or "unknown";
               BUILD_TIMESTAMP = builtins.toString builtins.currentTime;
+              FFMPEG_PATH = "${pkgs.ffmpeg}/bin/ffmpeg";
+              FFPROBE_PATH = "${pkgs.ffmpeg}/bin/ffprobe";
             };
             entrypoint =
               let pseudovision = self.packages."${system}".pseudovision;
