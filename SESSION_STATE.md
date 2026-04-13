@@ -1,16 +1,27 @@
 # Pseudovision Streaming Implementation - Session State
 
-**Session Date:** 2026-04-10 (Initial), Updated 2026-04-12  
-**Status:** Walking Skeleton Complete - Ready for Playout Integration  
-**Current Step:** Phase 1 - Real Playout Integration (Steps 6-8)
+**Session Date:** 2026-04-10 (Initial), 2026-04-12 (Walking Skeleton), 2026-04-13 (Production Deploy)
+**Status:** 🎉 HLS Streaming FULLY FUNCTIONAL in Production  
+**Current Step:** Ready for Playout Timeline Integration
 
 ---
 
 ## 📋 Session Summary
 
-Initial session (2026-04-10) focused on planning and architecture. Follow-up implementation (2026-04-11 to 2026-04-12) completed the walking skeleton with basic HLS streaming functionality.
+**2026-04-10:** Initial planning and architectural decisions  
+**2026-04-11 to 2026-04-12:** Implemented walking skeleton with basic HLS streaming  
+**2026-04-13:** Deployed to production, fixed numerous bugs, achieved fully working HLS streaming
 
-**Update (2026-04-12):** Walking skeleton is now complete. Basic HLS streaming works with test stream. Next priority is integrating with actual playout timeline and Jellyfin media sources.
+**Major Achievement (2026-04-13):**
+- ✅ HLS streaming fully functional in production Kubernetes cluster
+- ✅ FFmpeg transcoding H.264/AAC working
+- ✅ Valid MPEG-TS segments being served
+- ✅ Test channels can be created and streamed via API
+- ✅ Automatic versioning with git timestamps
+- ✅ Kubernetes RBAC for automated deployments configured
+- ✅ Stream verified working with curl, VLC-ready
+
+**Production Stream URL:** https://pseudovision.kube.sea.fudo.link/stream/{uuid}
 
 ---
 
@@ -166,9 +177,30 @@ vlc http://localhost:8080/stream/{uuid}
 
 ---
 
-## 📍 Where We Left Off (Updated 2026-04-12)
+## 🐛 Bugs Fixed in 2026-04-13 Session
 
-### Current Position: Walking Skeleton Complete ✅
+During production deployment, we discovered and fixed numerous bugs:
+
+1. **Collection creation JSONB handling** - Config field wasn't being converted to JSONB (media.clj:258)
+2. **FFmpeg profile creation** - Parameterized queries didn't work with next.jdbc (test_channel.clj)
+3. **Test collection endpoint** - Same parameterized query issues (test.clj)
+4. **Schedule creation missing RETURNING** - create-schedule! didn't return created record (schedules.clj:24)
+5. **Slot creation missing RETURNING** - create-slot! didn't return created record (schedules.clj:56)
+6. **Channel creation missing RETURNING** - create-channel! didn't return created record (channels.clj:30)
+7. **Playout upsert with DO NOTHING** - Changed to DO UPDATE SET to return rows (playouts.clj)
+8. **UUID type mismatch** - get-channel-by-uuid needed explicit UUID cast (channels.clj:27)
+9. **Segment handler UUID lookup** - Path params are strings but active-streams uses UUID objects (streaming.clj:115)
+10. **FFmpeg path in container** - Nix binaries not in PATH, added FFMPEG_PATH env var
+11. **Missing /tmp directory** - Nix containers don't have /tmp, added emptyDir volume mount
+12. **Kebab-case vs snake_case** - Fixed test_channel.clj to use kebab-case for HoneySQL (schedule-id not schedule_id)
+
+All bugs fixed and streaming working in production!
+
+---
+
+## 📍 Where We Left Off (Updated 2026-04-13)
+
+### Current Position: Production Streaming Working ✅
 
 **Completed (Steps 1-5):**
 - ✅ `/stream/{uuid}` endpoint fully functional

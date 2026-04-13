@@ -2,30 +2,34 @@
 
 This guide walks you through implementing live channel streaming in Pseudovision, starting from the minimal working example we've just created.
 
-## Current Status (Updated 2026-04-12)
+## Current Status (Updated 2026-04-13)
 
-✅ **Steps 1-4 Complete:** Basic HLS streaming working with test stream
+🎉 **FULLY FUNCTIONAL:** HLS streaming is working end-to-end!
 - Created `/stream/{uuid}` endpoint with FFmpeg integration
-- HLS playlist generation and segment serving functional
-- FFmpeg process management and caching implemented
+- HLS playlist generation and segment serving working
+- FFmpeg transcoding H.264/AAC producing valid MPEG-TS segments
 - Multiple clients can share same stream process
+- Deployed to production Kubernetes cluster
+- Tested and verified working
 
-**Test it:**
+**Test it in production:**
 ```bash
-# Start the server
-clojure -M:run
+# Create a test channel (returns stream URL)
+curl -X POST https://pseudovision.kube.sea.fudo.link/api/test/channels \
+  -H "Content-Type: application/json" \
+  -d '{"number": "990", "name": "My Test Channel"}' | jq -r '.stream_url'
 
-# Test with a valid channel UUID (replace with actual UUID from your DB)
-curl http://localhost:8080/stream/550e8400-e29b-41d4-a716-446655440000
+# Test the stream
+vlc https://pseudovision.kube.sea.fudo.link/stream/{uuid}
 
-# Test with invalid UUID (should return 404)
-curl http://localhost:8080/stream/invalid-uuid
+# Or with ffplay
+ffplay https://pseudovision.kube.sea.fudo.link/stream/{uuid}
 
-# Test in VLC
-vlc http://localhost:8080/stream/550e8400-e29b-41d4-a716-446655440000
+# Check version
+curl https://pseudovision.kube.sea.fudo.link/api/version | jq
 ```
 
-⚠️ **Current Limitation:** Using hardcoded test stream URL. Next step is to integrate with actual playout timeline and Jellyfin media sources.
+⚠️ **Current Limitation:** Using hardcoded test stream URL (https://test-streams.mux.dev). Next step is to integrate with actual playout timeline and Jellyfin media sources to stream your own media library.
 
 ---
 

@@ -22,30 +22,39 @@ This document tracks the completion status of XMLTV, M3U, and live streaming fun
 
 ---
 
-## ⚡ Recent Progress Summary (Updated 2026-04-12)
+## ⚡ Recent Progress Summary (Updated 2026-04-13)
 
-**✅ COMPLETED (as of recent commits):**
-1. **Basic HLS Streaming Infrastructure** (Sections 1, 4-6)
-   - Created `/stream/{uuid}` endpoint and segment serving (core.clj:106-107)
-   - Implemented `streaming.clj` with stream/segment handlers
-   - Built FFmpeg HLS command builder (ffmpeg/hls.clj)
-   - Process management and segment caching working
-   - Multiple clients can share same stream process
+**🎉 STREAMING FULLY FUNCTIONAL (as of 2026-04-13):**
 
-2. **Walking Skeleton Status**
-   - ✅ HTTP routes configured
-   - ✅ FFmpeg process spawning works
-   - ✅ HLS playlist generation and URL rewriting
-   - ✅ Segment serving with proper Content-Type headers
-   - ✅ Basic error handling (404s, 503s)
+1. **Complete HLS Streaming Infrastructure** (Sections 1, 4-6) ✅ WORKING
+   - `/stream/{uuid}` endpoint fully operational
+   - FFmpeg transcoding with H.264/AAC producing valid MPEG-TS segments
+   - HLS playlists generating and updating correctly
+   - Segments serving with proper Content-Type headers
+   - Multiple clients sharing FFmpeg processes
+   - Tested and verified with curl, segments downloading successfully
+   - **Stream URL:** https://pseudovision.kube.sea.fudo.link/stream/{uuid}
 
-**🚨 CRITICAL GAPS (blocking real usage):**
+2. **Production Deployment** ✅ COMPLETE
+   - Kubernetes RBAC configured for automated deployments
+   - Automatic versioning using git commit timestamps
+   - Container images tagged with YYYYMMDD version tags
+   - FFmpeg integrated into Nix container with proper library paths
+   - /tmp volume mounted for segment storage
+   - Version endpoint for deployment verification
+
+3. **API Enhancements** ✅ COMPLETE
+   - FFmpeg profiles API (`/api/ffmpeg/profiles`)
+   - Test channel creation API working end-to-end
+   - Version endpoint (`/api/version`)
+
+**🚨 REMAINING GAPS (for real media library usage):**
 1. **Playout Timeline Integration** (Section 2) — Currently using hardcoded test stream
 2. **Media Source Resolution** (Section 3) — Not fetching actual Jellyfin URLs
 3. **Event Transitions** (Section 7) — No support for switching between media items
 4. **Fallback Handling** (Section 8) — No filler support for gaps
 
-**Next Priority:** Implement playout timeline query and Jellyfin media resolution to replace the hardcoded test stream URL (streaming.clj:48).
+**Next Priority:** Integrate with playout timeline to stream actual media library content instead of test stream.
 
 ---
 
