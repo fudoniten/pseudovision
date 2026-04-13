@@ -9,7 +9,8 @@
             [pseudovision.http.api.m3u        :as m3u]
             [pseudovision.http.api.media      :as med]
             [pseudovision.http.api.streaming  :as streaming]
-            [pseudovision.http.api.test       :as test]))
+            [pseudovision.http.api.test       :as test]
+            [pseudovision.http.api.ffmpeg     :as ffmpeg]))
 
 (defn- routes [ctx]
   [""
@@ -81,6 +82,15 @@
    ["/api/media/collections"
     {:get  (med/list-collections-handler  ctx)
      :post (med/create-collection-handler ctx)}]
+
+   ;; ── FFmpeg Profiles ─────────────────────────────────────────────────────
+   ["/api/ffmpeg/profiles"
+    {:get  (ffmpeg/list-profiles-handler ctx)
+     :post (ffmpeg/create-profile-handler ctx)}]
+   ["/api/ffmpeg/profiles/:id"
+    {:get    (ffmpeg/get-profile-handler ctx)
+     :put    (ffmpeg/update-profile-handler ctx)
+     :delete (ffmpeg/delete-profile-handler ctx)}]
 
    ;; ── Version & Health ────────────────────────────────────────────────────
    ["/api/version"
