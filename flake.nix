@@ -41,6 +41,10 @@
             repo = "registry.kube.sea.fudo.link";
             tags = [ "latest" ];
             environmentPackages = [ pkgs.ffmpeg ];
+            environment = {
+              GIT_COMMIT = self.rev or self.dirtyRev or "unknown";
+              BUILD_TIMESTAMP = builtins.toString builtins.currentTime;
+            };
             entrypoint =
               let pseudovision = self.packages."${system}".pseudovision;
               in [ "${pseudovision}/bin/pseudovision" ];

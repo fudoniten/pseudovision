@@ -82,6 +82,12 @@
     {:get  (med/list-collections-handler  ctx)
      :post (med/create-collection-handler ctx)}]
 
+   ;; ── Version & Health ────────────────────────────────────────────────────
+   ["/api/version"
+    {:get (fn [_] {:status 200 
+                   :body {:version (or (System/getenv "GIT_COMMIT") "dev")
+                          :timestamp (System/getenv "BUILD_TIMESTAMP")}})}]
+
    ;; ── Test Utilities ──────────────────────────────────────────────────────
    ["/api/test/info"
     {:get (test/test-info-handler ctx)}]
