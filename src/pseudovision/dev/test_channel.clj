@@ -9,6 +9,7 @@
             [pseudovision.db.core :as db]
             [pseudovision.util.sql :as sql-util]
             [pseudovision.scheduling.core :as sched]
+            [honey.sql :as h]
             [taoensso.timbre :as log]))
 
 (defn- get-or-create-default-ffmpeg-profile!
@@ -18,9 +19,13 @@
     (:ffmpeg_profiles/id profile)
     (let [result (db/execute-one! 
                   ds
-                  ["INSERT INTO ffmpeg_profiles (name, config) VALUES (?, ?::jsonb) RETURNING id"
-                   "default"
-                   "{\"video_codec\": \"libx264\", \"audio_codec\": \"aac\"}"])]
+                  (h/format 
+                    {:insert-into :ffmpeg_profiles
+                     :values [{:name "default"
+                               :config (sql-util/->jsonb 
+                                         {:video-codec "libx264" 
+                                          :audio-codec "aac"})}]
+                     :returning [:id]}))]
       (:ffmpeg_profiles/id result))))
 
 (defn- get-first-collection
