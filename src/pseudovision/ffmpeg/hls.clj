@@ -47,6 +47,15 @@
    Returns: {:process Process, :pid long, :output-dir String}"
   [command output-dir]
   (let [pb (ProcessBuilder. command)
+        env (.environment pb)
+        ffmpeg-path (or (System/getenv "FFMPEG_PATH") "ffmpeg")
+        ;; Extract /nix/store path and set up library paths for Nix binaries
+        _ (when (.startsWith ffmpeg-path "/nix/store/")
+            (let [nix-store-path (second (re-find #"(/nix/store/[^/]+)" ffmpeg-path))
+                  lib-path (str nix-store-path "/lib")]
+              (log/debug "Setting up Nix library paths" {:nix-store-path nix-store-path})
+              (.put env "LD_LIBRARY_PATH" 
+                    (str lib-path ":" (or (.get env "LD_LIBRARY_PATH") "")))))
         _  (.directory pb (File. output-dir))
         _  (.redirectErrorStream pb true)      ; Merge stderr to stdout
         process (.start pb)]
