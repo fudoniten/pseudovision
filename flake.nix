@@ -41,7 +41,7 @@
             repo = "registry.kube.sea.fudo.link";
             tags = [ "latest" ];
             environmentPackages = [ pkgs.ffmpeg ];
-            environment = {
+            env = {
               GIT_COMMIT = self.rev or self.dirtyRev or "unknown";
               BUILD_TIMESTAMP = builtins.toString builtins.currentTime;
               FFMPEG_PATH = "${pkgs.ffmpeg}/bin/ffmpeg";
