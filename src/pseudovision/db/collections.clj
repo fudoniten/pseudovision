@@ -23,8 +23,8 @@
 (defmethod resolve-collection :smart [ds collection]
   ;; Basic smart collection query support
   ;; Supports filtering by media-type (movie, episode, music_video)
-  (let [query-config (get-in collection [:collections/config :query] {})
-        media-type (get query-config :media-type)]
+  (let [query-config (get-in collection [:collections/config "query"] {})
+        media-type (get query-config "media-type")]
     (log/info "Resolving smart collection" 
               {:id (:collections/id collection) 
                :query query-config
