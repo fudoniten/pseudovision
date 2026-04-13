@@ -16,7 +16,11 @@
   "Gets the first ffmpeg profile, or creates a default one if none exist."
   [ds]
   (if-let [profile (db/query-one ds ["SELECT * FROM ffmpeg_profiles LIMIT 1"])]
-    (:ffmpeg_profiles/id profile)
+    (do
+      (log/debug "Found existing FFmpeg profile" {:profile profile :keys (keys profile)})
+      (or (:ffmpeg_profiles/id profile)
+          (:ffmpeg-profiles/id profile)
+          (:id profile)))
     (let [result (db/execute-one! 
                   ds
                   (h/format 
@@ -26,6 +30,7 @@
                                          {:video-codec "libx264" 
                                           :audio-codec "aac"})}]
                      :returning [:*]}))]
+      (log/debug "Created new FFmpeg profile" {:result result})
       (:ffmpeg-profiles/id result))))
 
 (defn- get-first-collection
