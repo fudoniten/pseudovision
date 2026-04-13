@@ -21,10 +21,23 @@
                    sql/format)))
 
 (defmethod resolve-collection :smart [ds collection]
-  ;; TODO: implement Lucene/search query parsing
-  (log/warn "Smart collection resolution not yet implemented; returning empty"
-            {:id (:collections/id collection)})
-  [])
+  ;; Basic smart collection query support
+  ;; Supports filtering by media-type (movie, episode, music_video)
+  (let [query-config (get-in collection [:collections/config :query] {})
+        media-type (get query-config :media-type)]
+    (log/info "Resolving smart collection" 
+              {:id (:collections/id collection) 
+               :query query-config
+               :media-type media-type})
+    (db/query ds (-> (h/select :mi.* :mv.duration)
+                     (h/from [:media-items :mi])
+                     (h/left-join [:media-versions :mv] [:= :mv.media-item-id :mi.id])
+                     (cond->
+                       ;; Filter by media type if specified
+                       media-type
+                       (h/where [:= :mi.kind (keyword media-type)]))
+                     (h/order-by :mi.id)
+                     sql/format))))
 
 (defmethod resolve-collection :playlist [ds collection]
   ;; Items are stored in the config JSONB as an ordered list of collection
