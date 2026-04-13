@@ -24,6 +24,7 @@
 (defn create-schedule! [ds attrs]
   (db/execute-one! ds (-> (h/insert-into :schedules)
                           (h/values [attrs])
+                          (h/returning :*)
                           sql/format)))
 
 (defn update-schedule! [ds id attrs]
@@ -70,6 +71,7 @@
                     (update :guide-mode #(sql-util/->pg-enum "guide_mode" %)))
         sql-map (-> (h/insert-into :schedule-slots)
                     (h/values [processed])
+                    (h/returning :*)
                     sql/format)]
     (log/debug "Creating slot" {:attrs attrs :processed processed :sql sql-map})
     (db/execute-one! ds sql-map)))
