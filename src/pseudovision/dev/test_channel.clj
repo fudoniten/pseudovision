@@ -25,7 +25,7 @@
                                :config (sql-util/->jsonb 
                                          {:video-codec "libx264" 
                                           :audio-codec "aac"})}]
-                     :returning [:id]}))]
+                     :returning [:*]}))]
       (:ffmpeg_profiles/id result))))
 
 (defn- get-first-collection
