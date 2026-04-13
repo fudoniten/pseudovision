@@ -88,16 +88,16 @@
        
        (log/info "Created channel" {:id channel-id :uuid uuid :number number})
        
-       ;; Create schedule with a simple 24-hour flood slot
-       (let [schedule (db-schedules/create-schedule! 
-                       ds
-                       {:name (str "Test Schedule - " name)
-                        :shuffle_slots false
-                        :random_start_point false})
-             
-             schedule-id (:schedules/id schedule)]
-         
-         (log/info "Created schedule" {:id schedule-id})
+        ;; Create schedule with a simple 24-hour flood slot
+        (let [schedule (db-schedules/create-schedule! 
+                        ds
+                        {:name (str "Test Schedule - " name)
+                         :shuffle_slots false
+                         :random_start_point false})
+              
+              schedule-id (or (:schedules/id schedule) (:id schedule))]
+          
+          (log/info "Created schedule" {:id schedule-id :schedule schedule :keys (keys schedule)})
          
           ;; Create a single flood slot that plays random items from collection
           (db-schedules/create-slot! 
