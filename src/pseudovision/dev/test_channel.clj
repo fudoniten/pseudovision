@@ -20,13 +20,13 @@
     (let [result (db/execute-one! 
                   ds
                   (h/format 
-                    {:insert-into :ffmpeg_profiles
+                    {:insert-into :ffmpeg-profiles
                      :values [{:name "default"
                                :config (sql-util/->jsonb 
                                          {:video-codec "libx264" 
                                           :audio-codec "aac"})}]
                      :returning [:*]}))]
-      (:ffmpeg_profiles/id result))))
+      (:ffmpeg-profiles/id result))))
 
 (defn- get-first-collection
   "Gets the first available collection from the database."
