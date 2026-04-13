@@ -39,11 +39,10 @@
           deployContainer = helpers.deployContainers {
             name = "pseudovision";
             repo = "registry.kube.sea.fudo.link";
-            tags = [ "latest" ];
+            tags = [ "latest" (self.rev or self.dirtyRev or "dev") ];
             environmentPackages = [ pkgs.ffmpeg ];
             env = {
               GIT_COMMIT = self.rev or self.dirtyRev or "unknown";
-              BUILD_TIMESTAMP = builtins.toString builtins.currentTime;
               FFMPEG_PATH = "${pkgs.ffmpeg}/bin/ffmpeg";
               FFPROBE_PATH = "${pkgs.ffmpeg}/bin/ffprobe";
             };
