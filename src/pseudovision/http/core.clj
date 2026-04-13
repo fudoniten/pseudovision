@@ -95,9 +95,9 @@
    ;; ── Version & Health ────────────────────────────────────────────────────
    ["/api/version"
     {:get (fn [_] {:status 200 
-                   :body {:version (or (System/getenv "GIT_COMMIT") "dev")
-                          :timestamp (System/getenv "BUILD_TIMESTAMP")
-                          :code-version "2026-04-13-v3"}})}]
+                   :body {:git-commit (System/getenv "GIT_COMMIT")
+                          :git-timestamp (System/getenv "GIT_TIMESTAMP")
+                          :version-tag (System/getenv "VERSION_TAG")}})}]
 
    ;; ── Test Utilities ──────────────────────────────────────────────────────
    ["/api/test/info"

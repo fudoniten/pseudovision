@@ -36,13 +36,26 @@
           inherit pseudovision migratusRunner;
           default = pseudovision;
 
-          deployContainer = helpers.deployContainers {
+          deployContainer = let
+            # Get git commit timestamp for versioning
+            gitTimestamp = if self ? lastModified then
+              toString self.lastModified
+            else
+              "unknown";
+            # Create version tag from timestamp (YYYYMMDD-HHMMSS format)
+            versionTag = if self ? lastModified then
+              builtins.substring 0 8 gitTimestamp # Use YYYYMMDD
+            else
+              "dev";
+          in helpers.deployContainers {
             name = "pseudovision";
             repo = "registry.kube.sea.fudo.link";
-            tags = [ "latest" (self.rev or self.dirtyRev or "dev") ];
+            tags = [ "latest" versionTag ];
             environmentPackages = [ pkgs.ffmpeg ];
             env = {
               GIT_COMMIT = self.rev or self.dirtyRev or "unknown";
+              GIT_TIMESTAMP = gitTimestamp;
+              VERSION_TAG = versionTag;
               FFMPEG_PATH = "${pkgs.ffmpeg}/bin/ffmpeg";
               FFPROBE_PATH = "${pkgs.ffmpeg}/bin/ffprobe";
             };
