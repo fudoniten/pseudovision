@@ -1,4 +1,5 @@
 (ns pseudovision.ffmpeg.hls
+  (:require [taoensso.timbre :as log])
   (:import [java.lang ProcessBuilder]
            [java.io File]))
 
@@ -17,21 +18,28 @@
                           :or {start-position-secs 0
                                segment-duration 6
                                playlist-size 10}}]
-   (into-array String
-    [(or (System/getenv "FFMPEG_PATH") "ffmpeg")
-     "-ss" (str start-position-secs)           ; Start position
-     "-i" source-url                            ; Input URL
-     "-c:v" "libx264"                           ; H.264 video
-     "-preset" "veryfast"                       ; Fast encoding
-     "-b:v" "2000k"                             ; 2 Mbps video bitrate
-     "-c:a" "aac"                               ; AAC audio
-     "-b:a" "128k"                              ; 128 kbps audio
-     "-f" "hls"                                 ; HLS format
-     "-hls_time" (str segment-duration)        ; Segment duration
-     "-hls_list_size" (str playlist-size)      ; Segments in playlist
-     "-hls_flags" "delete_segments"            ; Auto-cleanup old segments
-     "-hls_segment_filename" (str output-dir "/segment-%03d.ts")
-     (str output-dir "/playlist.m3u8")]))      ; Output playlist
+   (let [ffmpeg-bin (or (System/getenv "FFMPEG_PATH") 
+                        ;; Try to find ffmpeg in common locations
+                        (first (filter #(.exists (File. %))
+                                      ["/usr/bin/ffmpeg"
+                                       "/usr/local/bin/ffmpeg"]))
+                        "ffmpeg")]
+     (log/debug "Using ffmpeg" {:path ffmpeg-bin})
+     (into-array String
+       [ffmpeg-bin
+        "-ss" (str start-position-secs)           ; Start position
+        "-i" source-url                            ; Input URL
+        "-c:v" "libx264"                           ; H.264 video
+        "-preset" "veryfast"                       ; Fast encoding
+        "-b:v" "2000k"                             ; 2 Mbps video bitrate
+        "-c:a" "aac"                               ; AAC audio
+        "-b:a" "128k"                              ; 128 kbps audio
+        "-f" "hls"                                 ; HLS format
+        "-hls_time" (str segment-duration)        ; Segment duration
+        "-hls_list_size" (str playlist-size)      ; Segments in playlist
+        "-hls_flags" "delete_segments"            ; Auto-cleanup old segments
+        "-hls_segment_filename" (str output-dir "/segment-%03d.ts")
+        (str output-dir "/playlist.m3u8")])))
 
 (defn start-ffmpeg
   "Starts an FFmpeg process using ProcessBuilder.
