@@ -118,8 +118,10 @@
       (log/debug "Segment request" {:uuid uuid :segment segment-name})
       
       (if-let [stream (get @active-streams uuid)]
-        (let [segment-path (str (:output-dir stream) "/" segment-name)]
-          (if (.exists (io/file segment-path))
+        (let [segment-path (str (:output-dir stream) "/" segment-name)
+              file (io/file segment-path)]
+          (log/debug "Checking segment" {:uuid uuid :segment segment-name :path segment-path :exists (.exists file) :output-dir (:output-dir stream)})
+          (if (.exists file)
             (do
               (log/debug "Serving segment" {:uuid uuid :segment segment-name})
               {:status 200
