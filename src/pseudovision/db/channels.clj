@@ -30,6 +30,7 @@
 (defn create-channel! [ds attrs]
   (db/execute-one! ds (-> (h/insert-into :channels)
                           (h/values [attrs])
+                          (h/returning :*)
                           sql/format)))
 
 (defn update-channel! [ds id attrs]

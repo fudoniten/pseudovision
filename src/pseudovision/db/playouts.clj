@@ -23,7 +23,7 @@
 
 (defn upsert-playout!
   "Creates the playout row for channel-id if it doesn't exist, or returns the
-   existing one. Uses INSERT … ON CONFLICT DO NOTHING."
+   existing one. Uses INSERT … ON CONFLICT DO UPDATE to ensure RETURNING works."
   [ds channel-id schedule-id]
   (jdbc/execute-one! ds
                      (-> (h/insert-into :playouts)
@@ -31,7 +31,8 @@
                                      :schedule-id schedule-id
                                      :seed        (rand-int Integer/MAX_VALUE)}])
                          (h/on-conflict :channel-id)
-                         (h/do-nothing)
+                         (h/do-update-set :schedule-id :seed)  ; Update schedule and seed on conflict
+                         (h/returning :*)
                          sql/format)
                      {:return-keys true}))
 
