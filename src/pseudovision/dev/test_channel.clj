@@ -99,16 +99,16 @@
          
          (log/info "Created schedule" {:id schedule-id})
          
-         ;; Create a single flood slot that plays random items from collection
-         (db-schedules/create-slot! 
-          ds
-          {:schedule_id schedule-id
-           :slot_index 0
-           :anchor (sql-util/->pg-enum "slot_anchor" "sequential")
-           :fill_mode (sql-util/->pg-enum "slot_fill_mode" "flood")
-           :collection_id coll-id
-           :playback_order (sql-util/->pg-enum "playback_order" "random")
-           :guide_mode (sql-util/->pg-enum "guide_mode" "normal")})
+          ;; Create a single flood slot that plays random items from collection
+          (db-schedules/create-slot! 
+           ds
+           {:schedule-id schedule-id
+            :slot-index 0
+            :anchor (sql-util/->pg-enum "slot_anchor" "sequential")
+            :fill-mode (sql-util/->pg-enum "slot_fill_mode" "flood")
+            :collection-id coll-id
+            :playback-order (sql-util/->pg-enum "playback_order" "random")
+            :guide-mode (sql-util/->pg-enum "guide_mode" "normal")})
          
          (log/info "Created schedule slot" {:collection-id coll-id})
          
