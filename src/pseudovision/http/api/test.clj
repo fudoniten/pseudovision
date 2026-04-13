@@ -3,6 +3,8 @@
    
    Provides endpoints for creating and managing test channels for streaming verification."
   (:require [pseudovision.dev.test-channel :as tc]
+            [pseudovision.util.sql :as sql-util]
+            [honey.sql :as h]
             [taoensso.timbre :as log]))
 
 (defn create-test-channel-handler
@@ -155,26 +157,31 @@
             ;; Create manual collection
             collection (pseudovision.db.core/execute-one! 
                         db
-                        ["INSERT INTO collections (kind, name, config) VALUES (?, ?, ?::jsonb) RETURNING *"
-                         "manual"
-                         coll-name
-                         "{}"])
+                        (h/format
+                          {:insert-into :collections
+                           :values [{:kind (sql-util/->pg-enum "collection_kind" "manual")
+                                    :name coll-name
+                                    :config (sql-util/->jsonb {})}]
+                           :returning [:*]}))
             
             collection-id (:collections/id collection)
             
             ;; Add ALL media items to it
+            ;; Using raw SQL for INSERT SELECT since HoneySQL syntax is complex
             _ (pseudovision.db.core/execute! 
                db
-               ["INSERT INTO collection_items (collection_id, media_item_id)
-                 SELECT ?, id FROM media_items
-                 ON CONFLICT (collection_id, media_item_id) DO NOTHING"
+               [(str "INSERT INTO collection_items (collection_id, media_item_id) "
+                     "SELECT ?::int, id FROM media_items "
+                     "ON CONFLICT (collection_id, media_item_id) DO NOTHING")
                 collection-id])
             
             ;; Count items
             count-result (pseudovision.db.core/query-one
                           db
-                          ["SELECT COUNT(*) as count FROM collection_items WHERE collection_id = ?"
-                           collection-id])
+                          (h/format
+                            {:select [[[:count :*] :count]]
+                             :from :collection-items
+                             :where [:= :collection-id collection-id]}))
             
             item-count (:count count-result)]
         
