@@ -83,10 +83,10 @@
                      :is_enabled true
                      :show_in_epg true})
            
-           channel-id (:channels/id channel)
-           uuid (:channels/uuid channel)]
+           channel-id (or (:channels/id channel) (:id channel))
+           uuid (or (:channels/uuid channel) (:uuid channel))]
        
-       (log/info "Created channel" {:id channel-id :uuid uuid :number number})
+       (log/info "Created channel" {:id channel-id :uuid uuid :number number :channel channel :keys (keys channel)})
        
         ;; Create schedule with a simple 24-hour flood slot
         (let [schedule (db-schedules/create-schedule! 
