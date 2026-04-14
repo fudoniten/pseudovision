@@ -100,6 +100,7 @@
 (defn create-event! [ds attrs]
   (db/execute-one! ds (-> (h/insert-into :playout-events)
                           (h/values [attrs])
+                          (h/returning :*)
                           sql/format)))
 
 (defn bulk-insert-events!

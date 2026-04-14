@@ -1,7 +1,8 @@
 (ns pseudovision.http.api.playouts
   (:require [pseudovision.db.playouts    :as db]
             [pseudovision.scheduling.core :as sched]
-            [pseudovision.util.time      :as t]))
+            [pseudovision.util.time      :as t]
+            [pseudovision.util.sql       :as sql-util]))
 
 (defn get-playout-handler [{:keys [db]}]
   (fn [req]
@@ -39,10 +40,11 @@
     (let [channel-id (parse-long (get-in req [:path-params :channel-id]))
           playout    (db/get-playout-for-channel db channel-id)]
       (if playout
-        (let [attrs (-> (:body-params req)
+        (let [kind (or (get (:body-params req) :kind) "content")
+              attrs (-> (:body-params req)
                         (assoc :playout-id (:playouts/id playout)
                                :is-manual  true
-                               :kind       (get (:body-params req) :kind "content")))]
+                               :kind (sql-util/->pg-enum "event_kind" kind)))]
           {:status 201 :body (db/create-event! db attrs)})
         {:status 404 :body {:error "No playout for this channel"}}))))
 
