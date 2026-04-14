@@ -44,7 +44,13 @@
               attrs (-> (:body-params req)
                         (assoc :playout-id (:playouts/id playout)
                                :is-manual  true
-                               :kind (sql-util/->pg-enum "event_kind" kind)))]
+                               :kind (sql-util/->pg-enum "event_kind" kind))
+                        (cond->
+                          ;; Parse ISO-8601 timestamp strings to Instant
+                          (:start-at (:body-params req))
+                          (update :start-at t/parse)
+                          (:finish-at (:body-params req))
+                          (update :finish-at t/parse)))]
           {:status 201 :body (db/create-event! db attrs)})
         {:status 404 :body {:error "No playout for this channel"}}))))
 
