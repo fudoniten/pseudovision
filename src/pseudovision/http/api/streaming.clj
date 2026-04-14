@@ -173,23 +173,27 @@
                           :channel-id (:channels/id channel)}))
           
           (let [source-url (:source-url source-info)
-                start-pos (:start-position source-info)
-                command (hls/build-hls-command source-url output-dir {:start-position-secs start-pos})
-                stream-info (hls/start-ffmpeg command output-dir)]
-            (log/info "Started new FFmpeg stream" 
-                      {:uuid uuid 
-                       :channel-name (:channels/name channel)
-                       :pid (:pid stream-info)
-                       :output-dir output-dir
-                       :source-type (:type source-info)
-                       :media-item-id (:media-item-id source-info)
-                       :start-position start-pos})
-            (swap! active-streams assoc uuid 
-                   (assoc stream-info
-                          :channel-uuid uuid
-                          :last-access (System/currentTimeMillis)
-                          :source-info source-info))
-            stream-info)))))) ; Close inner let, if, outer let, defn
+                start-pos (:start-position source-info)]
+            (log/info "Preparing to start FFmpeg" 
+                      {:source-url source-url 
+                       :start-position start-pos
+                       :source-type (:type source-info)})
+            (let [command (hls/build-hls-command source-url output-dir {:start-position-secs start-pos})
+                  stream-info (hls/start-ffmpeg command output-dir)]
+              (log/info "Started new FFmpeg stream" 
+                        {:uuid uuid 
+                         :channel-name (:channels/name channel)
+                         :pid (:pid stream-info)
+                         :output-dir output-dir
+                         :source-type (:type source-info)
+                         :media-item-id (:media-item-id source-info)
+                         :start-position start-pos})
+              (swap! active-streams assoc uuid 
+                     (assoc stream-info
+                            :channel-uuid uuid
+                            :last-access (System/currentTimeMillis)
+                            :source-info source-info))
+              stream-info))))))) ; Close inner let, inner let, if, outer let, defn
 
 ;; ---------------------------------------------------------------------------
 ;; HTTP Handlers
