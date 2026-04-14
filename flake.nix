@@ -51,7 +51,7 @@
             name = "pseudovision";
             repo = "registry.kube.sea.fudo.link";
             tags = [ "latest" versionTag ];
-            environmentPackages = [ pkgs.ffmpeg ];
+            environmentPackages = with pkgs; [ ffmpeg procps ];
             env = {
               GIT_COMMIT = self.rev or self.dirtyRev or "unknown";
               GIT_TIMESTAMP = gitTimestamp;
