@@ -57,8 +57,15 @@
               (.put env "LD_LIBRARY_PATH" 
                     (str lib-path ":" (or (.get env "LD_LIBRARY_PATH") "")))))
         _  (.directory pb (File. output-dir))
-        _  (.redirectErrorStream pb true)      ; Merge stderr to stdout
+        ;; Redirect stderr to a log file for debugging
+        stderr-file (File. output-dir "ffmpeg.log")
+        _  (.redirectError pb stderr-file)
+        _  (.redirectOutput pb stderr-file)
         process (.start pb)]
+    (log/info "FFmpeg process started" 
+              {:pid (.pid process) 
+               :output-dir output-dir
+               :log-file (.getAbsolutePath stderr-file)})
     {:process process
      :pid (.pid process)
      :output-dir output-dir}))
