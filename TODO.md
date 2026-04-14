@@ -92,40 +92,40 @@ The M3U playlist (`/iptv/channels.m3u`) and HDHomeRun lineup (`/lineup.json`) ad
 
 ### 2. Playout Timeline Query 🚨 BLOCKING
 
-- [ ] **Query current event for channel** ⚠️ TODO
+- [x] **Query current event for channel** ✅ DONE (commit f6e292c)
   - Use `get-channel` to find channel by UUID
   - Get playout for channel: `get-playout-for-channel` (src/pseudovision/db/playouts.clj:18)
   - Get current event: `get-current-event` (src/pseudovision/db/playouts.clj:74-83)
     - Pass playout ID and `(t/now)`
     - Returns event where `start_at <= now < finish_at`
-  - **Status:** Currently using hardcoded test stream (streaming.clj:48)
+  - **Location:** streaming.clj:97-141 (get-current-stream-source)
   
-- [ ] **Handle missing/future events** ⚠️ TODO
-  - If no current event, check `get-upcoming-events` for next event
-  - If no events at all, use fallback filler (from `channels.fallback_filler_id`)
-  - If fallback filler is NULL, return 503 Service Unavailable with message
-  - **Status:** Not yet implemented
+- [x] **Handle missing/future events** ✅ DONE
+  - If no current event, check `get-upcoming-events` for next event ✅
+  - If no events at all, use fallback filler (from `channels.fallback_filler_id`) ✅
+  - If fallback filler is NULL, return 503 Service Unavailable with message ✅
+  - **Location:** streaming.clj:71-95 (get-fallback-stream-source)
 
-**Test checkpoint:** Query should return current media item or fallback gracefully ❌ NOT IMPLEMENTED
+**Test checkpoint:** Query should return current media item or fallback gracefully ✅ IMPLEMENTED (pending deployment)
 
 ---
 
 ### 3. Media Item Resolution 🚨 BLOCKING
 
-- [ ] **Resolve playback URL for media item** ⚠️ TODO
-  - Use event's `media_item_id` to query media_items table
-  - Join with `media_sources` to get Jellyfin connection details
-  - Join with `media_libraries` for library metadata
-  - Use existing logic from `src/pseudovision/http/api/media.clj:172-219` (redirect-to-stream-handler)
-  - **Status:** Currently using hardcoded test stream URL
+- [x] **Resolve playback URL for media item** ✅ DONE (commit f6e292c)
+  - Use event's `media_item_id` to query media_items table ✅
+  - Join with `media_sources` to get Jellyfin connection details ✅
+  - Join with `media_libraries` for library metadata ✅
+  - Uses `db-media/get-media-item-with-source` from media.clj ✅
+  - **Location:** streaming.clj:19-32 (get-jellyfin-stream-url)
   
-- [ ] **Calculate playback position** ⚠️ TODO
-  - Calculate elapsed time: `now - event.start_at`
-  - Convert to seconds for FFmpeg `-ss` parameter
-  - Handle case where elapsed > item duration (should not happen, but handle gracefully)
-  - **Status:** FFmpeg command builder supports `-ss` parameter (hls.clj:22), but not yet integrated with playout
+- [x] **Calculate playback position** ✅ DONE
+  - Calculate elapsed time: `now - event.start_at` ✅
+  - Convert to seconds for FFmpeg `-ss` parameter ✅
+  - Handles in-point offset for chapter trimming ✅
+  - **Location:** streaming.clj:34-51 (calculate-start-position)
 
-**Test checkpoint:** Should retrieve valid Jellyfin stream URL and calculate correct position ❌ NOT IMPLEMENTED
+**Test checkpoint:** Should retrieve valid Jellyfin stream URL and calculate correct position ✅ IMPLEMENTED (pending deployment & testing)
 
 ---
 
