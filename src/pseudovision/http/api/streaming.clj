@@ -2,7 +2,11 @@
   "Live channel streaming endpoint.
    Returns HLS playlists and segments for /stream/{uuid}."
   (:require [pseudovision.db.channels :as db-channels]
+            [pseudovision.db.playouts :as db-playouts]
+            [pseudovision.db.media :as db-media]
+            [pseudovision.media.connection :as conn]
             [pseudovision.ffmpeg.hls :as hls]
+            [pseudovision.util.time :as t]
             [taoensso.timbre :as log]
             [clojure.java.io :as io]))
 
@@ -12,6 +16,122 @@
 
 ;; Global state (to be refactored into Integrant component later)
 (defonce active-streams (atom {}))
+
+;; ---------------------------------------------------------------------------
+;; Playout Timeline Integration
+;; ---------------------------------------------------------------------------
+
+(defn- get-jellyfin-stream-url
+  "Resolves a Jellyfin stream URL for a media item.
+   Returns the direct stream URL or nil if not found/accessible."
+  [db media-item-id]
+  (when-let [row (db-media/get-media-item-with-source db media-item-id)]
+    (let [conn-config (:media-sources/connection-config row)
+          base-url (conn/active-uri (:connections conn-config))
+          api-key (:api-key conn-config)
+          item-id (or (:media-items/remote-key row) (:remote-key row))]
+      (when (and base-url api-key item-id)
+        (let [url (str base-url "/Videos/" item-id "/stream?static=true&api_key=" api-key)]
+          (log/info "Resolved Jellyfin stream URL" 
+                    {:media-item-id media-item-id
+                     :remote-key item-id
+                     :base-url base-url})
+          url)))))
+
+(defn- calculate-start-position
+  "Calculates FFmpeg start position in seconds for a playout event.
+   Accounts for:
+   - Time elapsed since event started
+   - In-point offset (chapter trim)
+   Returns integer seconds."
+  [event now]
+  (let [start-at (:playout-events/start-at event)
+        in-point (:playout-events/in-point event)
+        elapsed-duration (t/duration-between start-at now)
+        elapsed-secs (t/duration->seconds elapsed-duration)
+        in-point-secs (if in-point (t/duration->seconds in-point) 0)
+        total-secs (+ elapsed-secs in-point-secs)]
+    (log/debug "Calculated start position"
+               {:elapsed-secs elapsed-secs
+                :in-point-secs in-point-secs
+                :total-secs total-secs
+                :event-id (:playout-events/id event)})
+    (max 0 total-secs)))
+
+(defn- get-fallback-stream-source
+  "Returns fallback stream source when no current event is available.
+   Uses channel's fallback_filler_id if configured, otherwise returns error."
+  [db channel]
+  (if-let [filler-id (:channels/fallback-filler-id channel)]
+    (if-let [url (get-jellyfin-stream-url db filler-id)]
+      {:source-url url
+       :start-position 0
+       :type :fallback-filler
+       :media-item-id filler-id}
+      (do
+        (log/error "Fallback filler media item not found or inaccessible"
+                   {:channel-id (:channels/id channel)
+                    :filler-id filler-id})
+        {:error "Fallback content unavailable"
+         :status 503}))
+    (do
+      (log/warn "No content available for channel and no fallback filler configured"
+                {:channel-id (:channels/id channel)
+                 :channel-name (:channels/name channel)})
+      {:error "No content available"
+       :status 503})))
+
+(defn- get-current-stream-source
+  "Determines what should be streaming for a channel right now.
+   
+   Returns map with:
+   - :source-url - The media URL to stream
+   - :start-position - Seek position in seconds
+   - :event - The current event (if any)
+   - :type - :current-event, :fallback-filler, or :upcoming-wait
+   
+   Or returns error map with :error and :status if no content available."
+  [db channel]
+  (let [channel-id (:channels/id channel)
+        playout (db-playouts/get-playout-for-channel db channel-id)]
+    
+    (if-not playout
+      (do
+        (log/warn "No playout configured for channel" {:channel-id channel-id})
+        (get-fallback-stream-source db channel))
+      
+      (let [now (t/now)
+            current-event (db-playouts/get-current-event db (:playouts/id playout) now)]
+        
+        (if current-event
+          ;; We have a current event - stream it!
+          (let [media-item-id (:playout-events/media-item-id current-event)
+                source-url (get-jellyfin-stream-url db media-item-id)
+                start-pos (calculate-start-position current-event now)]
+            (if source-url
+              {:source-url source-url
+               :start-position start-pos
+               :event current-event
+               :type :current-event
+               :media-item-id media-item-id}
+              (do
+                (log/error "Failed to resolve stream URL for current event"
+                           {:event-id (:playout-events/id current-event)
+                            :media-item-id media-item-id})
+                (get-fallback-stream-source db channel))))
+          
+          ;; No current event - check for upcoming events or use fallback
+          (let [upcoming (first (db-playouts/get-upcoming-events db (:playouts/id playout) now 1))]
+            (if upcoming
+              (do
+                (log/info "No current event, but upcoming event found - using fallback until it starts"
+                          {:channel-id channel-id
+                           :next-event-at (:playout-events/start-at upcoming)})
+                (get-fallback-stream-source db channel))
+              (do
+                (log/warn "No current or upcoming events in playout"
+                          {:channel-id channel-id})
+                (get-fallback-stream-source db channel)))))))))
 
 (defn- ensure-stream-dir
   "Creates and returns the absolute path to the stream directory for a channel."
@@ -43,21 +163,33 @@
         stream)
       ;; Start new stream
       (let [output-dir (ensure-stream-dir uuid)
-            ;; TODO: Get actual playout event and source URL
-            ;; For now, use public test stream
-            source-url "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8"
-            command (hls/build-hls-command source-url output-dir {})
-            stream-info (hls/start-ffmpeg command output-dir)]
-        (log/info "Started new FFmpeg stream" 
-                  {:uuid uuid 
-                   :channel-name (:channels/name channel)
-                   :pid (:pid stream-info)
-                   :output-dir output-dir})
-        (swap! active-streams assoc uuid 
-               (assoc stream-info
-                      :channel-uuid uuid
-                      :last-access (System/currentTimeMillis)))
-        stream-info))))
+            ;; Get actual playout event and source URL
+            source-info (get-current-stream-source db channel)]
+        
+        ;; Check if we got an error (no content available)
+        (if (:error source-info)
+          (throw (ex-info (:error source-info) 
+                         {:status (:status source-info)
+                          :channel-id (:channels/id channel)}))
+          
+          (let [source-url (:source-url source-info)
+                start-pos (:start-position source-info)
+                command (hls/build-hls-command source-url output-dir {:start-position-secs start-pos})
+                stream-info (hls/start-ffmpeg command output-dir)]
+            (log/info "Started new FFmpeg stream" 
+                      {:uuid uuid 
+                       :channel-name (:channels/name channel)
+                       :pid (:pid stream-info)
+                       :output-dir output-dir
+                       :source-type (:type source-info)
+                       :media-item-id (:media-item-id source-info)
+                       :start-position start-pos})
+            (swap! active-streams assoc uuid 
+                   (assoc stream-info
+                          :channel-uuid uuid
+                          :last-access (System/currentTimeMillis)
+                          :source-info source-info))
+            stream-info)))))) ; Close inner let, if, outer let, defn
 
 ;; ---------------------------------------------------------------------------
 ;; HTTP Handlers

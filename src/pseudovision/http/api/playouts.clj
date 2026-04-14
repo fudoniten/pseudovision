@@ -39,7 +39,7 @@
   (fn [req]
     (let [channel-id (parse-long (get-in req [:path-params :channel-id]))
           playout    (db/get-playout-for-channel db channel-id)]
-      (if playout
+(if playout
         (let [kind (or (get (:body-params req) :kind) "content")
               attrs (-> (:body-params req)
                         (assoc :playout-id (:playouts/id playout)
@@ -48,9 +48,9 @@
                         (cond->
                           ;; Parse ISO-8601 timestamp strings to Instant
                           (:start-at (:body-params req))
-                          (update :start-at t/parse)
+                          (update :start-at #(java.time.Instant/parse %))
                           (:finish-at (:body-params req))
-                          (update :finish-at t/parse)))]
+                          (update :finish-at #(java.time.Instant/parse %))))]
           {:status 201 :body (db/create-event! db attrs)})
         {:status 404 :body {:error "No playout for this channel"}}))))
 
