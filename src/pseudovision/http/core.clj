@@ -121,7 +121,8 @@
    
    ;; ── Streaming ───────────────────────────────────────────────────────────
    ["/stream/:uuid"   {:get (streaming/stream-handler ctx)}]
-   ["/stream/:uuid/:segment" {:get (streaming/segment-handler ctx)}]])
+   ["/stream/:uuid/:segment" {:get (streaming/segment-handler ctx)}]
+   ["/stream/:uuid/debug" {:get (streaming/stream-debug-handler ctx)}]])
 
 (defn make-handler
   "Creates the reitit Ring handler with JSON 404/405 fallback responses."

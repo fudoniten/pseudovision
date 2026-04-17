@@ -17,6 +17,23 @@
 ;; Global state (to be refactored into Integrant component later)
 (defonce active-streams (atom {}))
 
+(defn cleanup-dead-streams
+  "Removes dead FFmpeg processes from active-streams.
+   Returns count of cleaned up streams."
+  []
+  (let [before-count (count @active-streams)
+        alive-streams (into {}
+                           (filter (fn [[uuid stream]]
+                                    (let [alive? (hls/process-alive? stream)]
+                                      (when-not alive?
+                                        (log/warn "Removing dead stream" 
+                                                 {:uuid uuid 
+                                                  :pid (:pid stream)}))
+                                      alive?))
+                                  @active-streams))]
+    (reset! active-streams alive-streams)
+    (- before-count (count alive-streams))))
+
 ;; ---------------------------------------------------------------------------
 ;; Playout Timeline Integration
 ;; ---------------------------------------------------------------------------
@@ -216,20 +233,52 @@
             ;; Wait briefly for FFmpeg to create playlist
             (Thread/sleep 1000)
             
-            (if (.exists (io/file playlist-path))
-              (do
-                (log/debug "Serving playlist" {:uuid uuid :path playlist-path})
-                (let [playlist-content (slurp playlist-path)
-                      rewritten-playlist (rewrite-playlist-urls playlist-content uuid)]
-                  {:status 200
-                   :headers {"Content-Type" "application/vnd.apple.mpegurl"
-                            "Cache-Control" "no-cache"}
-                   :body rewritten-playlist}))
-              (do
-                (log/warn "Playlist not ready yet" {:uuid uuid :path playlist-path})
-                {:status 503
-                 :headers {"Retry-After" "2"}
-                 :body {:error "Stream starting, please retry"}})))
+            ;; Check if FFmpeg process is still alive
+            (let [process-alive? (hls/process-alive? stream)]
+              (if-not process-alive?
+                (let [log-path (str (:output-dir stream) "/ffmpeg.log")
+                      log-file (io/file log-path)
+                      error-msg (if (.exists log-file)
+                                 (try
+                                   (let [log-content (slurp log-file)
+                                         ;; Get last 500 chars of log for error context
+                                         error-excerpt (if (> (count log-content) 500)
+                                                        (subs log-content (- (count log-content) 500))
+                                                        log-content)]
+                                     error-excerpt)
+                                   (catch Exception _ "Could not read FFmpeg log"))
+                                 "No log file found")]
+                  (log/error "FFmpeg process died shortly after starting" 
+                            {:uuid uuid 
+                             :pid (:pid stream)
+                             :log-excerpt error-msg})
+                  ;; Remove dead stream from active streams
+                  (swap! active-streams dissoc uuid)
+                  {:status 500
+                   :headers {"Content-Type" "application/json"}
+                   :body {:error "FFmpeg process failed to start"
+                          :details error-msg
+                          :log-path log-path}})
+                
+                ;; Process is alive, check for playlist
+                (if (.exists (io/file playlist-path))
+                  (do
+                    (log/debug "Serving playlist" {:uuid uuid :path playlist-path})
+                    (let [playlist-content (slurp playlist-path)
+                          rewritten-playlist (rewrite-playlist-urls playlist-content uuid)]
+                      {:status 200
+                       :headers {"Content-Type" "application/vnd.apple.mpegurl"
+                                "Cache-Control" "no-cache"}
+                       :body rewritten-playlist}))
+                  (do
+                    (log/warn "Playlist not ready yet (FFmpeg still starting)" 
+                             {:uuid uuid 
+                              :path playlist-path 
+                              :ffmpeg-pid (:pid stream)
+                              :ffmpeg-alive true})
+                    {:status 503
+                     :headers {"Retry-After" "2"}
+                     :body {:error "Stream starting, please retry"}})))))
           
           (catch Exception e
             (log/error e "Failed to start stream" {:uuid uuid})
@@ -272,4 +321,34 @@
           (log/warn "Stream not active for segment request" {:uuid uuid})
           {:status 404
            :body {:error "Stream not active"}})))))
+
+(defn stream-debug-handler
+  "Returns debug information and FFmpeg logs for a stream."
+  [_ctx]
+  (fn [req]
+    (let [uuid-str (get-in req [:path-params :uuid])
+          uuid (java.util.UUID/fromString uuid-str)]
+      (log/debug "Stream debug request" {:uuid uuid})
+      
+      (if-let [stream (get @active-streams uuid)]
+        (let [log-path (str (:output-dir stream) "/ffmpeg.log")
+              log-file (io/file log-path)
+              process-alive? (hls/process-alive? stream)
+              log-content (if (.exists log-file)
+                           (try (slurp log-file)
+                                (catch Exception e (str "Error reading log: " (.getMessage e))))
+                           "No log file found")]
+          {:status 200
+           :headers {"Content-Type" "application/json"}
+           :body {:uuid uuid
+                  :pid (:pid stream)
+                  :output-dir (:output-dir stream)
+                  :process-alive process-alive?
+                  :last-access (:last-access stream)
+                  :source-info (:source-info stream)
+                  :ffmpeg-log log-content}})
+        {:status 404
+         :body {:error "Stream not active or not found"
+                :uuid uuid
+                :active-streams (keys @active-streams)}}))))
 ;; Updated Mon Apr 13 10:07:12 AM PDT 2026
