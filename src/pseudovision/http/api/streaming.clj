@@ -166,51 +166,89 @@
                          #"segment-(\d+)\.ts"
                          (str "/stream/" channel-uuid "/segment-$1.ts")))
 
+(defn- needs-transition?
+  "Checks if a stream needs to transition to a new event.
+   Returns true if the current event has ended or will end very soon."
+  [stream]
+  (when-let [event (get-in stream [:source-info :event])]
+    (let [finish-at (:playout-events/finish-at event)
+          now (t/now)
+          ;; Transition 5 seconds before event ends to allow FFmpeg startup time
+          transition-threshold (t/sub-duration finish-at (t/seconds->duration 5))]
+      (.isAfter now transition-threshold))))
+
+(defn- stop-and-remove-stream
+  "Stops FFmpeg process and removes stream from active-streams."
+  [uuid stream]
+  (log/info "Stopping stream for transition" 
+            {:uuid uuid 
+             :pid (:pid stream)})
+  (hls/stop-ffmpeg stream)
+  (swap! active-streams dissoc uuid))
+
+(defn- start-new-stream
+  "Starts a new FFmpeg stream for the channel.
+   
+   Returns stream info map."
+  [db channel uuid]
+  (let [output-dir (ensure-stream-dir uuid)
+        ;; Get actual playout event and source URL
+        source-info (get-current-stream-source db channel)]
+    
+    ;; Check if we got an error (no content available)
+    (if (:error source-info)
+      (throw (ex-info (:error source-info) 
+                     {:status (:status source-info)
+                      :channel-id (:channels/id channel)}))
+      
+      (let [source-url (:source-url source-info)
+            start-pos (:start-position source-info)]
+        (log/info "Preparing to start FFmpeg" 
+                  {:source-url source-url 
+                   :start-position start-pos
+                   :source-type (:type source-info)})
+        (let [command (hls/build-hls-command source-url output-dir {:start-position-secs start-pos})
+              stream-info (hls/start-ffmpeg command output-dir)]
+          (log/info "Started new FFmpeg stream" 
+                    {:uuid uuid 
+                     :channel-name (:channels/name channel)
+                     :pid (:pid stream-info)
+                     :output-dir output-dir
+                     :source-type (:type source-info)
+                     :media-item-id (:media-item-id source-info)
+                     :start-position start-pos})
+          (swap! active-streams assoc uuid 
+                 (assoc stream-info
+                        :channel-uuid uuid
+                        :last-access (System/currentTimeMillis)
+                        :source-info source-info))
+          stream-info)))))
+
 (defn- get-or-start-stream
   "Gets existing stream or starts a new FFmpeg process for the channel.
+   Handles event transitions by detecting when current event has ended.
    
    Returns stream info map: {:process, :pid, :output-dir, :channel-uuid, :last-access}"
   [db channel]
-  (let [uuid (:channels/uuid channel)]
+  (let [uuid (:channels/uuid channel)
+        existing-stream (get @active-streams uuid)]
+    
+    ;; Check if we need to transition to a new event
+    (when (and existing-stream (needs-transition? existing-stream))
+      (log/info "Event transition required" 
+                {:uuid uuid 
+                 :current-event-id (get-in existing-stream [:source-info :event :playout-events/id])})
+      (stop-and-remove-stream uuid existing-stream))
+    
+    ;; Now either reuse existing stream or start new one
     (if-let [stream (get @active-streams uuid)]
-      ;; Stream exists, update last access
+      ;; Stream exists and doesn't need transition - reuse it
       (do
         (log/debug "Reusing existing stream" {:uuid uuid :pid (:pid stream)})
         (swap! active-streams assoc-in [uuid :last-access] (System/currentTimeMillis))
         stream)
-      ;; Start new stream
-      (let [output-dir (ensure-stream-dir uuid)
-            ;; Get actual playout event and source URL
-            source-info (get-current-stream-source db channel)]
-        
-        ;; Check if we got an error (no content available)
-        (if (:error source-info)
-          (throw (ex-info (:error source-info) 
-                         {:status (:status source-info)
-                          :channel-id (:channels/id channel)}))
-          
-          (let [source-url (:source-url source-info)
-                start-pos (:start-position source-info)]
-            (log/info "Preparing to start FFmpeg" 
-                      {:source-url source-url 
-                       :start-position start-pos
-                       :source-type (:type source-info)})
-            (let [command (hls/build-hls-command source-url output-dir {:start-position-secs start-pos})
-                  stream-info (hls/start-ffmpeg command output-dir)]
-              (log/info "Started new FFmpeg stream" 
-                        {:uuid uuid 
-                         :channel-name (:channels/name channel)
-                         :pid (:pid stream-info)
-                         :output-dir output-dir
-                         :source-type (:type source-info)
-                         :media-item-id (:media-item-id source-info)
-                         :start-position start-pos})
-              (swap! active-streams assoc uuid 
-                     (assoc stream-info
-                            :channel-uuid uuid
-                            :last-access (System/currentTimeMillis)
-                            :source-info source-info))
-              stream-info))))))) ; Close inner let, inner let, if, outer let, defn
+      ;; No stream exists - start new one
+      (start-new-stream db channel uuid))))
 
 ;; ---------------------------------------------------------------------------
 ;; HTTP Handlers
