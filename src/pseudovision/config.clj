@@ -26,4 +26,5 @@
      :pseudovision/scheduling (merge {:lookahead-hours 72
                                       :rebuild-interval-minutes 60}
                                      scheduling)
+     :pseudovision/cleanup   {}  ; No config needed, uses defaults
      :pseudovision/http      {:port (or (some-> server :port (parse-int)) 8080)}}))

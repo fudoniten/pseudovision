@@ -3,6 +3,7 @@
             [pseudovision.config         :as config]
             [pseudovision.db.core        :as db]
             [pseudovision.http.core      :as http]
+            [pseudovision.cleanup        :as cleanup]
             [pseudovision.util.sql       :as sql-util]
             [taoensso.timbre             :as log]))
 
@@ -54,6 +55,16 @@
 
 (defmethod ig/init-key :pseudovision/scheduling [_ opts] opts)
 (defmethod ig/halt-key! :pseudovision/scheduling [_ _] nil)
+
+;; ---------------------------------------------------------------------------
+;; Cleanup daemon
+;; ---------------------------------------------------------------------------
+
+(defmethod ig/init-key :pseudovision/cleanup [_ _opts]
+  (cleanup/start-cleanup-daemon))
+
+(defmethod ig/halt-key! :pseudovision/cleanup [_ daemon]
+  (cleanup/stop-cleanup-daemon daemon))
 
 ;; ---------------------------------------------------------------------------
 ;; HTTP server
