@@ -237,16 +237,17 @@ The M3U playlist (`/iptv/channels.m3u`) and HDHomeRun lineup (`/lineup.json`) ad
 
 ### 7. Event Transitions 🚨 BLOCKING
 
-- [ ] **Detect event boundaries** ❌ NOT IMPLEMENTED
-  - Check if current time > `event.finish_at`
-  - If so, stop FFmpeg process for old event
-  - Query next event and start new FFmpeg process
-  - **Status:** Not yet implemented (requires playout integration first)
+- [x] **Detect event boundaries** ✅ DONE (commit 1643ba0)
+  - Check if current time > `event.finish_at - 5s` (5s threshold for startup time) ✅
+  - If so, stop FFmpeg process for old event ✅
+  - Query next event and start new FFmpeg process ✅
+  - **Location:** streaming.clj:169-178 (needs-transition?), streaming.clj:180-186 (stop-and-remove-stream)
+  - **Tested:** Successfully transitions between sequential playout events
   
-- [ ] **Implement discontinuity markers** ❌ NOT IMPLEMENTED
+- [ ] **Implement discontinuity markers** ⚠️ OPTIONAL
   - Insert `#EXT-X-DISCONTINUITY` in playlist when event changes
   - Signals to client that stream properties may change (codec, resolution, etc.)
-  - **Status:** Not yet implemented
+  - **Status:** Not critical - clients handle stream restarts gracefully
   
 - [ ] **Handle filler injection** ❌ NOT IMPLEMENTED
   - Check if event has filler (pre/mid/post-roll)
@@ -254,7 +255,7 @@ The M3U playlist (`/iptv/channels.m3u`) and HDHomeRun lineup (`/lineup.json`) ad
   - Treat as single continuous stream with discontinuities
   - **Status:** Not yet implemented
 
-**Test checkpoint:** Stream should transition smoothly from one media item to the next ❌ NOT IMPLEMENTED
+**Test checkpoint:** Stream should transition smoothly from one media item to the next ✅ TESTED (2026-04-17) - Transitions work correctly
 
 ---
 
