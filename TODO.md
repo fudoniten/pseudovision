@@ -147,11 +147,12 @@ The M3U playlist (`/iptv/channels.m3u`) and HDHomeRun lineup (`/lineup.json`) ad
   - Return: FFmpeg command vector for `ProcessBuilder`
   - **Location:** src/pseudovision/ffmpeg/hls.clj:5-34
   
-- [ ] **Load FFmpeg profile from database** ⚠️ TODO
-  - Query `ffmpeg_profiles` table using `channels.ffmpeg_profile_id`
-  - Parse JSONB `config` field (contains FFmpeg parameters)
-  - Apply profile settings to command
-  - **Status:** Currently using hardcoded defaults (libx264, aac, veryfast preset)
+- [x] **Load FFmpeg profile from database** ✅ DONE (commit e84b73f)
+  - Query `ffmpeg_profiles` table using `channels.ffmpeg_profile_id` ✅
+  - Parse JSONB `config` field (contains FFmpeg parameters) ✅
+  - Apply profile settings to command (video-codec, audio-codec, preset, bitrates) ✅
+  - **Location:** streaming.clj:207-211, hls.clj:34-38
+  - Falls back to defaults if profile not found or config missing
   
 - [x] **Build base HLS command** ✅ DONE
   ```clojure
