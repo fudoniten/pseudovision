@@ -4,6 +4,7 @@
   (:require [pseudovision.db.channels :as db-channels]
             [pseudovision.db.playouts :as db-playouts]
             [pseudovision.db.media :as db-media]
+            [pseudovision.db.ffmpeg :as db-ffmpeg]
             [pseudovision.media.connection :as conn]
             [pseudovision.ffmpeg.hls :as hls]
             [pseudovision.util.time :as t]
@@ -202,12 +203,20 @@
                       :channel-id (:channels/id channel)}))
       
       (let [source-url (:source-url source-info)
-            start-pos (:start-position source-info)]
+            start-pos (:start-position source-info)
+            ;; Load FFmpeg profile from database
+            profile-id (:channels/ffmpeg-profile-id channel)
+            profile (when profile-id (db-ffmpeg/get-profile db profile-id))
+            profile-config (or (:ffmpeg-profiles/config profile) {})]
         (log/info "Preparing to start FFmpeg" 
                   {:source-url source-url 
                    :start-position start-pos
-                   :source-type (:type source-info)})
-        (let [command (hls/build-hls-command source-url output-dir {:start-position-secs start-pos})
+                   :source-type (:type source-info)
+                   :profile-id profile-id
+                   :profile-name (:ffmpeg-profiles/name profile)})
+        (let [command (hls/build-hls-command source-url output-dir 
+                                            {:start-position-secs start-pos
+                                             :profile-config profile-config})
               stream-info (hls/start-ffmpeg command output-dir)]
           (log/info "Started new FFmpeg stream" 
                     {:uuid uuid 
