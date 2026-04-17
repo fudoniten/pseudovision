@@ -22,17 +22,19 @@ This document tracks the completion status of XMLTV, M3U, and live streaming fun
 
 ---
 
-## ⚡ Recent Progress Summary (Updated 2026-04-13)
+## ⚡ Recent Progress Summary (Updated 2026-04-17)
 
-**🎉 STREAMING FULLY FUNCTIONAL (as of 2026-04-13):**
+**🎉 STREAMING FULLY FUNCTIONAL AND TESTED (as of 2026-04-17):**
 
-1. **Complete HLS Streaming Infrastructure** (Sections 1, 4-6) ✅ WORKING
+1. **Complete HLS Streaming Infrastructure** (Sections 1-6) ✅ FULLY WORKING
    - `/stream/{uuid}` endpoint fully operational
    - FFmpeg transcoding with H.264/AAC producing valid MPEG-TS segments
    - HLS playlists generating and updating correctly
    - Segments serving with proper Content-Type headers
    - Multiple clients sharing FFmpeg processes
-   - Tested and verified with curl, segments downloading successfully
+   - **Successfully tested with VLC Desktop** ✅
+   - Playout timeline integration working (Sections 2 & 3)
+   - Media source resolution from Jellyfin working
    - **Stream URL:** https://pseudovision.kube.sea.fudo.link/stream/{uuid}
 
 2. **Production Deployment** ✅ COMPLETE
@@ -43,18 +45,26 @@ This document tracks the completion status of XMLTV, M3U, and live streaming fun
    - /tmp volume mounted for segment storage
    - Version endpoint for deployment verification
 
-3. **API Enhancements** ✅ COMPLETE
+3. **Process Health Monitoring** ✅ NEW (2026-04-17)
+   - FFmpeg process health checking before serving playlists
+   - Automatic removal of dead streams from active-streams
+   - Debug endpoint `/api/debug/stream/{uuid}` for troubleshooting
+   - Returns FFmpeg logs, process status, and stream metadata
+   - Error responses include FFmpeg log excerpts for easier debugging
+
+4. **API Enhancements** ✅ COMPLETE
    - FFmpeg profiles API (`/api/ffmpeg/profiles`)
    - Test channel creation API working end-to-end
    - Version endpoint (`/api/version`)
+   - Stream debug endpoint (`/api/debug/stream/{uuid}`)
 
-**🚨 REMAINING GAPS (for real media library usage):**
-1. **Playout Timeline Integration** (Section 2) — Currently using hardcoded test stream
-2. **Media Source Resolution** (Section 3) — Not fetching actual Jellyfin URLs
-3. **Event Transitions** (Section 7) — No support for switching between media items
-4. **Fallback Handling** (Section 8) — No filler support for gaps
+**🚨 REMAINING GAPS (for production readiness):**
+1. **Event Transitions** (Section 7) — No support for switching between media items when event ends
+2. **Fallback Handling** (Section 8) — Partial: returns errors correctly but doesn't use fallback filler
+3. **Dead Stream Cleanup** — Process monitoring works, but no automatic cleanup daemon
+4. **FFmpeg Profile Loading** — Currently using hardcoded defaults instead of database profiles
 
-**Next Priority:** Integrate with playout timeline to stream actual media library content instead of test stream.
+**Next Priority:** Implement event transitions so channels can play multiple items sequentially.
 
 ---
 
@@ -550,7 +560,7 @@ assert "#EXTM3U" in m3u_out
 
 ### Manual Testing Checklist
 
-- [ ] **VLC Desktop** — Load M3U, verify channels play
+- [x] **VLC Desktop** — Load M3U, verify channels play ✅ TESTED (2026-04-17)
 - [ ] **Plex** — Add as HDHomeRun device, verify discovery and playback
 - [ ] **Jellyfin** — Add as Live TV tuner, verify EPG and streaming
 - [ ] **Kodi** — Load M3U and XMLTV, verify PVR integration
@@ -576,12 +586,15 @@ assert "#EXTM3U" in m3u_out
 | Database schema (channels, events, metadata) | ✅ Complete | No |
 | EPG filtering (`show_in_epg`) | ⚠️ Field exists, not queried | No |
 | Guide time support (`guide_start_at`) | ⚠️ Field exists, not used | No |
-| Stream endpoint (`/stream/{uuid}`) | ✅ Implemented (basic) | No |
-| HLS playlist generation | ✅ Implemented (basic) | No |
-| FFmpeg transcoding pipeline | ✅ Implemented (basic) | No |
-| **Playout timeline integration** | ❌ Not implemented | **YES** |
-| **Media source resolution** | ❌ Not implemented | **YES** |
+| Stream endpoint (`/stream/{uuid}`) | ✅ Fully working | No |
+| HLS playlist generation | ✅ Fully working | No |
+| FFmpeg transcoding pipeline | ✅ Fully working | No |
+| Process health monitoring | ✅ Implemented | No |
+| Debug endpoint (`/api/debug/stream/{uuid}`) | ✅ Implemented | No |
+| **Playout timeline integration** | ✅ Implemented & tested | No |
+| **Media source resolution** | ✅ Implemented & tested | No |
 | Event transitions & discontinuity | ❌ Not implemented | **YES** |
+| Fallback filler streaming | ⚠️ Partial (errors only) | **YES** |
 
 ---
 
