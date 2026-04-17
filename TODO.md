@@ -45,9 +45,11 @@ This document tracks the completion status of XMLTV, M3U, and live streaming fun
    - /tmp volume mounted for segment storage
    - Version endpoint for deployment verification
 
-3. **Process Health Monitoring** ✅ NEW (2026-04-17)
+3. **Process Health Monitoring & Cleanup** ✅ COMPLETE (2026-04-17)
    - FFmpeg process health checking before serving playlists
    - Automatic removal of dead streams from active-streams
+   - Background cleanup daemon runs every 60 seconds
+   - Cleans up dead processes, empty directories, and old temp files
    - Debug endpoint `/api/debug/stream/{uuid}` for troubleshooting
    - Returns FFmpeg logs, process status, and stream metadata
    - Error responses include FFmpeg log excerpts for easier debugging
@@ -59,12 +61,12 @@ This document tracks the completion status of XMLTV, M3U, and live streaming fun
    - Stream debug endpoint (`/api/debug/stream/{uuid}`)
 
 **🚨 REMAINING GAPS (for production readiness):**
-1. **Event Transitions** (Section 7) — No support for switching between media items when event ends
-2. **Fallback Handling** (Section 8) — Partial: returns errors correctly but doesn't use fallback filler
-3. **Dead Stream Cleanup** — Process monitoring works, but no automatic cleanup daemon
-4. **FFmpeg Profile Loading** — Currently using hardcoded defaults instead of database profiles
+1. **Fallback Handling** (Section 8) — Partial: returns errors correctly but doesn't stream fallback filler
+2. **EPG Enhancements** — Filter by show_in_epg, support guide times, channel logos
+3. **Alternative Streaming Modes** — Only hls_segmenter implemented (no ts, ts_hybrid, hls_direct)
+4. **Watermarks & Graphics** — Schema exists but not implemented in FFmpeg pipeline
 
-**Next Priority:** Implement event transitions so channels can play multiple items sequentially.
+**Next Priority:** EPG enhancements and channel artwork for professional appearance.
 
 ---
 
@@ -279,11 +281,13 @@ The M3U playlist (`/iptv/channels.m3u`) and HDHomeRun lineup (`/lineup.json`) ad
   - Consider implementing "technical difficulties" placeholder
   - **Status:** Not yet implemented (requires playout integration)
   
-- [ ] **Process cleanup** ⚠️ PARTIAL
-  - Kill FFmpeg processes on stream disconnect ⚠️ (process tracked but no cleanup daemon)
-  - Implement timeout (e.g., kill process if no clients for 30s) ❌
-  - Clean up temp files on shutdown ⚠️ (FFmpeg deletes segments, but directory not cleaned)
-  - **Status:** hls.clj:49-56 has stop-ffmpeg function, but not actively used
+- [x] **Process cleanup** ✅ DONE (commit 429bafd)
+  - Automatic cleanup daemon removes dead FFmpeg processes ✅
+  - Runs every 60 seconds via ScheduledExecutorService ✅
+  - Cleans up empty stream directories ✅
+  - Removes old stream directories (>1 hour) ✅
+  - Integrated into Integrant lifecycle (starts/stops with app) ✅
+  - **Location:** src/pseudovision/cleanup.clj
 
 **Test checkpoint:** Server should handle errors gracefully without crashes ✅ PARTIALLY IMPLEMENTED (basic error handling works)
 
