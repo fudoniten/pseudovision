@@ -4,6 +4,7 @@
             [pseudovision.db.core        :as db]
             [pseudovision.http.core      :as http]
             [pseudovision.cleanup        :as cleanup]
+            [pseudovision.scheduling.engine :as engine]  ; Force load for AOT compilation
             [pseudovision.util.sql       :as sql-util]
             [taoensso.timbre             :as log]))
 
