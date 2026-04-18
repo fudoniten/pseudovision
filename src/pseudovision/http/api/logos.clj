@@ -37,10 +37,12 @@
                   (let [[_ mime encoding data] (re-matches #"data:([^;,]+)(?:;([^,]+))?,(.+)" path)]
                     (if (and mime data)
                       (if (or (nil? encoding) (= encoding "base64"))
-                        {:status 200
-                         :headers {"Content-Type" (or mime content-type)
-                                  "Cache-Control" "public, max-age=86400"}
-                         :body (ByteArrayInputStream. (decode-base64 data))}
+                        (let [decoded-bytes (decode-base64 data)]
+                          {:status 200
+                           :headers {"Content-Type" (or mime content-type)
+                                    "Cache-Control" "public, max-age=86400"
+                                    "Content-Length" (str (count decoded-bytes))}
+                           :body (ByteArrayInputStream. decoded-bytes)})
                         {:status 500
                          :body {:error "Unsupported data URI encoding"
                                 :encoding encoding}})
