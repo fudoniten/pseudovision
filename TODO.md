@@ -69,18 +69,28 @@ This document tracks the completion status of XMLTV, M3U, and live streaming fun
    - Test channel creation API working end-to-end
    - Version endpoint (`/api/version`)
    - Stream debug endpoint (`/api/debug/stream/{uuid}`)
+   - Test artwork creation endpoint (`/api/test/channels/:id/artwork`)
+
+6. **EPG & Metadata Enhancements** ✅ COMPLETE (2026-04-18)
+   - M3U channel logos via `tvg-logo` attribute ✅
+   - Logo serving endpoint `/logos/:uuid` ✅
+   - Base64 data URI storage (no file mounts needed) ✅
+   - XMLTV filtering by `show_in_epg` ✅
+   - Extended XMLTV metadata: episode numbers, ratings, descriptions ✅
+   - Note: XMLTV `<icon>` tag has minor rendering issue (M3U logos work fine)
 
 **🚨 REMAINING GAPS (for production readiness):**
-1. **EPG Enhancements** — Filter by show_in_epg, support guide times, channel logos
-2. **Alternative Streaming Modes** — Only hls_segmenter implemented (no ts, ts_hybrid, hls_direct)
+1. **Alternative Streaming Modes** — Only hls_segmenter implemented (no ts, ts_hybrid, hls_direct)
+2. **Audio/Subtitle Preferences** — Apply language/track preferences from channel config
 3. **Watermarks & Graphics** — Schema exists but not implemented in FFmpeg pipeline
-4. **Event Transition Improvements** — Add discontinuity markers, filler injection
+4. **Guide Time Support** — Use guide_start_at/guide_finish_at for EPG time shifting
+5. **Genre Support** — Query from metadata_genres table for XMLTV categories
 
 **Next Priority Recommendations:**
-1. **🔥 EPG Enhancements** — Filter by show_in_epg, channel logos for professional appearance
-2. **🔥 Channel Artwork** — Logo serving endpoint for IPTV clients
-3. **📋 Audio/Subtitle Preferences** — Apply language/track preferences from channel config
-4. **📋 Direct Streaming Mode** — Implement `hls_direct` for compatible formats (no transcode)
+1. **🔥 Direct Streaming Mode** — Implement `hls_direct` for compatible formats (90% CPU reduction)
+2. **🔥 Audio/Subtitle Preferences** — Essential for multi-language content
+3. **📋 Watermark Support** — Overlay graphics from database config
+4. **📋 Genre/Category Support** — Join metadata_genres for richer EPG
 
 ---
 
