@@ -3,9 +3,15 @@
    
    Provides endpoints for creating and managing test channels for streaming verification."
   (:require [pseudovision.dev.test-channel :as tc]
+            [pseudovision.db.channels :as db-channels]
+            [pseudovision.db.core :as db-core]
             [pseudovision.util.sql :as sql-util]
             [honey.sql :as h]
-            [taoensso.timbre :as log]))
+            [honey.sql.helpers :as hh]
+            [taoensso.timbre :as log]
+            [clojure.java.io :as io]
+            [clojure.java.shell :as shell])
+  (:import [java.util UUID]))
 
 (defn create-test-channel-handler
   "POST /api/test/channels
@@ -201,6 +207,87 @@
          :body {:error "Failed to create test collection"
                 :message (.getMessage e)}}))))
 
+(defn add-test-artwork-handler
+  "POST /api/test/channels/:identifier/artwork
+   
+   Generates a simple test logo for a channel.
+   
+   Response:
+   {
+     \"artwork\": {...},
+     \"logo_url\": \"https://.../logos/{uuid}\"
+   }"
+  [{:keys [db]}]
+  (fn [req]
+    (try
+      (let [identifier (get-in req [:path-params :identifier])
+            ;; Try to find channel by UUID or number
+            channel (or (try (db-channels/get-channel-by-uuid 
+                              db (UUID/fromString identifier))
+                            (catch Exception _ nil))
+                       (db-channels/get-channel-by-number db identifier))]
+        
+        (if-not channel
+          {:status 404
+           :body {:error "Channel not found"}}
+          
+          (let [channel-id (:channels/id channel)
+                channel-uuid (:channels/uuid channel)
+                channel-number (:channels/number channel)
+                channel-name (:channels/name channel)
+                
+                ;; Generate logo using ImageMagick
+                logo-dir "/tmp/pseudovision-logos"
+                logo-filename (str "channel-" channel-number ".png")
+                logo-path (str logo-dir "/" logo-filename)
+                
+                ;; Create directory if needed
+                _ (io/make-parents logo-path)
+                
+                ;; Generate simple logo
+                _ (shell/sh 
+                   "magick" "-size" "400x300" "xc:#3498db"
+                   "-gravity" "center"
+                   "-pointsize" "72" "-fill" "white" "-font" "DejaVu-Sans-Bold"
+                   "-annotate" "+0-20" (str "CH " channel-number)
+                   "-pointsize" "36" "-annotate" "+0+40" "TEST"
+                   logo-path)
+                
+                ;; Insert into database
+                artwork (db-core/execute-one!
+                         db
+                         (-> (hh/insert-into :channel-artwork)
+                             (hh/values [{:channel-id channel-id
+                                          :kind (sql-util/->pg-enum "artwork_kind" "logo")
+                                          :path logo-path
+                                          :original-content-type "image/png"}])
+                             (hh/on-conflict :channel-id :kind)
+                             (hh/do-update-set :path :original-content-type)
+                             (hh/returning :*)
+                             h/format))
+                
+                host (or (get-in req [:headers "host"]) "localhost:8080")
+                scheme (if (get-in req [:headers "x-forwarded-proto"])
+                         (get-in req [:headers "x-forwarded-proto"])
+                         "http")
+                logo-url (str scheme "://" host "/logos/" channel-uuid)]
+            
+            (log/info "Created test artwork for channel" 
+                      {:channel-id channel-id
+                       :channel-name channel-name
+                       :path logo-path})
+            
+            {:status 201
+             :body {:artwork artwork
+                    :logo_url logo-url
+                    :message (str "Created logo at " logo-path)}})))
+      
+      (catch Exception e
+        (log/error e "Failed to create test artwork via API")
+        {:status 500
+         :body {:error "Failed to create test artwork"
+                :message (.getMessage e)}}))))
+
 (defn test-info-handler
   "GET /api/test/info
    
@@ -229,6 +316,7 @@
                 :endpoints {:create (str base-url "/api/test/channels")
                            :list (str base-url "/api/test/channels")
                            :delete (str base-url "/api/test/channels/:identifier")
+                           :add_artwork (str base-url "/api/test/channels/:identifier/artwork")
                            :info (str base-url "/api/test/info")}
                 :usage {:create {:method "POST"
                                 :url (str base-url "/api/test/channels")
@@ -238,6 +326,9 @@
                                                       (:collections/id default-collection))}}
                        :delete {:method "DELETE"
                                :url (str base-url "/api/test/channels/999")}
+                       :add_artwork {:method "POST"
+                                    :url (str base-url "/api/test/channels/999/artwork")
+                                    :body {}}
                        :list {:method "GET"
                              :url (str base-url "/api/test/channels")}}}})
       

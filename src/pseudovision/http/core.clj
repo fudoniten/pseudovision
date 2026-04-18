@@ -110,6 +110,8 @@
      :post (test/create-test-channel-handler ctx)}]
    ["/api/test/channels/:identifier"
     {:delete (test/delete-test-channel-handler ctx)}]
+   ["/api/test/channels/:identifier/artwork"
+    {:post (test/add-test-artwork-handler ctx)}]
 
    ;; ── Output formats ──────────────────────────────────────────────────────
    ["/xmltv"          {:get (epg/xmltv-handler ctx)}]
