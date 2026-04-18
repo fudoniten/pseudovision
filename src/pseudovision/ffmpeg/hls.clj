@@ -128,7 +128,7 @@
         
         ;; Build text overlays
         channel-text (if channel-number
-                      (format "Channel %s\\\\: %s" channel-number channel-name)
+                      (format "Channel %s: %s" channel-number channel-name)
                       channel-name)
         
         ;; Escape special characters for FFmpeg drawtext filter
