@@ -54,7 +54,12 @@
 ;; Scheduling config
 ;; ---------------------------------------------------------------------------
 
-(defmethod ig/init-key :pseudovision/scheduling [_ opts] opts)
+(defmethod ig/init-key :pseudovision/scheduling [_ opts]
+  ;; Force load engine namespace functions for AOT compilation
+  (when (resolve 'pseudovision.scheduling.engine/rebuild-from-now!)
+    (log/debug "Scheduling engine namespace loaded"))
+  opts)
+
 (defmethod ig/halt-key! :pseudovision/scheduling [_ _] nil)
 
 ;; ---------------------------------------------------------------------------
