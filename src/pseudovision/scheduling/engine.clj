@@ -382,7 +382,7 @@
                 (recur slot-end
                        (inc slot-idx)
                        (concat all-events events)
-                       updated-slot-cursor))))))))
+                       updated-slot-cursor)))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Rebuild API
@@ -420,4 +420,3 @@
     ;; Generate events from current horizon to new horizon
     ;; Existing events remain untouched
     (generate-schedule! ds playout-id current-horizon new-horizon)))
-)
