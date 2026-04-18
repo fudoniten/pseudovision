@@ -19,8 +19,9 @@
 (defn query-collection-items
   "Query all media items in a collection with their durations."
   [ds collection-id]
-  (db/query ds (-> (h/select :mi.id :mi.duration :m.title :m.release-date)
+  (db/query ds (-> (h/select :mi.id :mv.duration :m.title :m.release-date)
                    (h/from [:media-items :mi])
+                   (h/left-join [:media-versions :mv] [:= :mv.media-item-id :mi.id])
                    (h/left-join [:metadata :m] [:= :m.media-item-id :mi.id])
                    (h/where [:= :mi.collection-id collection-id])
                    sql/format)))
@@ -31,8 +32,9 @@
   (cond
     ;; Specific item takes priority
     (:schedule-slots/media-item-id slot)
-    [(db/query-one ds (-> (h/select :mi.id :mi.duration :m.title)
+    [(db/query-one ds (-> (h/select :mi.id :mv.duration :m.title)
                          (h/from [:media-items :mi])
+                         (h/left-join [:media-versions :mv] [:= :mv.media-item-id :mi.id])
                          (h/left-join [:metadata :m] [:= :m.media-item-id :mi.id])
                          (h/where [:= :mi.id (:schedule-slots/media-item-id slot)])
                          sql/format))]
