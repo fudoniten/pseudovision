@@ -63,7 +63,7 @@
    Only includes events from channels where show_in_epg = true."
   [ds from to]
   (db/query ds (-> (h/select :pe.* :c.uuid :c.name :c.number :c.show-in-epg :m.title :m.plot 
-                             :m.episode_number :m.genres :m.content_rating :m.release_date)
+                             :m.episode-number :m.content-rating :m.release-date)
                    (h/from [:playout-events :pe])
                    (h/join [:playouts :p] [:= :pe.playout-id :p.id])
                    (h/join [:channels  :c] [:= :p.channel-id :c.id])

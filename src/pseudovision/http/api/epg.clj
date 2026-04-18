@@ -38,15 +38,8 @@
   [{:keys [playout-events/start-at playout-events/finish-at
            playout-events/custom-title channels/uuid
            metadata/title metadata/plot metadata/episode-number 
-           metadata/genres metadata/content-rating metadata/release-date]}]
+           metadata/content-rating metadata/release-date]}]
   (let [display-title (or custom-title title "Unknown")
-        ;; Parse genres from JSONB array if present
-        genre-list (when genres
-                     (try
-                       (if (string? genres)
-                         (json/parse-string genres)
-                         genres)
-                       (catch Exception _ nil)))
         ;; Extract year from release-date if present
         release-year (when release-date
                       (try
@@ -67,10 +60,8 @@
            (str "<episode-num system=\"onscreen\">E" 
                 (format "%02d" episode-number) "</episode-num>"))
          
-         ;; Categories/Genres
-         (when (seq genre-list)
-           (str/join (map #(str "<category lang=\"en\">" (escape-xml %) "</category>")
-                         (take 3 genre-list))))
+         ;; Categories/Genres - TODO: Query from metadata_genres table
+         ;; (currently genres are in a separate table, not included in this query)
          
          ;; Content rating
          (when content-rating
