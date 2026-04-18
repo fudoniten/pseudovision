@@ -13,6 +13,7 @@ This document tracks the completion status of XMLTV, M3U, and live streaming fun
 ## 📚 Related Documentation
 
 - **TODO.md** (this file) — Comprehensive implementation checklist
+- **SCHEDULING.md** — Scheduling system architecture and design (tag-based, filler, overrides)
 - **ARCHITECTURE.md** — Architectural decisions and rationale
 - **GETTING_STARTED_STREAMING.md** — Step-by-step implementation guide
 - **SESSION_STATE.md** — Session history and current status
@@ -79,18 +80,31 @@ This document tracks the completion status of XMLTV, M3U, and live streaming fun
    - Extended XMLTV metadata: episode numbers, ratings, descriptions ✅
    - Note: XMLTV `<icon>` tag has minor rendering issue (M3U logos work fine)
 
-**🚨 REMAINING GAPS (for production readiness):**
-1. **Alternative Streaming Modes** — Only hls_segmenter implemented (no ts, ts_hybrid, hls_direct)
-2. **Audio/Subtitle Preferences** — Apply language/track preferences from channel config
-3. **Watermarks & Graphics** — Schema exists but not implemented in FFmpeg pipeline
-4. **Guide Time Support** — Use guide_start_at/guide_finish_at for EPG time shifting
-5. **Genre Support** — Query from metadata_genres table for XMLTV categories
+**🚨 MAJOR GAPS (for full production):**
+1. **Scheduling Engine** ⚡ HIGH PRIORITY — Schema exists but no implementation
+   - Tag-based content selection (foundation for tunarr-scheduler integration)
+   - Fixed + sequential slot support
+   - Automatic gap filling with filler/background collections
+   - Semi-sequential playback mode
+   - Schedule overrides for special events
+   - See **SCHEDULING.md** for complete architecture
+2. **Alternative Streaming Modes** — Only hls_segmenter implemented (no ts, ts_hybrid, hls_direct)
+3. **Audio/Subtitle Preferences** — Apply language/track preferences from channel config
+4. **Watermarks & Graphics** — Schema exists but not implemented in FFmpeg pipeline
+5. **Guide Time Support** — Use guide_start_at/guide_finish_at for EPG time shifting
+6. **Genre Support** — Query from metadata_genres table for XMLTV categories
 
 **Next Priority Recommendations:**
-1. **🔥 Direct Streaming Mode** — Implement `hls_direct` for compatible formats (90% CPU reduction)
-2. **🔥 Audio/Subtitle Preferences** — Essential for multi-language content
-3. **📋 Watermark Support** — Overlay graphics from database config
-4. **📋 Genre/Category Support** — Join metadata_genres for richer EPG
+1. **🔥 Scheduling Engine (Phase 1)** — Tag system + filler collections (2 days)
+   - Unblocks tunarr-scheduler integration
+   - Enables tag-based channel programming
+   - See SCHEDULING.md for implementation plan
+2. **🔥 Scheduling Engine (Phase 2)** — Basic engine implementation (3-4 days)
+   - Fixed/sequential slots
+   - Automatic gap filling
+   - Daily rebuild
+3. **🔥 Direct Streaming Mode** — Implement `hls_direct` for compatible formats (90% CPU reduction)
+4. **🔥 Audio/Subtitle Preferences** — Essential for multi-language content
 
 ---
 
