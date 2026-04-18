@@ -242,11 +242,12 @@
                 logo-path (str logo-dir "/" logo-filename)
                 
                 ;; For testing, just insert a placeholder path
-                ;; In production, you'd upload an actual image file
+                ;; In production, you'd upload an actual image file or generate it
                 logo-path (str "/tmp/pseudovision-logos/channel-" channel-number ".png")
                 
-                ;; Insert into database (without actually creating the file)
-                ;; This lets us test the M3U/XMLTV integration
+                ;; Insert into database (DB entry only, file doesn't exist yet)
+                ;; This lets us test the M3U/XMLTV integration (they'll show the URL)
+                ;; The /logos endpoint will return 404 until a real file is uploaded
                 artwork (db-core/execute-one!
                          db
                          (-> (hh/insert-into :channel-artwork)
