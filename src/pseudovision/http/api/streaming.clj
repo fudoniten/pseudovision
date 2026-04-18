@@ -83,6 +83,13 @@
         formatter (java.time.format.DateTimeFormatter/ofPattern "h:mm a")]
     (.format zdt formatter)))
 
+(defn- truncate-title
+  "Truncates a title to max-length characters, adding ellipsis if needed."
+  [title max-length]
+  (if (> (count title) max-length)
+    (str (subs title 0 (- max-length 3)) "...")
+    title))
+
 (defn- get-upcoming-events-for-slate
   "Gets upcoming events with metadata for displaying on fallback slate."
   [db playout-id]
@@ -90,8 +97,11 @@
     (let [now (t/now)
           events (db-playouts/get-upcoming-events-with-metadata db playout-id now 5)]
       (map (fn [event]
-             {:title (or (:metadata/title event) "Untitled")
-              :start-time (format-time-12h (:playout-events/start-at event))})
+             (let [raw-title (or (:metadata/title event) "Untitled")
+                   ;; Truncate to 50 characters to prevent overflow
+                   title (truncate-title raw-title 50)]
+               {:title title
+                :start-time (format-time-12h (:playout-events/start-at event))}))
            events))))
 
 (defn- get-fallback-stream-source

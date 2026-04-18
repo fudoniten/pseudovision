@@ -147,8 +147,8 @@
         upcoming-text-raw (if (seq upcoming-events)
                             (let [events-str (clojure.string/join "\\n" 
                                                (map #(format "%s - %s" 
-                                                            (:title %)
-                                                            (:start-time %))
+                                                            (:start-time %)
+                                                            (:title %))
                                                     (take 3 upcoming-events)))]
                               (str "Coming Up\\n\\n" events-str))
                             "No upcoming content scheduled")
