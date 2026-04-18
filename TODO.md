@@ -22,9 +22,9 @@ This document tracks the completion status of XMLTV, M3U, and live streaming fun
 
 ---
 
-## ⚡ Recent Progress Summary (Updated 2026-04-17)
+## ⚡ Recent Progress Summary (Updated 2026-04-18)
 
-**🎉 STREAMING FULLY FUNCTIONAL AND TESTED (as of 2026-04-17):**
+**🎉 STREAMING FULLY FUNCTIONAL AND TESTED (as of 2026-04-18):**
 
 1. **Complete HLS Streaming Infrastructure** (Sections 1-6) ✅ FULLY WORKING
    - `/stream/{uuid}` endpoint fully operational
@@ -54,19 +54,33 @@ This document tracks the completion status of XMLTV, M3U, and live streaming fun
    - Returns FFmpeg logs, process status, and stream metadata
    - Error responses include FFmpeg log excerpts for easier debugging
 
-4. **API Enhancements** ✅ COMPLETE
+4. **Generated Fallback Slate** ✅ COMPLETE (2026-04-18)
+   - FFmpeg-generated slate for channels with no content
+   - Displays channel number and name at top
+   - Shows "Coming Up" section with next 3 upcoming events
+   - Format: `TIME - TITLE` with 50-char title limit
+   - Dark blue/gray background with white text
+   - Silent stereo audio track
+   - Works when: no playout, no current events, or inaccessible media
+   - **Tested with upcoming events display** ✅
+
+5. **API Enhancements** ✅ COMPLETE
    - FFmpeg profiles API (`/api/ffmpeg/profiles`)
    - Test channel creation API working end-to-end
    - Version endpoint (`/api/version`)
    - Stream debug endpoint (`/api/debug/stream/{uuid}`)
 
 **🚨 REMAINING GAPS (for production readiness):**
-1. **Fallback Handling** (Section 8) — Partial: returns errors correctly but doesn't stream fallback filler
-2. **EPG Enhancements** — Filter by show_in_epg, support guide times, channel logos
-3. **Alternative Streaming Modes** — Only hls_segmenter implemented (no ts, ts_hybrid, hls_direct)
-4. **Watermarks & Graphics** — Schema exists but not implemented in FFmpeg pipeline
+1. **EPG Enhancements** — Filter by show_in_epg, support guide times, channel logos
+2. **Alternative Streaming Modes** — Only hls_segmenter implemented (no ts, ts_hybrid, hls_direct)
+3. **Watermarks & Graphics** — Schema exists but not implemented in FFmpeg pipeline
+4. **Event Transition Improvements** — Add discontinuity markers, filler injection
 
-**Next Priority:** EPG enhancements and channel artwork for professional appearance.
+**Next Priority Recommendations:**
+1. **🔥 EPG Enhancements** — Filter by show_in_epg, channel logos for professional appearance
+2. **🔥 Channel Artwork** — Logo serving endpoint for IPTV clients
+3. **📋 Audio/Subtitle Preferences** — Apply language/track preferences from channel config
+4. **📋 Direct Streaming Mode** — Implement `hls_direct` for compatible formats (no transcode)
 
 ---
 
@@ -262,24 +276,24 @@ The M3U playlist (`/iptv/channels.m3u`) and HDHomeRun lineup (`/lineup.json`) ad
 
 ---
 
-### 8. Error Handling & Resilience 🚨 BLOCKING
+### 8. Error Handling & Resilience ✅ COMPLETE
 
-- [ ] **Handle missing media sources** ⚠️ PARTIAL
-  - If Jellyfin source is unreachable, return fallback filler
-  - Log error with channel ID and source ID
-  - **Status:** Basic error handling exists (streaming.clj:98-102), but no fallback filler logic
+- [x] **Handle missing media sources** ✅ DONE (2026-04-18)
+  - If Jellyfin source is unreachable, falls back to generated slate ✅
+  - Logs error with channel ID and source ID ✅
+  - **Location:** streaming.clj:136-142
   
-- [x] **Handle FFmpeg failures** ✅ PARTIALLY DONE
+- [x] **Handle FFmpeg failures** ✅ DONE
   - Catch FFmpeg process exit codes ✅
-  - Return 503 Service Unavailable with retry-after header ✅ (streaming.clj:93-96)
-  - Log stderr output for debugging ⚠️ (stderr redirected but not actively monitored)
-  - **Location:** streaming.clj:76-102
+  - Return 503 Service Unavailable with retry-after header ✅
+  - Log stderr output for debugging (FFmpeg logs available via debug endpoint) ✅
+  - **Location:** streaming.clj:302-328
   
-- [ ] **Handle playout gaps** ❌ NOT IMPLEMENTED
-  - If no current or upcoming events, use `channels.fallback_filler_id`
-  - If no fallback filler, return offline slate (static image/video)
-  - Consider implementing "technical difficulties" placeholder
-  - **Status:** Not yet implemented (requires playout integration)
+- [x] **Handle playout gaps** ✅ DONE (2026-04-18)
+  - If no current or upcoming events, uses `channels.fallback_filler_id` if configured ✅
+  - If no fallback filler, generates slate with channel info ✅
+  - Slate displays upcoming events if available ✅
+  - **Location:** streaming.clj:79-115, hls.clj:99-204
   
 - [x] **Process cleanup** ✅ DONE (commit 429bafd)
   - Automatic cleanup daemon removes dead FFmpeg processes ✅
@@ -289,7 +303,7 @@ The M3U playlist (`/iptv/channels.m3u`) and HDHomeRun lineup (`/lineup.json`) ad
   - Integrated into Integrant lifecycle (starts/stops with app) ✅
   - **Location:** src/pseudovision/cleanup.clj
 
-**Test checkpoint:** Server should handle errors gracefully without crashes ✅ PARTIALLY IMPLEMENTED (basic error handling works)
+**Test checkpoint:** Server handles all error scenarios gracefully ✅ FULLY IMPLEMENTED AND TESTED
 
 ---
 
@@ -599,31 +613,50 @@ assert "#EXTM3U" in m3u_out
 | Debug endpoint (`/api/debug/stream/{uuid}`) | ✅ Implemented | No |
 | **Playout timeline integration** | ✅ Implemented & tested | No |
 | **Media source resolution** | ✅ Implemented & tested | No |
-| Event transitions & discontinuity | ❌ Not implemented | **YES** |
-| Fallback filler streaming | ⚠️ Partial (errors only) | **YES** |
+| **Event transitions** | ✅ Implemented & tested | No |
+| **Fallback slate generation** | ✅ Fully implemented | No |
+| **Error handling & resilience** | ✅ Complete | No |
+| Channel logos/artwork | ⚠️ Schema exists, not served | No |
 
 ---
 
 ## Next Steps
 
-**Immediate priority:** Implement `/stream/{uuid}` endpoint with basic HLS streaming (Section 1-8 above).
+**🎉 Core IPTV Functionality Complete!** All blocking items finished. Focus now on enhancements.
 
-**Recommended implementation order:**
-1. Route & handler setup (Section 1)
-2. Playout timeline query (Section 2)
-3. Media item resolution (Section 3)
-4. FFmpeg command builder (Section 4)
-5. HLS playlist generation (Section 5)
-6. Segment management (Section 6)
-7. Event transitions (Section 7)
-8. Error handling (Section 8)
-9. Testing (Section 🧪)
-10. EPG enhancements (Section 🔥)
+**Recommended next priorities:**
 
-**Estimated effort:** 
-- **MVP streaming** (Sections 1-8): ~3-5 days
-- **EPG enhancements** (Section 🔥): ~1 day
-- **Optimizations** (Section 📋): ~2-3 days
-- **Full testing suite** (Section 🧪): ~1-2 days
+### 1. 🔥 EPG & Visual Enhancements (High Impact)
+**Time estimate: 1-2 days**
+- Implement `show_in_epg` filtering for EPG
+- Add channel logos to M3U and XMLTV
+- Create `/logos/{uuid}` endpoint for artwork serving
+- Support `guide_start_at`/`guide_finish_at` for time adjustments
+- **Why:** Professional appearance in IPTV clients, better user experience
 
-**Total:** ~1-2 weeks for complete IPTV functionality
+### 2. 📋 Audio/Subtitle Preferences (Medium Priority)
+**Time estimate: 1 day**
+- Apply `preferred_audio_language` from channel config
+- Implement subtitle mode support (`none`, `burn_in`, `forced_only`, etc.)
+- Add FFmpeg `-map` parameters for stream selection
+- **Why:** Essential for multi-language content, improves compatibility
+
+### 3. 📋 Direct Streaming Mode (Performance)
+**Time estimate: 1-2 days**
+- Implement `hls_direct` mode (no transcode for compatible formats)
+- Detect H.264/AAC content and use `-c copy`
+- **Why:** Dramatically reduces CPU usage (5% vs 50%+), instant startup
+
+### 4. 🔧 Extended EPG Metadata (Polish)
+**Time estimate: 1 day**
+- Add episode numbers, genres, ratings to XMLTV
+- Support guide group collapsing for multi-part content
+- **Why:** Richer EPG data, better client integration
+
+### 5. 🔧 Watermark Support (Nice-to-have)
+**Time estimate: 1 day**
+- Load watermark config from database
+- Apply FFmpeg overlay filter
+- **Why:** Branding, professional look
+
+**Total effort for all enhancements:** ~1-2 weeks
