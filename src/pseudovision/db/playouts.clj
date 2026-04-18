@@ -62,7 +62,7 @@
   "Returns events overlapping [from, to) across all playouts.
    Only includes events from channels where show_in_epg = true."
   [ds from to]
-  (db/query ds (-> (h/select :pe.* :c.uuid :c.name :c.number :c.show-in-epg :m.title :m.plot 
+  (db/query ds (-> (h/select :pe.* :c.id :c.uuid :c.name :c.number :c.show-in-epg :m.title :m.plot 
                              :m.episode-number :m.content-rating :m.release-date)
                    (h/from [:playout-events :pe])
                    (h/join [:playouts :p] [:= :pe.playout-id :p.id])
