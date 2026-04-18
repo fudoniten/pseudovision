@@ -313,10 +313,12 @@
                    (t/after? current-time horizon))
               ;; Done - insert events and save cursor
               (do
-                (log/info "Generated events" 
-                          {:count (count all-events)
-                           :start (t/instant->str (:start-at (first all-events)))
-                           :end (t/instant->str (:finish-at (last all-events)))})
+                (if (seq all-events)
+                  (log/info "Generated events" 
+                            {:count (count all-events)
+                             :start (t/instant->str (:start-at (first all-events)))
+                             :end (t/instant->str (:finish-at (last all-events)))})
+                  (log/warn "No events generated for playout" {:playout-id playout-id}))
                 
                 ;; Insert events into database
                 (when (seq all-events)
