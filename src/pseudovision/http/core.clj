@@ -10,7 +10,8 @@
             [pseudovision.http.api.media      :as med]
             [pseudovision.http.api.streaming  :as streaming]
             [pseudovision.http.api.test       :as test]
-            [pseudovision.http.api.ffmpeg     :as ffmpeg]))
+            [pseudovision.http.api.ffmpeg     :as ffmpeg]
+            [pseudovision.http.api.logos      :as logos]))
 
 (defn- routes [ctx]
   [""
@@ -122,6 +123,9 @@
    ;; ── Streaming ───────────────────────────────────────────────────────────
    ["/stream/:uuid"   {:get (streaming/stream-handler ctx)}]
    ["/stream/:uuid/:segment" {:get (streaming/segment-handler ctx)}]
+   
+   ;; ── Artwork ─────────────────────────────────────────────────────────────
+   ["/logos/:uuid" {:get (logos/logos-handler ctx)}]
    
    ;; ── Debug ───────────────────────────────────────────────────────────────
    ["/api/debug/stream/:uuid" {:get (streaming/stream-debug-handler ctx)}]])

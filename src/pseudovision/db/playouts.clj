@@ -59,16 +59,19 @@
                    sql/format)))
 
 (defn list-events-in-window
-  "Returns events overlapping [from, to) across all playouts."
+  "Returns events overlapping [from, to) across all playouts.
+   Only includes events from channels where show_in_epg = true."
   [ds from to]
-  (db/query ds (-> (h/select :pe.* :c.uuid :c.name :c.number :m.title :m.plot)
+  (db/query ds (-> (h/select :pe.* :c.uuid :c.name :c.number :c.show-in-epg :m.title :m.plot 
+                             :m.season-number :m.episode-number :m.genres :m.content-rating :m.release-date)
                    (h/from [:playout-events :pe])
                    (h/join [:playouts :p] [:= :pe.playout-id :p.id])
                    (h/join [:channels  :c] [:= :p.channel-id :c.id])
                    (h/left-join [:metadata :m] [:= :m.media-item-id :pe.media-item-id])
                    (h/where [:and
                              [:< :pe.start-at  to]
-                             [:> :pe.finish-at from]])
+                             [:> :pe.finish-at from]
+                             [:= :c.show-in-epg true]])
                    (h/order-by :c.sort-number :pe.start-at)
                    sql/format)))
 
