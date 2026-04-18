@@ -245,20 +245,33 @@
                 ;; In production, you'd upload an actual image file or generate it
                 logo-path (str "/tmp/pseudovision-logos/channel-" channel-number ".png")
                 
-                ;; Insert into database (DB entry only, file doesn't exist yet)
+                ;; Check if artwork already exists
+                existing-artwork (first (db-core/query 
+                                        db
+                                        ["SELECT * FROM channel_artwork WHERE channel_id = ? AND kind = 'logo'" 
+                                         channel-id]))
+                
+                ;; Insert or update database entry (DB entry only, file doesn't exist yet)
                 ;; This lets us test the M3U/XMLTV integration (they'll show the URL)
                 ;; The /logos endpoint will return 404 until a real file is uploaded
-                artwork (db-core/execute-one!
-                         db
-                         (-> (hh/insert-into :channel-artwork)
-                             (hh/values [{:channel-id channel-id
-                                          :kind (sql-util/->pg-enum "artwork_kind" "logo")
-                                          :path logo-path
-                                          :original-content-type "image/png"}])
-                             (hh/on-conflict :channel-id :kind)
-                             (hh/do-update-set :path :original-content-type)
-                             (hh/returning :*)
-                             h/format))
+                artwork (if existing-artwork
+                          (db-core/execute-one!
+                           db
+                           (-> (hh/update :channel-artwork)
+                               (hh/set {:path logo-path
+                                        :original-content-type "image/png"})
+                               (hh/where [:= :id (:channel-artwork/id existing-artwork)])
+                               (hh/returning :*)
+                               h/format))
+                          (db-core/execute-one!
+                           db
+                           (-> (hh/insert-into :channel-artwork)
+                               (hh/values [{:channel-id channel-id
+                                            :kind (sql-util/->pg-enum "artwork_kind" "logo")
+                                            :path logo-path
+                                            :original-content-type "image/png"}])
+                               (hh/returning :*)
+                               h/format)))
                 
                 host (or (get-in req [:headers "host"]) "localhost:8080")
                 scheme (if (get-in req [:headers "x-forwarded-proto"])
