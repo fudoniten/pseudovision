@@ -241,19 +241,12 @@
                 logo-filename (str "channel-" channel-number ".png")
                 logo-path (str logo-dir "/" logo-filename)
                 
-                ;; Create directory if needed
-                _ (io/make-parents logo-path)
+                ;; For testing, just insert a placeholder path
+                ;; In production, you'd upload an actual image file
+                logo-path (str "/tmp/pseudovision-logos/channel-" channel-number ".png")
                 
-                ;; Generate simple logo
-                _ (shell/sh 
-                   "magick" "-size" "400x300" "xc:#3498db"
-                   "-gravity" "center"
-                   "-pointsize" "72" "-fill" "white" "-font" "DejaVu-Sans-Bold"
-                   "-annotate" "+0-20" (str "CH " channel-number)
-                   "-pointsize" "36" "-annotate" "+0+40" "TEST"
-                   logo-path)
-                
-                ;; Insert into database
+                ;; Insert into database (without actually creating the file)
+                ;; This lets us test the M3U/XMLTV integration
                 artwork (db-core/execute-one!
                          db
                          (-> (hh/insert-into :channel-artwork)
