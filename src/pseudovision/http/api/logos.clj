@@ -34,19 +34,16 @@
                 ;; Check if path is a data URI (base64-encoded)
                 (if (str/starts-with? path "data:")
                   ;; Parse data URI: data:image/png;base64,iVBORw0KG...
-                  (let [[_ mime-and-encoding data] (re-matches #"data:([^;,]+)(?:;([^,]+))?,(.+)" path)]
-                    (if (and mime-and-encoding data)
-                      (let [[mime encoding] (if (str/includes? mime-and-encoding ";")
-                                             (str/split mime-and-encoding #";")
-                                             [mime-and-encoding "base64"])]
-                        (if (= encoding "base64")
-                          {:status 200
-                           :headers {"Content-Type" (or mime content-type)
-                                    "Cache-Control" "public, max-age=86400"}
-                           :body (ByteArrayInputStream. (decode-base64 data))}
-                          {:status 500
-                           :body {:error "Unsupported data URI encoding"
-                                  :encoding encoding}}))
+                  (let [[_ mime encoding data] (re-matches #"data:([^;,]+)(?:;([^,]+))?,(.+)" path)]
+                    (if (and mime data)
+                      (if (or (nil? encoding) (= encoding "base64"))
+                        {:status 200
+                         :headers {"Content-Type" (or mime content-type)
+                                  "Cache-Control" "public, max-age=86400"}
+                         :body (ByteArrayInputStream. (decode-base64 data))}
+                        {:status 500
+                         :body {:error "Unsupported data URI encoding"
+                                :encoding encoding}})
                       {:status 500
                        :body {:error "Invalid data URI format"
                               :path path}}))

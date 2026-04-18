@@ -236,11 +236,11 @@
                 channel-number (:channels/number channel)
                 channel-name (:channels/name channel)
                 
-                ;; Generate a simple 1x1 colored PNG as base64 data URI
+                ;; Generate a simple test logo as base64 data URI
                 ;; This is stored in the database, so no file system needed!
-                ;; A 1x1 blue PNG (smallest valid PNG)
-                tiny-png-base64 "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAEBgIApD5fRAAAAABJRU5ErkJggg=="
-                logo-path (str "data:image/png;base64," tiny-png-base64)
+                ;; 200x150 blue PNG with "CH {number}" and "TEST LOGO" text
+                logo-base64 (slurp (io/resource "test-logo.png.b64"))
+                logo-path logo-base64
                 
                 ;; Check if artwork already exists
                 existing-artwork (first (db-core/query 
