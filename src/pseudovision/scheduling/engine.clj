@@ -21,9 +21,10 @@
   [ds collection-id]
   (db/query ds (-> (h/select :mi.id :mv.duration :m.title :m.release-date)
                    (h/from [:media-items :mi])
+                   (h/join [:collection-items :ci] [:= :ci.media-item-id :mi.id])
                    (h/left-join [:media-versions :mv] [:= :mv.media-item-id :mi.id])
                    (h/left-join [:metadata :m] [:= :m.media-item-id :mi.id])
-                   (h/where [:= :mi.collection-id collection-id])
+                   (h/where [:= :ci.collection-id collection-id])
                    sql/format)))
 
 (defn select-slot-content
