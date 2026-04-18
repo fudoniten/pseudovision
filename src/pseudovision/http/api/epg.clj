@@ -22,14 +22,14 @@
   "Renders a channel map as an XMLTV <channel> element string."
   [base-url ds {:keys [channels/uuid channels/name channels/number
                        channels/group-name channels/id] :as ch}]
-  (let [artwork (db-channels/list-channel-artwork ds id)]
+  (let [artwork (when id (db-channels/list-channel-artwork ds id))]
     (str "<channel id=\"" uuid "\">"
          "<display-name>" (escape-xml name) "</display-name>"
          "<lcn>" number "</lcn>"
          (when group-name
            (str "<group>" (escape-xml group-name) "</group>"))
          ;; Add channel logo if artwork exists
-         (when (seq artwork)
+         (when (and artwork (seq artwork))
            (str "<icon src=\"" base-url "/logos/" uuid "\" />"))
          "</channel>")))
 
@@ -83,10 +83,14 @@
           base-url (str (name (:scheme req)) "://" (get-in req [:headers "host"]))
 
           ;; Deduplicate channels preserving insertion order
+          ;; Note: Database returns :channels/id (or :c/id depending on config)
           channels (->> events
                         (map #(select-keys % [:channels/uuid :channels/name
                                               :channels/number :channels/group-name
-                                              :channels/id]))
+                                              :channels/id :c/id]))
+                        (map (fn [ch] (if (:c/id ch)
+                                       (assoc ch :channels/id (:c/id ch))
+                                       ch)))
                         (distinct))]
       {:status  200
        :headers {"Content-Type" "text/xml; charset=utf-8"}
