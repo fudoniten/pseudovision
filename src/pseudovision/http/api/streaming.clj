@@ -364,25 +364,32 @@
                           :details error-msg
                           :log-path log-path}})
                 
-                ;; Process is alive, check for playlist
-                (if (.exists (io/file playlist-path))
-                  (do
-                    (log/debug "Serving playlist" {:uuid uuid :path playlist-path})
-                    (let [playlist-content (slurp playlist-path)
-                          rewritten-playlist (rewrite-playlist-urls playlist-content uuid)]
-                      {:status 200
-                       :headers {"Content-Type" "application/vnd.apple.mpegurl"
-                                "Cache-Control" "no-cache"}
-                       :body rewritten-playlist}))
-                  (do
-                    (log/warn "Playlist not ready yet (FFmpeg still starting)" 
-                             {:uuid uuid 
-                              :path playlist-path 
-                              :ffmpeg-pid (:pid stream)
-                              :ffmpeg-alive true})
-                    {:status 503
-                     :headers {"Retry-After" "2"}
-                     :body {:error "Stream starting, please retry"}})))))
+                ;; Process is alive, wait for playlist to be generated
+                (let [playlist-file (io/file playlist-path)
+                      playlist-ready? (loop [attempts 0]
+                                       (cond
+                                         (.exists playlist-file) true
+                                         (>= attempts 10) false
+                                         :else (do (Thread/sleep 200)
+                                                  (recur (inc attempts)))))]
+                  (if playlist-ready?
+                    (do
+                      (log/debug "Serving playlist" {:uuid uuid :path playlist-path})
+                      (let [playlist-content (slurp playlist-path)
+                            rewritten-playlist (rewrite-playlist-urls playlist-content uuid)]
+                        {:status 200
+                         :headers {"Content-Type" "application/vnd.apple.mpegurl"
+                                  "Cache-Control" "no-cache"}
+                         :body rewritten-playlist}))
+                    (do
+                      (log/warn "Playlist not ready after waiting" 
+                               {:uuid uuid 
+                                :path playlist-path 
+                                :ffmpeg-pid (:pid stream)
+                                :ffmpeg-alive true})
+                      {:status 503
+                       :headers {"Retry-After" "2"}
+                       :body {:error "Stream starting, please retry"}}))))))
           
           (catch Exception e
             (log/error e "Failed to start stream" {:uuid uuid})
