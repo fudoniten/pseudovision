@@ -37,9 +37,8 @@
   "Renders a playout event as an XMLTV <programme> element string."
   [{:keys [playout-events/start-at playout-events/finish-at
            playout-events/custom-title channels/uuid
-           metadata/title metadata/plot metadata/season-number
-           metadata/episode-number metadata/genres metadata/content-rating
-           metadata/release-date]}]
+           metadata/title metadata/plot metadata/episode-number 
+           metadata/genres metadata/content-rating metadata/release-date]}]
   (let [display-title (or custom-title title "Unknown")
         ;; Parse genres from JSONB array if present
         genre-list (when genres
@@ -62,17 +61,11 @@
          (when plot
            (str "<desc lang=\"en\">" (escape-xml plot) "</desc>"))
          
-         ;; Episode numbering (XMLTV onscreen format: S01E05)
-         (when (and season-number episode-number)
-           (str "<episode-num system=\"onscreen\">S" 
-                (format "%02d" season-number) "E" 
+         ;; Episode numbering (XMLTV onscreen format: E05 without season)
+         ;; Note: metadata table doesn't have season_number field
+         (when episode-number
+           (str "<episode-num system=\"onscreen\">E" 
                 (format "%02d" episode-number) "</episode-num>"))
-         
-         ;; Episode numbering (XMLTV xmltv_ns format: 0.4.0)
-         (when (and season-number episode-number)
-           (str "<episode-num system=\"xmltv_ns\">" 
-                (dec season-number) "." (dec episode-number) ".0"
-                "</episode-num>"))
          
          ;; Categories/Genres
          (when (seq genre-list)

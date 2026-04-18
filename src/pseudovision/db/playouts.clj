@@ -63,7 +63,6 @@
    Only includes events from channels where show_in_epg = true."
   [ds from to]
   (db/query ds (-> (h/select :pe.* :c.uuid :c.name :c.number :c.show-in-epg :m.title :m.plot 
-                             [:m.season-number :metadata/season-number]
                              [:m.episode-number :metadata/episode-number]
                              [:m.genres :metadata/genres]
                              [:m.content-rating :metadata/content-rating]
