@@ -4,6 +4,11 @@
             [pseudovision.util.time         :as t]
             [pseudovision.util.sql          :as sql-util]))
 
+;; Force engine functions to be compiled by referencing them
+(def ^:private -engine-fns-for-aot
+  {:rebuild-from-now! #'engine/rebuild-from-now!
+   :rebuild-horizon!  #'engine/rebuild-horizon!})
+
 (defn get-playout-handler [{:keys [db]}]
   (fn [req]
     (let [channel-id (parse-long (get-in req [:path-params :channel-id]))]
