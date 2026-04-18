@@ -76,10 +76,28 @@
                 :event-id (:playout-events/id event)})
     (max 0 total-secs)))
 
+(defn- format-time-12h
+  "Formats an Instant to 12-hour time like '8:00 PM'"
+  [^java.time.Instant inst]
+  (let [zdt (.atZone inst (java.time.ZoneId/of "America/Los_Angeles"))
+        formatter (java.time.format.DateTimeFormatter/ofPattern "h:mm a")]
+    (.format zdt formatter)))
+
+(defn- get-upcoming-events-for-slate
+  "Gets upcoming events with metadata for displaying on fallback slate."
+  [db playout-id]
+  (when playout-id
+    (let [now (t/now)
+          events (db-playouts/get-upcoming-events-with-metadata db playout-id now 5)]
+      (map (fn [event]
+             {:title (or (:metadata/title event) "Untitled")
+              :start-time (format-time-12h (:playout-events/start-at event))})
+           events))))
+
 (defn- get-fallback-stream-source
   "Returns fallback stream source when no current event is available.
-   Uses channel's fallback_filler_id if configured, otherwise returns error."
-  [db channel]
+   Uses channel's fallback_filler_id if configured, otherwise uses generated slate."
+  [db channel playout-id]
   (if-let [filler-id (:channels/fallback-filler-id channel)]
     (if-let [url (get-jellyfin-stream-url db filler-id)]
       {:source-url url
@@ -87,17 +105,17 @@
        :type :fallback-filler
        :media-item-id filler-id}
       (do
-        (log/error "Fallback filler media item not found or inaccessible"
+        (log/warn "Fallback filler media item not found or inaccessible - using generated slate"
                    {:channel-id (:channels/id channel)
                     :filler-id filler-id})
-        {:error "Fallback content unavailable"
-         :status 503}))
+        {:type :generated-slate
+         :upcoming-events (get-upcoming-events-for-slate db playout-id)}))
     (do
-      (log/warn "No content available for channel and no fallback filler configured"
+      (log/info "No fallback filler configured - using generated slate"
                 {:channel-id (:channels/id channel)
                  :channel-name (:channels/name channel)})
-      {:error "No content available"
-       :status 503})))
+      {:type :generated-slate
+       :upcoming-events (get-upcoming-events-for-slate db playout-id)})))
 
 (defn- get-current-stream-source
   "Determines what should be streaming for a channel right now.
@@ -116,10 +134,11 @@
     (if-not playout
       (do
         (log/warn "No playout configured for channel" {:channel-id channel-id})
-        (get-fallback-stream-source db channel))
+        (get-fallback-stream-source db channel nil))
       
       (let [now (t/now)
-            current-event (db-playouts/get-current-event db (:playouts/id playout) now)]
+            playout-id (:playouts/id playout)
+            current-event (db-playouts/get-current-event db playout-id now)]
         
         (if current-event
           ;; We have a current event - stream it!
@@ -136,20 +155,20 @@
                 (log/error "Failed to resolve stream URL for current event"
                            {:event-id (:playout-events/id current-event)
                             :media-item-id media-item-id})
-                (get-fallback-stream-source db channel))))
+                (get-fallback-stream-source db channel playout-id))))
           
           ;; No current event - check for upcoming events or use fallback
-          (let [upcoming (first (db-playouts/get-upcoming-events db (:playouts/id playout) now 1))]
+          (let [upcoming (first (db-playouts/get-upcoming-events db playout-id now 1))]
             (if upcoming
               (do
                 (log/info "No current event, but upcoming event found - using fallback until it starts"
                           {:channel-id channel-id
                            :next-event-at (:playout-events/start-at upcoming)})
-                (get-fallback-stream-source db channel))
+                (get-fallback-stream-source db channel playout-id))
               (do
                 (log/warn "No current or upcoming events in playout"
                           {:channel-id channel-id})
-                (get-fallback-stream-source db channel)))))))))
+                (get-fallback-stream-source db channel playout-id)))))))))
 
 (defn- ensure-stream-dir
   "Creates and returns the absolute path to the stream directory for a channel."
@@ -202,36 +221,64 @@
                      {:status (:status source-info)
                       :channel-id (:channels/id channel)}))
       
-      (let [source-url (:source-url source-info)
-            start-pos (:start-position source-info)
-            ;; Load FFmpeg profile from database
-            profile-id (:channels/ffmpeg-profile-id channel)
+      ;; Load FFmpeg profile from database (used for both slate and regular streams)
+      (let [profile-id (:channels/ffmpeg-profile-id channel)
             profile (when profile-id (db-ffmpeg/get-profile db profile-id))
             profile-config (or (:ffmpeg-profiles/config profile) {})]
-        (log/info "Preparing to start FFmpeg" 
-                  {:source-url source-url 
-                   :start-position start-pos
-                   :source-type (:type source-info)
-                   :profile-id profile-id
-                   :profile-name (:ffmpeg-profiles/name profile)})
-        (let [command (hls/build-hls-command source-url output-dir 
-                                            {:start-position-secs start-pos
-                                             :profile-config profile-config})
-              stream-info (hls/start-ffmpeg command output-dir)]
-          (log/info "Started new FFmpeg stream" 
-                    {:uuid uuid 
-                     :channel-name (:channels/name channel)
-                     :pid (:pid stream-info)
-                     :output-dir output-dir
-                     :source-type (:type source-info)
-                     :media-item-id (:media-item-id source-info)
-                     :start-position start-pos})
-          (swap! active-streams assoc uuid 
-                 (assoc stream-info
-                        :channel-uuid uuid
-                        :last-access (System/currentTimeMillis)
-                        :source-info source-info))
-          stream-info)))))
+        
+        ;; Check if we're generating a slate or streaming real content
+        (if (= (:type source-info) :generated-slate)
+          ;; Generate fallback slate with channel info
+          (let [upcoming-events (:upcoming-events source-info)]
+            (log/info "Starting fallback slate" 
+                      {:channel-name (:channels/name channel)
+                       :channel-number (:channels/number channel)
+                       :upcoming-count (count upcoming-events)})
+            (let [command (hls/build-slate-command output-dir
+                                                  {:channel-name (:channels/name channel)
+                                                   :channel-number (:channels/number channel)
+                                                   :upcoming-events upcoming-events
+                                                   :profile-config profile-config})
+                  stream-info (hls/start-ffmpeg command output-dir)]
+              (log/info "Started fallback slate stream" 
+                        {:uuid uuid 
+                         :channel-name (:channels/name channel)
+                         :pid (:pid stream-info)
+                         :output-dir output-dir})
+              (swap! active-streams assoc uuid 
+                     (assoc stream-info
+                            :channel-uuid uuid
+                            :last-access (System/currentTimeMillis)
+                            :source-info source-info))
+              stream-info))
+          
+          ;; Regular content stream
+          (let [source-url (:source-url source-info)
+                start-pos (:start-position source-info)]
+            (log/info "Preparing to start FFmpeg" 
+                      {:source-url source-url 
+                       :start-position start-pos
+                       :source-type (:type source-info)
+                       :profile-id profile-id
+                       :profile-name (:ffmpeg-profiles/name profile)})
+            (let [command (hls/build-hls-command source-url output-dir 
+                                                {:start-position-secs start-pos
+                                                 :profile-config profile-config})
+                  stream-info (hls/start-ffmpeg command output-dir)]
+              (log/info "Started new FFmpeg stream" 
+                        {:uuid uuid 
+                         :channel-name (:channels/name channel)
+                         :pid (:pid stream-info)
+                         :output-dir output-dir
+                         :source-type (:type source-info)
+                         :media-item-id (:media-item-id source-info)
+                         :start-position start-pos})
+              (swap! active-streams assoc uuid 
+                     (assoc stream-info
+                            :channel-uuid uuid
+                            :last-access (System/currentTimeMillis)
+                            :source-info source-info))
+              stream-info)))))))
 
 (defn- get-or-start-stream
   "Gets existing stream or starts a new FFmpeg process for the channel.

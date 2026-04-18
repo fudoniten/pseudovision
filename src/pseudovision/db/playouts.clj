@@ -97,6 +97,20 @@
                    (h/limit limit)
                    sql/format)))
 
+(defn get-upcoming-events-with-metadata
+  "Returns the next N events for a playout with metadata (title, plot, etc).
+   Useful for generating EPG or fallback slates."
+  [ds playout-id after limit]
+  (db/query ds (-> (h/select :pe.* :m.title :m.plot :m.release-date)
+                   (h/from [:playout-events :pe])
+                   (h/left-join [:metadata :m] [:= :m.media-item-id :pe.media-item-id])
+                   (h/where [:and
+                             [:= :pe.playout-id playout-id]
+                             [:> :pe.finish-at  after]])
+                   (h/order-by :pe.start-at)
+                   (h/limit limit)
+                   sql/format)))
+
 (defn create-event! [ds attrs]
   (db/execute-one! ds (-> (h/insert-into :playout-events)
                           (h/values [attrs])
