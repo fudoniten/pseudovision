@@ -1,8 +1,8 @@
 (ns pseudovision.http.api.playouts
-  (:require [pseudovision.db.playouts    :as db]
-            [pseudovision.scheduling.core :as sched]
-            [pseudovision.util.time      :as t]
-            [pseudovision.util.sql       :as sql-util]))
+  (:require [pseudovision.db.playouts      :as db]
+            [pseudovision.scheduling.engine :as engine]
+            [pseudovision.util.time         :as t]
+            [pseudovision.util.sql          :as sql-util]))
 
 (defn get-playout-handler [{:keys [db]}]
   (fn [req]
@@ -11,14 +11,22 @@
         {:status 200 :body p}
         {:status 404 :body {:error "No playout for this channel"}}))))
 
-(defn rebuild-playout-handler [{:keys [db scheduling]}]
+(defn rebuild-playout-handler [{:keys [db]}]
   (fn [req]
     (let [channel-id  (parse-long (get-in req [:path-params :channel-id]))
-          playout     (db/get-playout-for-channel db channel-id)]
+          playout     (db/get-playout-for-channel db channel-id)
+          from        (get-in req [:query-params "from"] "now")
+          horizon-days (parse-long (get-in req [:query-params "horizon"] "14"))]
       (if playout
-        (do
-          (sched/rebuild! db scheduling playout)
-          {:status 200 :body {:message "Rebuild triggered"}})
+        (let [playout-id (:playouts/id playout)
+              count (case from
+                     "now" (engine/rebuild-from-now! db playout-id horizon-days)
+                     "horizon" (engine/rebuild-horizon! db playout-id 7 horizon-days)
+                     (engine/rebuild-from-now! db playout-id horizon-days))]
+          {:status 200 
+           :body {:message "Rebuild complete"
+                  :events-generated count
+                  :horizon-days horizon-days}})
         {:status 404 :body {:error "No playout for this channel"}}))))
 
 (defn list-events-handler [{:keys [db]}]

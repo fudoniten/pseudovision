@@ -63,6 +63,26 @@
                          (+ epoch-seconds (- n-seconds remainder)))]
     (Instant/ofEpochSecond target-seconds)))
 
+(defn add-days
+  "Add N days to an instant."
+  [^Instant inst days]
+  (.plus inst (Duration/ofDays days)))
+
+(defn add-seconds
+  "Add N seconds to an instant."
+  [^Instant inst seconds]
+  (.plusSeconds inst seconds))
+
+(defn after?
+  "Returns true if instant a is after instant b."
+  [^Instant a ^Instant b]
+  (.isAfter a b))
+
+(defn instant->str
+  "Convert instant to ISO string for logging."
+  [^Instant inst]
+  (.toString inst))
+
 ;; ---------------------------------------------------------------------------
 ;; XMLTV formatting  (used by the EPG handler)
 ;; ---------------------------------------------------------------------------
