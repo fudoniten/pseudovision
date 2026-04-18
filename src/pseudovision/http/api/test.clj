@@ -236,13 +236,8 @@
                 channel-number (:channels/number channel)
                 channel-name (:channels/name channel)
                 
-                ;; Generate logo using ImageMagick
-                logo-dir "/tmp/pseudovision-logos"
-                logo-filename (str "channel-" channel-number ".png")
-                logo-path (str logo-dir "/" logo-filename)
-                
                 ;; Generate a simple 1x1 colored PNG as base64 data URI
-                ;; This is just for testing - in production you'd upload real artwork
+                ;; This is stored in the database, so no file system needed!
                 ;; A 1x1 blue PNG (smallest valid PNG)
                 tiny-png-base64 "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAEBgIApD5fRAAAAABJRU5ErkJggg=="
                 logo-path (str "data:image/png;base64," tiny-png-base64)
