@@ -6,6 +6,7 @@
   (:require [pseudovision.db.core :as db]
             [pseudovision.db.playouts :as db-playouts]
             [pseudovision.db.schedules :as db-schedules]
+            [pseudovision.db.collections :as db-collections]
             [pseudovision.util.time :as t]
             [honey.sql.helpers :as h]
             [honey.sql :as sql]
@@ -17,15 +18,18 @@
 ;; ---------------------------------------------------------------------------
 
 (defn query-collection-items
-  "Query all media items in a collection with their durations."
+  "Query all media items in a collection with their durations.
+   Uses the collection resolver to handle smart/manual/playlist collections."
   [ds collection-id]
-  (db/query ds (-> (h/select :mi.id :mv.duration :m.title :m.release-date)
-                   (h/from [:media-items :mi])
-                   (h/join [:collection-items :ci] [:= :ci.media-item-id :mi.id])
-                   (h/left-join [:media-versions :mv] [:= :mv.media-item-id :mi.id])
-                   (h/left-join [:metadata :m] [:= :m.media-item-id :mi.id])
-                   (h/where [:= :ci.collection-id collection-id])
-                   sql/format)))
+  (let [collection (db/query-one ds (-> (h/select :*)
+                                       (h/from :collections)
+                                       (h/where [:= :id collection-id])
+                                       sql/format))]
+    (if collection
+      (db-collections/resolve-collection ds collection)
+      (do
+        (log/error "Collection not found" {:collection-id collection-id})
+        []))))
 
 (defn select-slot-content
   "Select content for a slot based on collection_id or media_item_id."
