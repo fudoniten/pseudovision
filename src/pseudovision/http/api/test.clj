@@ -241,9 +241,11 @@
                 logo-filename (str "channel-" channel-number ".png")
                 logo-path (str logo-dir "/" logo-filename)
                 
-                ;; For testing, just insert a placeholder path
-                ;; In production, you'd upload an actual image file or generate it
-                logo-path (str "/tmp/pseudovision-logos/channel-" channel-number ".png")
+                ;; Generate a simple 1x1 colored PNG as base64 data URI
+                ;; This is just for testing - in production you'd upload real artwork
+                ;; A 1x1 blue PNG (smallest valid PNG)
+                tiny-png-base64 "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAEBgIApD5fRAAAAABJRU5ErkJggg=="
+                logo-path (str "data:image/png;base64," tiny-png-base64)
                 
                 ;; Check if artwork already exists
                 existing-artwork (first (db-core/query 

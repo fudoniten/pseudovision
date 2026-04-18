@@ -1,11 +1,19 @@
 (ns pseudovision.http.api.logos
   "Channel logo/artwork serving endpoint."
   (:require [pseudovision.db.channels :as db]
-            [clojure.java.io :as io])
-  (:import [java.io File]))
+            [clojure.java.io :as io]
+            [clojure.string :as str])
+  (:import [java.io File ByteArrayInputStream]
+           [java.util Base64]))
+
+(defn- decode-base64
+  "Decodes a base64 string to bytes."
+  [^String b64-str]
+  (.decode (Base64/getDecoder) b64-str))
 
 (defn logos-handler
   "Serves channel artwork/logos by channel UUID.
+   Supports both file paths and base64-encoded data URIs.
    Returns the first available artwork for the channel."
   [{:keys [db]}]
   (fn [req]
@@ -21,16 +29,38 @@
             (if (seq artwork)
               (let [logo (first artwork)
                     path (:channel-artwork/path logo)
-                    file (io/file path)]
-                (if (.exists file)
-                  {:status 200
-                   :headers {"Content-Type" (or (:channel-artwork/original-content-type logo)
-                                               "image/png")
-                            "Cache-Control" "public, max-age=86400"}  ; Cache for 24 hours
-                   :body (io/input-stream file)}
-                  {:status 404
-                   :body {:error "Logo file not found on disk"
-                          :path path}}))
+                    content-type (or (:channel-artwork/original-content-type logo) "image/png")]
+                
+                ;; Check if path is a data URI (base64-encoded)
+                (if (str/starts-with? path "data:")
+                  ;; Parse data URI: data:image/png;base64,iVBORw0KG...
+                  (let [[_ mime-and-encoding data] (re-matches #"data:([^;,]+)(?:;([^,]+))?,(.+)" path)]
+                    (if (and mime-and-encoding data)
+                      (let [[mime encoding] (if (str/includes? mime-and-encoding ";")
+                                             (str/split mime-and-encoding #";")
+                                             [mime-and-encoding "base64"])]
+                        (if (= encoding "base64")
+                          {:status 200
+                           :headers {"Content-Type" (or mime content-type)
+                                    "Cache-Control" "public, max-age=86400"}
+                           :body (ByteArrayInputStream. (decode-base64 data))}
+                          {:status 500
+                           :body {:error "Unsupported data URI encoding"
+                                  :encoding encoding}}))
+                      {:status 500
+                       :body {:error "Invalid data URI format"
+                              :path path}}))
+                  
+                  ;; Try to serve from file path (legacy/backward compatibility)
+                  (let [file (io/file path)]
+                    (if (.exists file)
+                      {:status 200
+                       :headers {"Content-Type" content-type
+                                "Cache-Control" "public, max-age=86400"}
+                       :body (io/input-stream file)}
+                      {:status 404
+                       :body {:error "Logo file not found on disk"
+                              :path path}}))))
               {:status 404
                :body {:error "No artwork configured for this channel"}}))
           {:status 404
