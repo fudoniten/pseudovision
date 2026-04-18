@@ -55,9 +55,16 @@
 ;; ---------------------------------------------------------------------------
 
 (defmethod ig/init-key :pseudovision/scheduling [_ opts]
-  ;; Force load engine namespace functions for AOT compilation
-  (when (resolve 'pseudovision.scheduling.engine/rebuild-from-now!)
-    (log/debug "Scheduling engine namespace loaded"))
+  ;; Force load and verify engine namespace functions for AOT compilation
+  ;; This ensures functions are bound at runtime
+  (try
+    (require 'pseudovision.scheduling.engine)
+    (let [rebuild-fn (ns-resolve 'pseudovision.scheduling.engine 'rebuild-from-now!)]
+      (if rebuild-fn
+        (log/info "Scheduling engine initialized successfully")
+        (log/warn "Scheduling engine functions not found!")))
+    (catch Exception e
+      (log/error e "Failed to initialize scheduling engine")))
   opts)
 
 (defmethod ig/halt-key! :pseudovision/scheduling [_ _] nil)
