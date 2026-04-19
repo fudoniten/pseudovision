@@ -9,6 +9,7 @@
             [pseudovision.http.api.m3u        :as m3u]
             [pseudovision.http.api.media      :as med]
             [pseudovision.http.api.streaming  :as streaming]
+            [pseudovision.http.api.tags       :as tags]
             [pseudovision.http.api.test       :as test]
             [pseudovision.http.api.ffmpeg     :as ffmpeg]
             [pseudovision.http.api.logos      :as logos]))
@@ -79,8 +80,17 @@
    ["/api/media/items/:id/stream"
     {:get (med/redirect-to-stream-handler ctx)}]
    ["/api/media/collections"
-    {:get  (med/list-collections-handler  ctx)
-     :post (med/create-collection-handler ctx)}]
+     {:get  (med/list-collections-handler  ctx)
+      :post (med/create-collection-handler ctx)}]
+
+   ;; ── Tags ────────────────────────────────────────────────────────────────
+   ["/api/tags"
+     {:get (tags/list-all-tags-handler ctx)}]
+   ["/api/media-items/:id/tags"
+     {:get  (tags/get-tags-handler ctx)
+      :post (tags/add-tags-handler ctx)}]
+   ["/api/media-items/:id/tags/:tag"
+     {:delete (tags/delete-tag-handler ctx)}]
 
    ;; ── FFmpeg Profiles ─────────────────────────────────────────────────────
    ["/api/ffmpeg/profiles"

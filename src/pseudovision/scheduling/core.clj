@@ -18,10 +18,13 @@
      :fixed      — slot starts at a specific wall-clock time of day
      :sequential — slot starts immediately when the previous one ends"
   (:require [next.jdbc                   :as jdbc]
-            [pseudovision.db.channels    :as channels-db]
-            [pseudovision.db.media       :as media-db]
-            [pseudovision.db.playouts    :as playout-db]
-            [pseudovision.db.schedules   :as schedules-db]
+            [honey.sql                 :as sql]
+            [honey.sql.helpers         :as h]
+            [pseudovision.db.core      :as db-core]
+            [pseudovision.db.channels  :as channels-db]
+            [pseudovision.db.media     :as media-db]
+            [pseudovision.db.playouts  :as playout-db]
+            [pseudovision.db.schedules :as schedules-db]
             [pseudovision.db.collections :as col-db]
             [pseudovision.scheduling.cursor      :as cursor]
             [pseudovision.scheduling.enumerators :as enum]
@@ -42,18 +45,52 @@
   (str "collection:" (or (:schedule-slots/collection-id slot)
                          (str "item:" (:schedule-slots/media-item-id slot)))))
 
+(defn- get-item-tags
+  "Get all tags for a media item."
+  [db media-item-id]
+  (let [tags (db-core/query db (-> (h/select :mt.name)
+                                  (h/from [:metadata-tags :mt])
+                                  (h/join [:metadata :m] [:= :m.id :mt.metadata-id])
+                                  (h/where [:= :m.media-item-id media-item-id])
+                                  sql/format))]
+    (set (map :metadata-tags/name tags))))
+
+(defn- matches-tag-filters?
+  "Returns true if item matches the required/excluded tag filters.
+   - Must have ALL required tags (AND logic)
+   - Must have NONE of the excluded tags (NOT logic)"
+  [db item required-tags excluded-tags]
+  (when (or (seq required-tags) (seq excluded-tags))
+    (let [item-tags (get-item-tags db (:media-items/id item))]
+      (and
+        ;; Must have all required tags
+        (every? #(contains? item-tags %) required-tags)
+        ;; Must not have any excluded tags
+        (not-any? #(contains? item-tags %) excluded-tags))))
+  ;; If no tag filters, item matches
+  true)
+
 (defn- load-items
-  "Returns the ordered seq of playable media items for a slot."
+  "Returns the ordered seq of playable media items for a slot.
+   Filters by required/excluded tags if specified."
   [db slot]
-  (cond
-    (:schedule-slots/collection-id slot)
-    (let [coll (media-db/get-collection db (:schedule-slots/collection-id slot))]
-      (col-db/resolve-collection db coll))
+  (let [required-tags (or (:schedule-slots/required-tags slot) [])
+        excluded-tags (or (:schedule-slots/excluded-tags slot) [])
+        items (cond
+                (:schedule-slots/collection-id slot)
+                (let [coll (media-db/get-collection db (:schedule-slots/collection-id slot))]
+                  (col-db/resolve-collection db coll))
 
-    (:schedule-slots/media-item-id slot)
-    [(media-db/get-media-item db (:schedule-slots/media-item-id slot))]
+                (:schedule-slots/media-item-id slot)
+                [(media-db/get-media-item db (:schedule-slots/media-item-id slot))]
 
-    :else []))
+                :else [])]
+    ;; Apply tag filters if specified
+    (if (or (seq required-tags) (seq excluded-tags))
+      (do
+        (log/debug "Filtering items by tags" {:required required-tags :excluded excluded-tags})
+        (filter #(matches-tag-filters? db % required-tags excluded-tags) items))
+      items)))
 
 (defn- item-duration
   "Returns the item's playback duration, or zero if the item has not been probed."
