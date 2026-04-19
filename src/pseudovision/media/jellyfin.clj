@@ -14,6 +14,7 @@
             [next.jdbc                   :as jdbc]
             [honey.sql                   :as sql]
             [honey.sql.helpers           :as h]
+            [pseudovision.db.core        :as db-core]
             [pseudovision.db.media       :as db]
             [pseudovision.media.connection :as conn]
             [pseudovision.util.sql       :as sql-util]
@@ -260,7 +261,7 @@
   "Looks up the parent media_item by its Jellyfin ID (remote_key) in our DB."
   [tx library-path-id parent-jf-id]
   (when parent-jf-id
-    (db/query-one tx
+    (db-core/query-one tx
                   (-> (h/select :id)
                       (h/from :media-items)
                       (h/where [:and

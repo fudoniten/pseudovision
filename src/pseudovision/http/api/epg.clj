@@ -4,8 +4,7 @@
   (:require [pseudovision.db.playouts :as db]
             [pseudovision.db.channels :as db-channels]
             [pseudovision.util.time   :as t]
-            [clojure.string :as str]
-            [cheshire.core :as json])
+            [clojure.string :as str])
   (:import [java.time Instant Year]))
 
 (defn- escape-xml
@@ -81,17 +80,7 @@
           horizon (t/add-duration now (t/hours->duration (* 24 7)))
           events  (db/list-events-in-window db now horizon)
           base-url (str (name (:scheme req)) "://" (get-in req [:headers "host"]))
-
-          ;; Deduplicate channels preserving insertion order
-          ;; Note: Database returns :channels/id (or :c/id depending on config)
-          channels (->> events
-                        (map #(select-keys % [:channels/uuid :channels/name
-                                              :channels/number :channels/group-name
-                                              :channels/id :c/id]))
-                        (map (fn [ch] (if (:c/id ch)
-                                       (assoc ch :channels/id (:c/id ch))
-                                       ch)))
-                        (distinct))]
+          channels (db-channels/list-channels db)]
       {:status  200
        :headers {"Content-Type" "text/xml; charset=utf-8"}
        :body    (str "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"

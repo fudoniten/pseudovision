@@ -3,6 +3,22 @@
   (:import [java.lang ProcessBuilder]
            [java.io File]))
 
+(defn- resolve-ffmpeg-path []
+  (or (System/getenv "FFMPEG_PATH")
+      (first (filter #(.exists (File. %))
+                     ["/usr/bin/ffmpeg"
+                      "/usr/local/bin/ffmpeg"]))
+      "ffmpeg"))
+
+(defn- extract-profile [{:keys [video-codec audio-codec preset video-bitrate audio-bitrate]
+                         :or {video-codec "libx264"
+                              audio-codec "aac"
+                              preset "veryfast"
+                              video-bitrate "2000k"
+                              audio-bitrate "128k"}}]
+  {:video-codec video-codec :audio-codec audio-codec :preset preset
+   :video-bitrate video-bitrate :audio-bitrate audio-bitrate})
+
 (defn build-hls-command
   "Builds an FFmpeg command array for HLS streaming.
    
@@ -24,18 +40,9 @@
                                segment-duration 6
                                playlist-size 10
                                profile-config {}}}]
-   (let [ffmpeg-bin (or (System/getenv "FFMPEG_PATH") 
-                        ;; Try to find ffmpeg in common locations
-                        (first (filter #(.exists (File. %))
-                                      ["/usr/bin/ffmpeg"
-                                       "/usr/local/bin/ffmpeg"]))
-                        "ffmpeg")
-         ;; Extract profile settings with defaults
-         video-codec (get profile-config :video-codec "libx264")
-         audio-codec (get profile-config :audio-codec "aac")
-         preset (get profile-config :preset "veryfast")
-         video-bitrate (get profile-config :video-bitrate "2000k")
-         audio-bitrate (get profile-config :audio-bitrate "128k")]
+   (let [ffmpeg-bin (resolve-ffmpeg-path)
+         {:keys [video-codec audio-codec preset video-bitrate audio-bitrate]}
+         (extract-profile profile-config)]
      (log/debug "Using ffmpeg" {:path ffmpeg-bin :profile profile-config})
      (into-array String
        [ffmpeg-bin
@@ -114,19 +121,10 @@
                     playlist-size 10
                     profile-config {}
                     upcoming-events []}}]
-  (let [ffmpeg-bin (or (System/getenv "FFMPEG_PATH") 
-                       (first (filter #(.exists (File. %))
-                                     ["/usr/bin/ffmpeg"
-                                      "/usr/local/bin/ffmpeg"]))
-                       "ffmpeg")
-        ;; Extract profile settings with defaults
-        video-codec (get profile-config :video-codec "libx264")
-        audio-codec (get profile-config :audio-codec "aac")
-        preset (get profile-config :preset "veryfast")
-        video-bitrate (get profile-config :video-bitrate "2000k")
-        audio-bitrate (get profile-config :audio-bitrate "128k")
-        
-        ;; Build text overlays
+  (let [ffmpeg-bin (resolve-ffmpeg-path)
+        {:keys [video-codec audio-codec preset video-bitrate audio-bitrate]}
+        (extract-profile profile-config)
+
         channel-text (if channel-number
                       (format "Channel %s: %s" channel-number channel-name)
                       channel-name)

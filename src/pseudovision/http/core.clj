@@ -135,13 +135,11 @@
 (defn make-handler
   "Creates the reitit Ring handler with JSON 404/405 fallback responses."
   [ctx]
-  (-> (ring/ring-handler
-       (ring/router (routes ctx))
-       (ring/create-default-handler
-        {:not-found          (fn [_] {:status 404 :body {:error "Not found"}})
-         :method-not-allowed (fn [_] {:status 405 :body {:error "Method not allowed"}})}))
-      mw/wrap-json-response
-      mw/wrap-error-handler))
+  (ring/ring-handler
+   (ring/router (routes ctx))
+   (ring/create-default-handler
+    {:not-found          (fn [_] {:status 404 :body {:error "Not found"}})
+     :method-not-allowed (fn [_] {:status 405 :body {:error "Method not allowed"}})})))
 
 (defn start-server!
   "Assembles the handler context from opts and starts a non-blocking Jetty server."
