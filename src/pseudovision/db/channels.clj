@@ -30,12 +30,16 @@
 (defn create-channel! [ds attrs]
   ;; Cast uuid string to UUID type if provided
   ;; Calculate sort_number from number if not provided (e.g. "4.1" → 4.1)
+  ;; Set default ffmpeg_profile_id if not provided (use profile 1 = default)
   (let [attrs' (cond-> attrs
                  (:uuid attrs)
                  (update :uuid #(if (string? %) (java.util.UUID/fromString %) %))
                  
                  (and (:number attrs) (not (:sort-number attrs)))
-                 (assoc :sort-number (Double/parseDouble (:number attrs))))]
+                 (assoc :sort-number (Double/parseDouble (:number attrs)))
+                 
+                 (not (:ffmpeg-profile-id attrs))
+                 (assoc :ffmpeg-profile-id 1))]
     (db/execute-one! ds (-> (h/insert-into :channels)
                             (h/values [attrs'])
                             (h/returning :*)
