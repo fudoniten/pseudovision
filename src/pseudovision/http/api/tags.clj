@@ -45,18 +45,24 @@
                                nil)))]
           (if metadata-id
             (do
-              ;; Insert tags (ignore duplicates)
+              ;; Insert tags (check for duplicates first)
               (doseq [tag tags]
-                (try
-                  (db/execute-one! db
-                    (-> (h/insert-into :metadata-tags)
-                        (h/values [{:metadata-id metadata-id
-                                   :name tag}])
-                        (h/on-conflict :metadata-id :name)
-                        (h/do-nothing)
-                        sql/format))
-                  (catch Exception e
-                    (log/warn "Failed to insert tag" {:tag tag :error (.getMessage e)}))))
+                (let [existing (db-core/query-one db
+                                 (-> (h/select :id)
+                                     (h/from :metadata-tags)
+                                     (h/where [:and
+                                               [:= :metadata-id metadata-id]
+                                               [:= :name tag]])
+                                     sql/format))]
+                  (when-not existing
+                    (try
+                      (db-core/execute-one! db
+                        (-> (h/insert-into :metadata-tags)
+                            (h/values [{:metadata-id metadata-id
+                                       :name tag}])
+                            sql/format))
+                      (catch Exception e
+                        (log/warn "Failed to insert tag" {:tag tag :error (.getMessage e)}))))))
               (log/info "Added tags to media item" {:item-id item-id :tags tags})
               {:status 200 :body {:item-id item-id :tags-added tags}})
             {:status 404 :body {:error "Media item not found"}}))))))
