@@ -63,12 +63,13 @@
 
 (defn get-enumerator
   "Returns the enumerator for collection-key, restoring from saved cursor state
-   if present, or constructing a fresh one with the given playback-order."
-  [cursor collection-key items playback-order]
+   if present, or constructing a fresh one with the given playback-order.
+   opts may include :seed and :batch-size."
+  [cursor collection-key items playback-order & [opts]]
   (let [saved (get-in cursor [:enumerator-states collection-key])]
     (if saved
       (enum/cursor->enumerator items saved)
-      (enum/make-enumerator items playback-order {}))))
+      (enum/make-enumerator items playback-order (or opts {})))))
 
 (defn save-enumerator
   "Persists the enumerator's resumable state back into the cursor under collection-key."

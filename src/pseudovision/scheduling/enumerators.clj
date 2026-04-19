@@ -64,6 +64,17 @@
    :order   (shuffled-indices (count items) seed)
    :playback-order :shuffle})
 
+(defmethod make-enumerator :semi-sequential [items _ {:keys [seed batch-size] :or {seed 0 batch-size 5}}]
+  ;; Play N items sequentially, then jump to a random position and repeat.
+  ;; batch-offset tracks which batch we're on (for deterministic random jumps).
+  {:items            (vec items)
+   :index            0
+   :seed             seed
+   :batch-size       batch-size
+   :batch-offset     0
+   :within-batch-idx 0
+   :playback-order   :semi-sequential})
+
 (defmethod make-enumerator :season-episode [items _ _opts]
   ;; Items are pre-sorted by (season-id, episode-position) so that next-item
   ;; can delegate to the plain chronological walk.
@@ -108,6 +119,24 @@
         item (nth items (nth order idx))]
     [item (assoc e :index (inc index))]))
 
+(defmethod next-item :semi-sequential [{:keys [items index seed batch-size batch-offset within-batch-idx] :as e}]
+  ;; Play batch-size items sequentially, then jump randomly to a new starting point
+  (let [n (count items)]
+    (if (>= within-batch-idx batch-size)
+      ;; Batch complete - pick new random start position
+      (let [new-offset  (inc batch-offset)
+            rng         (Random. (+ seed new-offset))
+            new-start   (.nextInt rng n)
+            item        (nth items new-start)]
+        [item (assoc e :index (inc index)
+                       :batch-offset new-offset
+                       :within-batch-idx 1)])
+      ;; Continue in current batch
+      (let [current-start (mod index n)
+            item          (nth items (mod (+ current-start within-batch-idx) n))]
+        [item (assoc e :index (inc index)
+                       :within-batch-idx (inc within-batch-idx))]))))
+
 (defmethod next-item :season-episode [e]
   ((get-method next-item :chronological) e))
 
@@ -120,14 +149,21 @@
 
 (defn enumerator->cursor
   "Extracts the serializable resumption state from an enumerator (index, seed, order name)."
-  [{:keys [index seed playback-order]}]
-  {:index          index
-   :seed           (or seed 0)
-   :playback-order (name playback-order)})
+  [{:keys [index seed playback-order batch-size batch-offset within-batch-idx]}]
+  (cond-> {:index          index
+           :seed           (or seed 0)
+           :playback-order (name playback-order)}
+    batch-size       (assoc :batch-size batch-size)
+    batch-offset     (assoc :batch-offset batch-offset)
+    within-batch-idx (assoc :within-batch-idx within-batch-idx)))
 
 (defn cursor->enumerator
   "Rebuilds an enumerator from its cursor snapshot, restoring the exact position."
-  [items {:keys [index seed playback-order]}]
+  [items {:keys [index seed playback-order batch-size batch-offset within-batch-idx]}]
   (let [order (keyword playback-order)
-        e     (make-enumerator items order {:seed seed})]
-    (assoc e :index index)))
+        opts  (cond-> {:seed seed}
+                batch-size (assoc :batch-size batch-size))
+        e     (make-enumerator items order opts)]
+    (cond-> (assoc e :index index)
+      batch-offset     (assoc :batch-offset batch-offset)
+      within-batch-idx (assoc :within-batch-idx within-batch-idx))))

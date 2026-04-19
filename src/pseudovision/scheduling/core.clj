@@ -78,11 +78,13 @@
 
 (defn- emit-once
   "Emit one item, return [events cursor]."
-  [db cursor slot playout-id _opts]
+  [db cursor slot playout-id opts]
   (let [items   (load-items db slot)
         ckey    (collection-key slot)
         order   (keyword (or (:schedule-slots/playback-order slot) "chronological"))
-        e       (cursor/get-enumerator cursor ckey items order)
+        enum-opts {:seed (get opts :seed 0)
+                   :batch-size (or (:schedule-slots/marathon-batch-size slot) 5)}
+        e       (cursor/get-enumerator cursor ckey items order enum-opts)
         [item e'] (enum/next-item e)
         dur     (item-duration item)
         from    (:next-start cursor)
@@ -103,15 +105,17 @@
 
 (defn- emit-count
   "Emit exactly item-count items, return [events cursor]."
-  [db cursor slot playout-id _opts]
+  [db cursor slot playout-id opts]
   (let [items  (load-items db slot)
         ckey   (collection-key slot)
         order  (keyword (or (:schedule-slots/playback-order slot) "chronological"))
+        enum-opts {:seed (get opts :seed 0)
+                   :batch-size (or (:schedule-slots/marathon-batch-size slot) 5)}
         n      (or (:schedule-slots/item-count slot) 1)
         guide  (:next-guide-group cursor)]
     (loop [i      0
            from   (:next-start cursor)
-           e      (cursor/get-enumerator cursor ckey items order)
+           e      (cursor/get-enumerator cursor ckey items order enum-opts)
            events []]
       (if (>= i n)
         (let [cursor' (-> cursor
@@ -139,12 +143,14 @@
   (let [items      (load-items db slot)
         ckey       (collection-key slot)
         order      (keyword (or (:schedule-slots/playback-order slot) "chronological"))
+        enum-opts  {:seed (get opts :seed 0)
+                    :batch-size (or (:schedule-slots/marathon-batch-size slot) 5)}
         block-dur  (:schedule-slots/block-duration slot)
         from       (:next-start cursor)
         block-end  (t/add-duration from block-dur)
         guide      (:next-guide-group cursor)]
     (loop [cursor-time from
-           e           (cursor/get-enumerator cursor ckey items order)
+           e           (cursor/get-enumerator cursor ckey items order enum-opts)
            events      []]
       (let [remaining (t/duration-between cursor-time block-end)]
         (cond
@@ -207,11 +213,13 @@
   (let [items  (load-items db slot)
         ckey   (collection-key slot)
         order  (keyword (or (:schedule-slots/playback-order slot) "chronological"))
+        enum-opts {:seed (get opts :seed 0)
+                   :batch-size (or (:schedule-slots/marathon-batch-size slot) 5)}
         guide  (:next-guide-group cursor)
         end    (or flood-end
                    (t/add-duration (:next-start cursor) (t/hours->duration 2)))]
     (loop [cursor-time (:next-start cursor)
-           e           (cursor/get-enumerator cursor ckey items order)
+           e           (cursor/get-enumerator cursor ckey items order enum-opts)
            events      []]
       (let [remaining (t/duration-between cursor-time end)]
         (if (or (.isNegative remaining) (.isZero remaining) (empty? (:items e)))
@@ -283,6 +291,7 @@
   (let [channel-id  (:playouts/channel-id playout)
         schedule-id (:playouts/schedule-id playout)
         playout-id  (:playouts/id playout)
+        seed        (:playouts/seed playout 0)
         channel     (when channel-id
                       (channels-db/get-channel db channel-id))
         schedule    (when schedule-id
@@ -291,7 +300,8 @@
                       (schedules-db/list-slots db schedule-id))
         now         (t/now)
         horizon     (t/add-duration now (t/hours->duration
-                                         (get opts :lookahead-hours 72)))]
+                                         (get opts :lookahead-hours 72)))
+        opts'       (assoc opts :seed seed)]
     (if (or (nil? schedule) (empty? slots))
       (do (log/warn "No schedule or slots; nothing to build"
                     {:playout-id playout-id})
@@ -317,27 +327,34 @@
                                                :build-success  true
                                                :build-message  nil})
                   (log/info "Build complete" {:playout-id playout-id
-                                              :events     (count events)}))
+                                              :events     (count events)})
+                  (count events))
                 ;; Process this slot
                 (let [[new-events cursor'] (process-slot
                                             tx cursor slot channel
-                                            playout-id slots opts)
+                                            playout-id slots opts')
                       cursor''  (cursor/advance-slot cursor' (count slots))]
                   (recur cursor'' (mod (inc slot-idx) (count slots))
                          (into events new-events)))))))))))
 
 (defn rebuild-from-now!
   "Delete all future events and regenerate from NOW.
-   Used when configuration changes."
+   Used when configuration changes.
+   Returns number of events generated."
   [ds playout-id horizon-days]
   (let [playout (playout-db/get-playout ds playout-id)]
-    (when playout
-      (build! ds {:lookahead-hours (* horizon-days 24)} playout))))
+    (if playout
+      (let [result (build! ds {:lookahead-hours (* horizon-days 24)} playout)]
+        (if (= result :no-schedule) 0 result))
+      0)))
 
 (defn rebuild-horizon!
   "Generate events for days beyond current horizon (daily rebuild).
-   Builds from current-horizon-days out to new-horizon-days."
+   Builds from current-horizon-days out to new-horizon-days.
+   Returns number of events generated."
   [ds playout-id current-horizon-days new-horizon-days]
   (let [playout (playout-db/get-playout ds playout-id)]
-    (when playout
-      (build! ds {:lookahead-hours (* new-horizon-days 24)} playout))))
+    (if playout
+      (let [result (build! ds {:lookahead-hours (* new-horizon-days 24)} playout)]
+        (if (= result :no-schedule) 0 result))
+      0)))
