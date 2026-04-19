@@ -272,12 +272,12 @@
 (defn- item-unchanged?
   "Returns true if the item already exists with the same etag."
   [tx library-path-id jf-id etag]
-  (let [existing (db/query-one tx
-                               (-> (h/select :id :remote-etag)
-                                   (h/from :media-items)
-                                   (h/where [:and
-                                             [:= :library-path-id library-path-id]
-                                             [:= :remote-key jf-id]])
+  (let [existing (db-core/query-one tx
+                                    (-> (h/select :id :remote-etag)
+                                        (h/from :media-items)
+                                        (h/where [:and
+                                                  [:= :library-path-id library-path-id]
+                                                  [:= :remote-key jf-id]])
                                    sql/format))]
     (and existing (= (:media-items/remote-etag existing) etag))))
 
