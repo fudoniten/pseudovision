@@ -326,7 +326,18 @@
                   (recur cursor'' (mod (inc slot-idx) (count slots))
                          (into events new-events)))))))))))
 
-(defn rebuild!
-  "Alias for build!; triggers a full rebuild from the saved cursor position."
-  [db opts playout]
-  (build! db opts playout))
+(defn rebuild-from-now!
+  "Delete all future events and regenerate from NOW.
+   Used when configuration changes."
+  [ds playout-id horizon-days]
+  (let [playout (playout-db/get-playout ds playout-id)]
+    (when playout
+      (build! ds {:lookahead-hours (* horizon-days 24)} playout))))
+
+(defn rebuild-horizon!
+  "Generate events for days beyond current horizon (daily rebuild).
+   Builds from current-horizon-days out to new-horizon-days."
+  [ds playout-id current-horizon-days new-horizon-days]
+  (let [playout (playout-db/get-playout ds playout-id)]
+    (when playout
+      (build! ds {:lookahead-hours (* new-horizon-days 24)} playout))))

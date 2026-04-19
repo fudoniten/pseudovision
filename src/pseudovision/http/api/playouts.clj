@@ -1,13 +1,8 @@
 (ns pseudovision.http.api.playouts
   (:require [pseudovision.db.playouts      :as db]
-            [pseudovision.scheduling.engine :as engine]
+            [pseudovision.scheduling.core  :as sched]
             [pseudovision.util.time         :as t]
             [pseudovision.util.sql          :as sql-util]))
-
-;; Force engine functions to be compiled by referencing them
-(def ^:private -engine-fns-for-aot
-  {:rebuild-from-now! #'engine/rebuild-from-now!
-   :rebuild-horizon!  #'engine/rebuild-horizon!})
 
 (defn get-playout-handler [{:keys [db]}]
   (fn [req]
@@ -25,9 +20,9 @@
       (if playout
         (let [playout-id (:playouts/id playout)
               count (case from
-                     "now" (engine/rebuild-from-now! db playout-id horizon-days)
-                     "horizon" (engine/rebuild-horizon! db playout-id 7 horizon-days)
-                     (engine/rebuild-from-now! db playout-id horizon-days))]
+                     "now" (sched/rebuild-from-now! db playout-id horizon-days)
+                     "horizon" (sched/rebuild-horizon! db playout-id 7 horizon-days)
+                     (sched/rebuild-from-now! db playout-id horizon-days))]
           {:status 200 
            :body {:message "Rebuild complete"
                   :events-generated count

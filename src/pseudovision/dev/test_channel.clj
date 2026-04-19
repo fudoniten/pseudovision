@@ -121,7 +121,7 @@
             ;; Build playout events
             (try
               ;; Default scheduling options (72 hour lookahead)
-              (sched/rebuild! ds {:lookahead-hours 72} playout)
+              (sched/build! ds {:lookahead-hours 72} playout)
               (log/info "Built playout events for test channel")
               (catch Exception e
                 (log/warn e "Failed to build playout events - you may need to run rebuild manually")))

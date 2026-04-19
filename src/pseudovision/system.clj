@@ -1,15 +1,38 @@
 (ns pseudovision.system
   (:require [integrant.core              :as ig]
-            [pseudovision.config         :as config]
             [pseudovision.db.core        :as db]
             [pseudovision.http.core      :as http]
             [pseudovision.cleanup        :as cleanup]
-            [pseudovision.scheduling.engine :as engine]  ; Force load for AOT compilation
             [pseudovision.util.sql       :as sql-util]
             [taoensso.timbre             :as log]))
 
-;; Re-export so callers only need this namespace
-(def ->system-config config/->system-config)
+;; ---------------------------------------------------------------------------
+;; Config → Integrant keys
+;; ---------------------------------------------------------------------------
+
+(defn- parse-log-level [level]
+  (cond
+    (keyword? level) level
+    (string? level)  (keyword level)
+    :else            :info))
+
+(defn ->system-config
+  [{:keys [log-level server database ffmpeg media scheduling]}]
+  (letfn [(parse-int [i] (if (string? i) (Integer/parseInt i) i))]
+    {:pseudovision/logger    {:level     (parse-log-level (or log-level :info))}
+     :pseudovision/db        {:jdbc-url  (:jdbc-url database)
+                              :username  (:username database)
+                              :password  (:password database)}
+     :pseudovision/ffmpeg    {:ffmpeg-path  (:ffmpeg-path  ffmpeg)
+                              :ffprobe-path (:ffprobe-path ffmpeg)}
+     :pseudovision/media     (merge {:scan-concurrency 4
+                                     :probe-timeout-ms 30000}
+                                    media)
+     :pseudovision/scheduling (merge {:lookahead-hours 72
+                                      :rebuild-interval-minutes 60}
+                                     scheduling)
+     :pseudovision/cleanup   {}
+     :pseudovision/http      {:port (or (some-> server :port (parse-int)) 8080)}}))
 
 ;; ---------------------------------------------------------------------------
 ;; Logger
@@ -54,18 +77,7 @@
 ;; Scheduling config
 ;; ---------------------------------------------------------------------------
 
-(defmethod ig/init-key :pseudovision/scheduling [_ opts]
-  ;; Force load and verify engine namespace functions for AOT compilation
-  ;; This ensures functions are bound at runtime
-  (try
-    (require 'pseudovision.scheduling.engine)
-    (let [rebuild-fn (ns-resolve 'pseudovision.scheduling.engine 'rebuild-from-now!)]
-      (if rebuild-fn
-        (log/info "Scheduling engine initialized successfully")
-        (log/warn "Scheduling engine functions not found!")))
-    (catch Exception e
-      (log/error e "Failed to initialize scheduling engine")))
-  opts)
+(defmethod ig/init-key :pseudovision/scheduling [_ opts] opts)
 
 (defmethod ig/halt-key! :pseudovision/scheduling [_ _] nil)
 
@@ -85,7 +97,6 @@
 
 (defmethod ig/init-key :pseudovision/http
   [_ {:keys [port] :as opts}]
-  (ig/ref :pseudovision/db)    ; ensure db is up before HTTP
   (let [server (http/start-server! opts)]
     (log/info "HTTP server listening on port" port)
     server))
