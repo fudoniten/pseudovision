@@ -28,10 +28,14 @@
                        sql/format)))
 
 (defn create-channel! [ds attrs]
-  (db/execute-one! ds (-> (h/insert-into :channels)
-                          (h/values [attrs])
-                          (h/returning :*)
-                          sql/format)))
+  ;; Cast uuid string to UUID type if provided
+  (let [attrs' (if (:uuid attrs)
+                 (update attrs :uuid #(if (string? %) (java.util.UUID/fromString %) %))
+                 attrs)]
+    (db/execute-one! ds (-> (h/insert-into :channels)
+                            (h/values [attrs'])
+                            (h/returning :*)
+                            sql/format))))
 
 (defn update-channel! [ds id attrs]
   (db/execute-one! ds (-> (h/update :channels)
