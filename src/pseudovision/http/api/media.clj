@@ -5,8 +5,7 @@
             [pseudovision.media.scanner     :as scanner]
             [pseudovision.media.jellyfin    :as jellyfin]
             [pseudovision.media.connection  :as conn]
-            [taoensso.timbre                :as log])
-  (:import [java.io InputStream]))
+            [taoensso.timbre                :as log]))
 
 ;; ---------------------------------------------------------------------------
 ;; Playback URL helpers
