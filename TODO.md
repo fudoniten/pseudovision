@@ -81,16 +81,18 @@ This document tracks the completion status of XMLTV, M3U, and live streaming fun
    - Note: XMLTV `<icon>` tag has minor rendering issue (M3U logos work fine)
 
 **🚨 MAJOR GAPS (for full production):**
-1. **Scheduling Engine** ⚡ IN PROGRESS — Basic engine working! See SCHEDULING.md.
-   - ✅ Core engine with playback orders (chronological/random/shuffle/semi-sequential)
+1. **Scheduling Engine** ✅ COMPLETE (Basic) — See SCHEDULING.md for advanced features.
+   - ✅ Core engine with playback orders (chronological/random/shuffle/semi-sequential/season-episode)
    - ✅ Fill modes (once/count/block/flood)
    - ✅ Smart collection resolution
    - ✅ Rebuild API (from now/horizon)
-   - ❌ Tag-based content selection (Phase 1A)
+   - ✅ Tag-based content selection (Phase 1A) - required_tags/excluded_tags
+   - ✅ Fixed time slots support
+   - ✅ tunarr-scheduler integration via direct API
    - ❌ Filler collections system (Phase 1B)
-   - ❌ Fixed time slots support
-   - ❌ Schedule overrides for special events
-   - ❌ Daily rebuild automation
+   - ❌ Schedule overrides for special events (Phase 3)
+   - ❌ Daily rebuild automation (cron job)
+   - ❌ Marathon mode & advanced playback orders
 2. **Alternative Streaming Modes** — Only hls_segmenter implemented (no ts, ts_hybrid, hls_direct)
 3. **Audio/Subtitle Preferences** — Apply language/track preferences from channel config
 4. **Watermarks & Graphics** — Schema exists but not implemented in FFmpeg pipeline
