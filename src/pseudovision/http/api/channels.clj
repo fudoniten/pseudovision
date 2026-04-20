@@ -2,9 +2,14 @@
   (:require [pseudovision.db.channels :as db]))
 
 (defn list-channels-handler [{:keys [db]}]
-  (fn [_req]
-    {:status 200
-     :body   (db/list-channels db)}))
+  (fn [req]
+    ;; Support ?uuid=xxx query parameter to filter by UUID
+    (let [uuid-param (get-in req [:query-params "uuid"])]
+      (if uuid-param
+        (if-let [channel (db/get-channel-by-uuid db uuid-param)]
+          {:status 200 :body channel}
+          {:status 404 :body {:error "Channel not found"}})
+        {:status 200 :body (db/list-channels db)}))))
 
 (defn get-channel-handler [{:keys [db]}]
   (fn [req]
