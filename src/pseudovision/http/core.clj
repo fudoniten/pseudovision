@@ -15,8 +15,6 @@
 
 (defn- routes [ctx]
   [""
-   {:middleware mw/default-middleware}
-
    ;; ── Health ──────────────────────────────────────────────────────────────
    ["/health"
     {:get (fn [_] {:status 200 :body {:status "ok"}})}]
@@ -133,13 +131,16 @@
    ["/api/debug/stream/:uuid" {:get (streaming/stream-debug-handler ctx)}]])
 
 (defn make-handler
-  "Creates the reitit Ring handler with JSON 404/405 fallback responses."
+  "Creates the reitit Ring handler with JSON 404/405 fallback responses.
+   The middleware stack wraps the entire handler (including reitit's default
+   handler) so unmatched routes also get JSON body serialisation."
   [ctx]
-  (ring/ring-handler
-   (ring/router (routes ctx))
-   (ring/create-default-handler
-    {:not-found          (fn [_] {:status 404 :body {:error "Not found"}})
-     :method-not-allowed (fn [_] {:status 405 :body {:error "Method not allowed"}})})))
+  (let [handler (ring/ring-handler
+                 (ring/router (routes ctx))
+                 (ring/create-default-handler
+                  {:not-found          (fn [_] {:status 404 :body {:error "Not found"}})
+                   :method-not-allowed (fn [_] {:status 405 :body {:error "Method not allowed"}})}))]
+    (reduce (fn [h mw] (mw h)) handler (reverse mw/default-middleware))))
 
 (defn start-server!
   "Assembles the handler context from opts and starts a non-blocking Jetty server."
