@@ -25,7 +25,7 @@
 ;; Error envelope
 ;; ---------------------------------------------------------------------------
 
-(def Error
+(def APIError
   [:map
    [:error :string]])
 
