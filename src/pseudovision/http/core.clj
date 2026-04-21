@@ -46,7 +46,7 @@
                :parameters  {:query [:map
                                      [:uuid {:optional true} :uuid]]}
                :responses   {200 {:body [:or s/Channel [:vector s/Channel]]}
-                             404 {:body s/Error}}
+                             404 {:body s/APIError}}
                :handler     (ch/list-channels-handler ctx)}
      :post    {:summary     "Create a channel"
                :parameters  {:body s/ChannelCreate}
@@ -58,12 +58,12 @@
      :parameters {:path [:map [:id s/ChannelId]]}
      :get     {:summary     "Get a channel by id"
                :responses   {200 {:body s/Channel}
-                             404 {:body s/Error}}
+                             404 {:body s/APIError}}
                :handler     (ch/get-channel-handler ctx)}
      :put     {:summary     "Update a channel"
                :parameters  {:body s/ChannelUpdate}
                :responses   {200 {:body s/Channel}
-                             404 {:body s/Error}
+                             404 {:body s/APIError}
                              400 {:body s/CoercionError}}
                :handler     (ch/update-channel-handler ctx)}
      :delete  {:summary     "Delete a channel"
