@@ -96,10 +96,29 @@ Filler presets bridge gaps. Each preset has:
 
 ## API
 
+The HTTP API is described by an OpenAPI 3 specification served at
+`/openapi.json` and rendered interactively at `/swagger-ui/`. The spec is
+generated at runtime from the route table in `src/pseudovision/http/core.clj`
+and the malli schemas in `src/pseudovision/http/schemas.clj`. The endpoint
+tables below are a quick reference; the live spec is authoritative.
+
+Routes that have been migrated to the schema-driven stack (currently:
+channels) validate requests via malli coercion — a malformed body, a
+non-integer `:id`, or an invalid UUID query parameter returns a structured
+400 response of the form `{"error": "Request coercion failed", "in": [...],
+"humanized": {...}}` instead of a 500. Other routes retain their
+pre-coercion behaviour until they're migrated.
+
+### Documentation
+| Path | Description |
+|------|-------------|
+| `/openapi.json` | OpenAPI 3 document for the full API |
+| `/swagger-ui/` | Interactive Swagger UI |
+
 ### Channels
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/channels` | List all channels |
+| GET | `/api/channels` | List all channels (optional `?uuid=` filter) |
 | POST | `/api/channels` | Create a channel |
 | GET | `/api/channels/:id` | Get a channel |
 | PUT | `/api/channels/:id` | Update a channel |
@@ -162,8 +181,12 @@ src/pseudovision/
     media.clj           Media source, library, item, collection queries
     collections.clj     Collection resolver (dispatch by kind)
   http/
-    core.clj            reitit router + Jetty server
-    middleware.clj      JSON, logging, error handling
+    core.clj            reitit router + Jetty server; wires coercion, Muuntaja,
+                        OpenAPI/Swagger UI
+    middleware.clj      Muuntaja JSON config, coercion-error handler, logging,
+                        outer error handler
+    schemas.clj         Malli schemas for request/response coercion and the
+                        OpenAPI spec
     api/
       channels.clj      Channel API handlers
       schedules.clj     Schedule/slot API handlers

@@ -23,7 +23,35 @@ This document tracks the completion status of XMLTV, M3U, and live streaming fun
 
 ---
 
-## ⚡ Recent Progress Summary (Updated 2026-04-18)
+## ⚡ Recent Progress Summary (Updated 2026-04-21)
+
+**📘 API SPECIFICATION MIGRATION IN PROGRESS (as of 2026-04-21):**
+
+The HTTP layer is migrating to a schema-driven stack built on Reitit's
+data-driven routing, malli for schemas, and Muuntaja for content negotiation.
+The goal is a runtime-generated OpenAPI 3 document at `/openapi.json`, an
+interactive `/swagger-ui/`, and request/response coercion for every endpoint.
+
+- ✅ **Phase 1 — Infrastructure** (commit `49239da`, `d52d356`)
+  - Added `fi.metosin/reitit-openapi` and `metosin/reitit-swagger-ui` deps
+  - Serve `/openapi.json` and `/swagger-ui/` (empty spec until routes are annotated)
+  - Moved JSON request decoding into Reitit's per-route `:data {:middleware …}`
+  - Outer wraps (error handler, request logging, JSON response encoding) unchanged
+  - Zero wire-format change
+- ✅ **Phase 2 — Channels pilot** (commit `b4b7248`)
+  - Added `metosin/malli`, `metosin/muuntaja`, `metosin/reitit-malli` deps
+  - `src/pseudovision/http/schemas.clj` — malli schemas: `Channel`, `ChannelCreate`,
+    `ChannelUpdate`, `Error`, `CoercionError`
+  - Configured Muuntaja with kebab-case decoder/encoder + `java.time.Instant` encoder,
+    replacing the custom `wrap-json-body` globally
+  - Route data now declares `:muuntaja`, `:coercion`, and the canonical middleware
+    chain (parameters, Muuntaja, exception, coerce-request)
+  - All 5 `/api/channels` routes annotated with `:parameters` / `:responses`
+  - Handlers simplified to read from `:parameters` (no more `parse-long` boilerplate)
+  - Channel response bodies normalised to unqualified keys (`:id`, `:name`) —
+    previously GET returned `:channels/id`, POST returned `:id`
+- ⏳ **Phase 3 — Remaining domains** — schedules, media, ffmpeg, tags, playouts,
+  test utilities (see §📘 below)
 
 **🎉 STREAMING FULLY FUNCTIONAL AND TESTED (as of 2026-04-18):**
 
@@ -110,6 +138,10 @@ This document tracks the completion status of XMLTV, M3U, and live streaming fun
    - Daily rebuild
 3. **🔥 Direct Streaming Mode** — Implement `hls_direct` for compatible formats (90% CPU reduction)
 4. **🔥 Audio/Subtitle Preferences** — Essential for multi-language content
+5. **📘 API Specification Phase 3** — Roll malli coercion + OpenAPI schemas
+   out to the remaining 36 endpoints (schedules, media, ffmpeg, tags,
+   playouts, test utilities). Mostly mechanical per-domain work — see the
+   📘 API Specification Migration section below.
 
 ---
 
@@ -333,6 +365,85 @@ The M3U playlist (`/iptv/channels.m3u`) and HDHomeRun lineup (`/lineup.json`) ad
   - **Location:** src/pseudovision/cleanup.clj
 
 **Test checkpoint:** Server handles all error scenarios gracefully ✅ FULLY IMPLEMENTED AND TESTED
+
+---
+
+## 📘 HIGH PRIORITY: API Specification Migration
+
+The HTTP API is migrating to a Reitit + malli + Muuntaja stack that
+generates an OpenAPI 3 document and performs request/response coercion.
+Phases 1 and 2 are complete; Phase 3 rolls the pattern out to the
+remaining domains.
+
+### Migration playbook (per domain)
+
+For each domain (schedules, media, ffmpeg, tags, playouts, test utilities):
+
+1. Define malli schemas in `src/pseudovision/http/schemas.clj` — one entity
+   schema for the response shape, one `*Create` schema for POST bodies,
+   one `*Update` schema for PUT bodies (all fields optional).
+2. Annotate each route in `src/pseudovision/http/core.clj` with
+   `:tags`, `:summary`, `:parameters` (path/query/body), and `:responses`.
+3. Update handlers to read from `:parameters` instead of `:path-params`,
+   `:body-params`, and `:query-params`. Delete the `parse-long` boilerplate —
+   values arrive already coerced.
+4. Decide per-domain whether response bodies need key normalisation
+   (strip next.jdbc's `:domain/` namespaces to match what POST returns).
+5. Add coercion tests to the domain's test namespace:
+   - Successful request passes
+   - Invalid path/query/body returns 400 with the structured coercion
+     envelope `{:error :in :humanized}`
+6. Verify the rendered spec at `/swagger-ui/` shows rich detail for the
+   migrated routes.
+
+### Domain rollout
+
+- [ ] **Schedules & Slots** (8 routes — `/api/schedules`, `/api/schedules/:id`,
+  `/api/schedules/:schedule-id/slots`, `/api/schedules/:schedule-id/slots/:id`)
+  - Entity schemas: `Schedule`, `Slot`, plus `ScheduleCreate`/`Update` and
+    `SlotCreate`/`Update`
+  - Slot has the most fields of any entity — playback orders, fill modes,
+    anchor types, per-slot filler/watermark overrides
+- [ ] **Playouts & Events** (5 routes — `/api/channels/:channel-id/playout`,
+  `/api/channels/:channel-id/playout/events`, events/:id)
+  - Entity schemas: `Playout`, `PlayoutEvent`, `ManualEventCreate`/`Update`
+  - Rebuild endpoint accepts `from` time parameter
+- [ ] **Media** (10 routes — sources, libraries, items, collections)
+  - Entity schemas: `MediaSource`, `MediaLibrary`, `MediaItem`, `Collection`,
+    plus per-resource Create schemas
+  - `/api/media/sources/:id/libraries/discover` returns discovery results —
+    schema the shape
+- [ ] **FFmpeg Profiles** (4 routes — `/api/ffmpeg/profiles`,
+  `/api/ffmpeg/profiles/:id`)
+  - Entity schema: `FFmpegProfile` (JSONB `config` field — can be typed with
+    a nested schema or left as `:map`)
+- [ ] **Tags** (4 routes — `/api/tags`, `/api/media-items/:id/tags`,
+  `/api/media-items/:id/tags/:tag`)
+  - Simple — `[:string]` for tag names; request body is `{:tags [...]  :source "..."}`
+- [ ] **Test utilities** (5 routes under `/api/test`)
+  - Low-fidelity schemas acceptable; internal tooling
+- [ ] **Health / version / debug** (3 routes — `/health`, `/api/version`,
+  `/api/debug/stream/:uuid`)
+  - Annotate with summaries only; no body coercion needed
+
+### Optional follow-ups after Phase 3
+
+- [ ] Enable `coerce-response-middleware` — strips keys not in the response
+  schema. Useful as a guard against accidental leakage, but requires every
+  response schema to be exhaustive. Ship per-domain after Phase 3.
+- [ ] Replace the legacy `wrap-json-response` with Muuntaja's
+  `format-response-middleware`. Gains proper `Accept` header negotiation and
+  drops a custom middleware. Requires verifying that non-JSON endpoints
+  (M3U, XMLTV, HLS segments, images) still pass through unchanged.
+- [ ] Generate a client SDK from `/openapi.json` using `openapi-generator` —
+  enables programmatic use from other services (Python, TypeScript, Rust, …).
+- [ ] Retire the endpoint tables in `README.md` once `/swagger-ui/` is the
+  canonical reference.
+
+**Test checkpoint:** `/openapi.json` enumerates schemas for every path;
+every 4xx on coercion failure uses the `{:error :in :humanized}` envelope;
+integration tests assert that migrated handlers reject malformed input with
+400 instead of 500.
 
 ---
 
