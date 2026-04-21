@@ -1,9 +1,14 @@
 (ns pseudovision.http.core
-  (:require [reitit.ring             :as ring]
-            [reitit.openapi          :as openapi]
-            [reitit.swagger-ui       :as swagger-ui]
+  (:require [reitit.ring                            :as ring]
+            [reitit.openapi                         :as openapi]
+            [reitit.swagger-ui                      :as swagger-ui]
+            [reitit.coercion.malli                  :as malli-coercion]
+            [reitit.ring.coercion                   :as rrc]
+            [reitit.ring.middleware.parameters      :as parameters]
+            [reitit.ring.middleware.muuntaja        :as muuntaja-mw]
             [ring.adapter.jetty      :as jetty]
             [pseudovision.http.middleware     :as mw]
+            [pseudovision.http.schemas        :as s]
             [pseudovision.http.api.channels   :as ch]
             [pseudovision.http.api.schedules  :as sc]
             [pseudovision.http.api.playouts   :as pl]
@@ -36,12 +41,34 @@
 
    ;; ── Channels ────────────────────────────────────────────────────────────
    ["/api/channels"
-    {:get  (ch/list-channels-handler  ctx)
-     :post (ch/create-channel-handler ctx)}]
+    {:tags    ["channels"]
+     :get     {:summary     "List channels (optionally filter by UUID)"
+               :parameters  {:query [:map
+                                     [:uuid {:optional true} :uuid]]}
+               :responses   {200 {:body [:or s/Channel [:vector s/Channel]]}
+                             404 {:body s/Error}}
+               :handler     (ch/list-channels-handler ctx)}
+     :post    {:summary     "Create a channel"
+               :parameters  {:body s/ChannelCreate}
+               :responses   {201 {:body s/Channel}
+                             400 {:body s/CoercionError}}
+               :handler     (ch/create-channel-handler ctx)}}]
    ["/api/channels/:id"
-    {:get    (ch/get-channel-handler    ctx)
-     :put    (ch/update-channel-handler ctx)
-     :delete (ch/delete-channel-handler ctx)}]
+    {:tags    ["channels"]
+     :parameters {:path [:map [:id s/ChannelId]]}
+     :get     {:summary     "Get a channel by id"
+               :responses   {200 {:body s/Channel}
+                             404 {:body s/Error}}
+               :handler     (ch/get-channel-handler ctx)}
+     :put     {:summary     "Update a channel"
+               :parameters  {:body s/ChannelUpdate}
+               :responses   {200 {:body s/Channel}
+                             404 {:body s/Error}
+                             400 {:body s/CoercionError}}
+               :handler     (ch/update-channel-handler ctx)}
+     :delete  {:summary     "Delete a channel"
+               :responses   {204 {}}
+               :handler     (ch/delete-channel-handler ctx)}}]
 
    ;; ── Schedules ───────────────────────────────────────────────────────────
    ["/api/schedules"
@@ -117,7 +144,7 @@
 
    ;; ── Version & Health ────────────────────────────────────────────────────
    ["/api/version"
-    {:get (fn [_] {:status 200 
+    {:get (fn [_] {:status 200
                    :body {:git-commit (System/getenv "GIT_COMMIT")
                           :git-timestamp (System/getenv "GIT_TIMESTAMP")
                           :version-tag (System/getenv "VERSION_TAG")}})}]
@@ -143,34 +170,40 @@
    ["/lineup.json"    {:get (m3u/hdhr-lineup-handler ctx)}]
    ["/lineup_status.json" {:get (m3u/hdhr-status-handler ctx)}]
    ["/iptv/channels.m3u" {:get (m3u/m3u-handler ctx)}]
-   
+
    ;; ── Streaming ───────────────────────────────────────────────────────────
    ["/stream/:uuid"   {:get (streaming/stream-handler ctx)}]
    ["/stream/:uuid/:segment" {:get (streaming/segment-handler ctx)}]
-   
+
    ;; ── Artwork ─────────────────────────────────────────────────────────────
    ["/logos/:uuid" {:get (logos/logos-handler ctx)}]
-   
+
    ;; ── Debug ───────────────────────────────────────────────────────────────
    ["/api/debug/stream/:uuid" {:get (streaming/stream-debug-handler ctx)}]])
 
 (defn make-handler
   "Creates the reitit Ring handler.
 
-   Middleware is split across two layers to preserve the current wire format
-   while moving toward Reitit's data-driven configuration:
+   Route data supplies the canonical Reitit middleware chain — parameters,
+   Muuntaja (JSON request decoding), the application exception handler, and
+   malli coercion for :parameters / :responses. Routes without schemas still
+   traverse the chain as a pass-through; :body-params is populated from
+   request JSON identically to the old custom middleware.
 
-   - Per-route middleware via `:data {:middleware ...}`: JSON request body
-     parsing (only needed for matched routes that accept bodies).
-
-   - Outer wrapping: error handling, request logging, and JSON response
-     encoding wrap the entire dispatch tree so that unmatched routes (404/405
-     from the default handler) and the Swagger UI handler also benefit."
+   Outer wraps — error handling, request logging, JSON response encoding —
+   cover the entire dispatch tree so that unmatched routes (404/405) and
+   the Swagger UI handler also go through them."
   [ctx]
   (let [dispatch (ring/ring-handler
                   (ring/router
                    (routes ctx)
-                   {:data {:middleware [mw/wrap-json-body]}})
+                   {:data {:muuntaja   mw/muuntaja
+                           :coercion   malli-coercion/coercion
+                           :middleware [parameters/parameters-middleware
+                                        muuntaja-mw/format-negotiate-middleware
+                                        muuntaja-mw/format-request-middleware
+                                        mw/exception-middleware
+                                        rrc/coerce-request-middleware]}})
                   (ring/routes
                    (swagger-ui/create-swagger-ui-handler
                     {:path "/swagger-ui"
