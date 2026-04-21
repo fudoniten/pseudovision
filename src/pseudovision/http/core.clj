@@ -1,5 +1,7 @@
 (ns pseudovision.http.core
   (:require [reitit.ring             :as ring]
+            [reitit.openapi          :as openapi]
+            [reitit.swagger-ui       :as swagger-ui]
             [ring.adapter.jetty      :as jetty]
             [pseudovision.http.middleware     :as mw]
             [pseudovision.http.api.channels   :as ch]
@@ -16,6 +18,18 @@
 
 (defn- routes [ctx]
   [""
+   ;; ── OpenAPI spec ────────────────────────────────────────────────────────
+   ;; Served at /openapi.json; Swagger UI at /swagger-ui/ consumes it.
+   ;; Routes without :openapi / :parameters / :responses metadata still appear
+   ;; in the spec as bare path+method entries; they'll gain detail as handlers
+   ;; are annotated incrementally.
+   ["/openapi.json"
+    {:get {:no-doc  true
+           :openapi {:info {:title       "Pseudovision API"
+                            :version     "0.1.0"
+                            :description "Pseudovision REST API"}}
+           :handler (openapi/create-openapi-handler)}}]
+
    ;; ── Health ──────────────────────────────────────────────────────────────
    ["/health"
     {:get (fn [_] {:status 200 :body {:status "ok"}})}]
@@ -141,16 +155,33 @@
    ["/api/debug/stream/:uuid" {:get (streaming/stream-debug-handler ctx)}]])
 
 (defn make-handler
-  "Creates the reitit Ring handler with JSON 404/405 fallback responses.
-   The middleware stack wraps the entire handler (including reitit's default
-   handler) so unmatched routes also get JSON body serialisation."
+  "Creates the reitit Ring handler.
+
+   Middleware is split across two layers to preserve the current wire format
+   while moving toward Reitit's data-driven configuration:
+
+   - Per-route middleware via `:data {:middleware ...}`: JSON request body
+     parsing (only needed for matched routes that accept bodies).
+
+   - Outer wrapping: error handling, request logging, and JSON response
+     encoding wrap the entire dispatch tree so that unmatched routes (404/405
+     from the default handler) and the Swagger UI handler also benefit."
   [ctx]
-  (let [handler (ring/ring-handler
-                 (ring/router (routes ctx))
-                 (ring/create-default-handler
-                  {:not-found          (fn [_] {:status 404 :body {:error "Not found"}})
-                   :method-not-allowed (fn [_] {:status 405 :body {:error "Method not allowed"}})}))]
-    (reduce (fn [h mw] (mw h)) handler (reverse mw/default-middleware))))
+  (let [dispatch (ring/ring-handler
+                  (ring/router
+                   (routes ctx)
+                   {:data {:middleware [mw/wrap-json-body]}})
+                  (ring/routes
+                   (swagger-ui/create-swagger-ui-handler
+                    {:path "/swagger-ui"
+                     :url  "/openapi.json"})
+                   (ring/create-default-handler
+                    {:not-found          (fn [_] {:status 404 :body {:error "Not found"}})
+                     :method-not-allowed (fn [_] {:status 405 :body {:error "Method not allowed"}})})))]
+    (-> dispatch
+        mw/wrap-json-response
+        mw/wrap-request-logging
+        mw/wrap-error-handler)))
 
 (defn start-server!
   "Assembles the handler context from opts and starts a non-blocking Jetty server."
