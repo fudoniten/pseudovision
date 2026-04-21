@@ -413,11 +413,6 @@
       "hash": "sha256-BICBTIvEKqiNQHQMQRVgMp7SEtbF4Ss5CaIUcKe4fm4="
     },
     {
-      "mvn-path": "fipp/fipp/0.6.26/fipp-0.6.26.pom",
-      "mvn-repo": "https://repo.clojars.org/",
-      "hash": "sha256-p+xjV7gTIRMv0HwvV+/rAhFEFVlDY9g6FDE6GU9fVTU="
-    },
-    {
       "mvn-path": "fipp/fipp/0.6.27/fipp-0.6.27.jar",
       "mvn-repo": "https://repo.clojars.org/",
       "hash": "sha256-qK1dAlan2r+90UOm6QvnZXURhA/is4MMp9tnK20RDPc="
@@ -1041,6 +1036,11 @@
       "mvn-path": "org/clojure/core.memoize/1.0.253/core.memoize-1.0.253.pom",
       "mvn-repo": "https://repo1.maven.org/maven2/",
       "hash": "sha256-hML6t6Mso8HkDEGm7Mm9U26UezBYDne41dwjKjSSXqw="
+    },
+    {
+      "mvn-path": "org/clojure/core.rrb-vector/0.1.2/core.rrb-vector-0.1.2.pom",
+      "mvn-repo": "https://repo1.maven.org/maven2/",
+      "hash": "sha256-juK6yvw4QzWMznZRDXMyQhK7NRn61XgE7Oq9w3rFCR8="
     },
     {
       "mvn-path": "org/clojure/core.rrb-vector/0.2.0/core.rrb-vector-0.2.0.jar",
