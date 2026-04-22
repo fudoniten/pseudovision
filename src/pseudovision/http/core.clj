@@ -24,10 +24,6 @@
 (defn- routes [ctx]
   [""
    ;; ── OpenAPI spec ────────────────────────────────────────────────────────
-   ;; Served at /openapi.json; Swagger UI at /swagger-ui/ consumes it.
-   ;; Routes without :openapi / :parameters / :responses metadata still appear
-   ;; in the spec as bare path+method entries; they'll gain detail as handlers
-   ;; are annotated incrementally.
    ["/openapi.json"
     {:get {:no-doc  true
            :openapi {:info {:title       "Pseudovision API"
@@ -37,7 +33,10 @@
 
    ;; ── Health ──────────────────────────────────────────────────────────────
    ["/health"
-    {:get (fn [_] {:status 200 :body {:status "ok"}})}]
+    {:get {:tags      ["health"]
+           :summary   "Liveness probe"
+           :responses {200 {:body s/Health}}
+           :handler   (fn [_] {:status 200 :body {:status "ok"}})}}]
 
    ;; ── Channels ────────────────────────────────────────────────────────────
    ["/api/channels"
@@ -72,95 +71,288 @@
 
    ;; ── Schedules ───────────────────────────────────────────────────────────
    ["/api/schedules"
-    {:get  (sc/list-schedules-handler  ctx)
-     :post (sc/create-schedule-handler ctx)}]
+    {:tags ["schedules"]
+     :get  {:summary    "List schedules"
+            :responses  {200 {:body [:vector s/Schedule]}}
+            :handler    (sc/list-schedules-handler ctx)}
+     :post {:summary    "Create a schedule"
+            :parameters {:body s/ScheduleCreate}
+            :responses  {201 {:body s/Schedule}
+                         400 {:body s/CoercionError}}
+            :handler    (sc/create-schedule-handler ctx)}}]
    ["/api/schedules/:id"
-    {:get    (sc/get-schedule-handler    ctx)
-     :put    (sc/update-schedule-handler ctx)
-     :delete (sc/delete-schedule-handler ctx)}]
+    {:tags       ["schedules"]
+     :parameters {:path [:map [:id s/ScheduleId]]}
+     :get     {:summary   "Get a schedule"
+               :responses {200 {:body s/Schedule}
+                           404 {:body s/APIError}}
+               :handler   (sc/get-schedule-handler ctx)}
+     :put     {:summary    "Update a schedule"
+               :parameters {:body s/ScheduleUpdate}
+               :responses  {200 {:body s/Schedule}
+                            404 {:body s/APIError}
+                            400 {:body s/CoercionError}}
+               :handler    (sc/update-schedule-handler ctx)}
+     :delete  {:summary   "Delete a schedule"
+               :responses {204 {}}
+               :handler   (sc/delete-schedule-handler ctx)}}]
    ["/api/schedules/:schedule-id/slots"
-    {:get  (sc/list-slots-handler  ctx)
-     :post (sc/create-slot-handler ctx)}]
+    {:tags       ["schedules"]
+     :parameters {:path [:map [:schedule-id s/ScheduleId]]}
+     :get  {:summary   "List slots for a schedule"
+            :responses {200 {:body [:vector s/Slot]}}
+            :handler   (sc/list-slots-handler ctx)}
+     :post {:summary    "Create a slot"
+            :parameters {:body s/SlotCreate}
+            :responses  {201 {:body s/Slot}
+                         400 {:body s/CoercionError}}
+            :handler    (sc/create-slot-handler ctx)}}]
    ["/api/schedules/:schedule-id/slots/:id"
-    {:get    (sc/get-slot-handler    ctx)
-     :put    (sc/update-slot-handler ctx)
-     :delete (sc/delete-slot-handler ctx)}]
+    {:tags       ["schedules"]
+     :parameters {:path [:map
+                         [:schedule-id s/ScheduleId]
+                         [:id          s/SlotId]]}
+     :get     {:summary   "Get a slot"
+               :responses {200 {:body s/Slot}
+                           404 {:body s/APIError}}
+               :handler   (sc/get-slot-handler ctx)}
+     :put     {:summary    "Update a slot"
+               :parameters {:body s/SlotUpdate}
+               :responses  {200 {:body s/Slot}
+                            404 {:body s/APIError}
+                            400 {:body s/CoercionError}}
+               :handler    (sc/update-slot-handler ctx)}
+     :delete  {:summary   "Delete a slot"
+               :responses {204 {}}
+               :handler   (sc/delete-slot-handler ctx)}}]
 
    ;; ── Playouts ────────────────────────────────────────────────────────────
    ["/api/channels/:channel-id/playout"
-    {:get  (pl/get-playout-handler    ctx)
-     :post (pl/rebuild-playout-handler ctx)}]
+    {:tags       ["playouts"]
+     :parameters {:path [:map [:channel-id s/ChannelId]]}
+     :get  {:summary   "Get the playout for a channel"
+            :responses {200 {:body s/Playout}
+                        404 {:body s/APIError}}
+            :handler   (pl/get-playout-handler ctx)}
+     :post {:summary    "Rebuild a playout's event timeline"
+            :parameters {:query s/RebuildQuery}
+            :responses  {200 {:body s/RebuildResult}
+                         404 {:body s/APIError}}
+            :handler    (pl/rebuild-playout-handler ctx)}}]
    ["/api/channels/:channel-id/playout/events"
-    {:get  (pl/list-events-handler  ctx)
-     :post (pl/inject-event-handler ctx)}]   ; manual event injection
+    {:tags       ["playouts"]
+     :parameters {:path [:map [:channel-id s/ChannelId]]}
+     :get  {:summary   "List upcoming playout events"
+            :responses {200 {:body [:vector s/PlayoutEvent]}
+                        404 {:body s/APIError}}
+            :handler   (pl/list-events-handler ctx)}
+     :post {:summary    "Inject a manual event into the timeline"
+            :parameters {:body s/ManualEventCreate}
+            :responses  {201 {:body s/PlayoutEvent}
+                         404 {:body s/APIError}
+                         400 {:body s/CoercionError}}
+            :handler    (pl/inject-event-handler ctx)}}]
    ["/api/channels/:channel-id/playout/events/:id"
-    {:put    (pl/update-event-handler ctx)
-     :delete (pl/delete-event-handler ctx)}]
+    {:tags       ["playouts"]
+     :parameters {:path [:map
+                         [:channel-id s/ChannelId]
+                         [:id         s/EventId]]}
+     :put    {:summary    "Update a manual event"
+              :parameters {:body s/ManualEventUpdate}
+              :responses  {200 {:body s/PlayoutEvent}
+                           404 {:body s/APIError}
+                           400 {:body s/CoercionError}}
+              :handler    (pl/update-event-handler ctx)}
+     :delete {:summary   "Delete a manual event"
+              :responses {204 {}}
+              :handler   (pl/delete-event-handler ctx)}}]
 
    ;; ── Media ───────────────────────────────────────────────────────────────
    ["/api/media/sources"
-    {:get  (med/list-sources-handler  ctx)
-     :post (med/create-source-handler ctx)}]
+    {:tags ["media"]
+     :get  {:summary   "List media sources"
+            :responses {200 {:body [:vector s/MediaSource]}}
+            :handler   (med/list-sources-handler ctx)}
+     :post {:summary    "Create a media source"
+            :parameters {:body s/MediaSourceCreate}
+            :responses  {201 {:body s/MediaSource}
+                         400 {:body s/CoercionError}}
+            :handler    (med/create-source-handler ctx)}}]
    ["/api/media/sources/:id"
-    {:delete (med/delete-source-handler ctx)}]
+    {:tags       ["media"]
+     :parameters {:path [:map [:id s/MediaSourceId]]}
+     :delete {:summary   "Delete a media source"
+              :responses {204 {}}
+              :handler   (med/delete-source-handler ctx)}}]
    ["/api/media/libraries"
-    {:get  (med/list-all-libraries-handler ctx)}]
+    {:tags ["media"]
+     :get  {:summary   "List all libraries across sources"
+            :responses {200 {:body [:vector s/MediaLibrary]}}
+            :handler   (med/list-all-libraries-handler ctx)}}]
    ["/api/media/sources/:id/libraries"
-    {:get  (med/list-libraries-handler  ctx)
-     :post (med/create-library-handler ctx)}]
+    {:tags       ["media"]
+     :parameters {:path [:map [:id s/MediaSourceId]]}
+     :get  {:summary   "List libraries for a media source"
+            :responses {200 {:body [:vector s/MediaLibrary]}}
+            :handler   (med/list-libraries-handler ctx)}
+     :post {:summary    "Create a library under a media source"
+            :parameters {:body s/MediaLibraryCreate}
+            :responses  {201 {:body s/MediaLibrary}
+                         400 {:body s/CoercionError}}
+            :handler    (med/create-library-handler ctx)}}]
    ["/api/media/sources/:id/libraries/discover"
-    {:post (med/discover-libraries-handler ctx)}]
+    {:tags       ["media"]
+     :parameters {:path [:map [:id s/MediaSourceId]]}
+     :post {:summary   "Discover libraries from a remote source"
+            :responses {201 {:body s/DiscoveryResult}
+                        400 {:body s/APIError}
+                        404 {:body s/APIError}}
+            :handler   (med/discover-libraries-handler ctx)}}]
    ["/api/media/libraries/:id/items"
-    {:get (med/list-library-items-handler ctx)}]
+    {:tags       ["media"]
+     :parameters {:path  [:map [:id s/LibraryId]]
+                  :query [:map
+                          [:attrs     {:optional true} :string]
+                          [:type      {:optional true} :string]
+                          [:parent-id {:optional true} :int]]}
+     :get {:summary   "List media items in a library"
+           :responses {200 {:body [:vector s/MediaItem]}}
+           :handler   (med/list-library-items-handler ctx)}}]
    ["/api/media/libraries/:id/scan"
-    {:post (med/trigger-scan-handler ctx)}]
+    {:tags       ["media"]
+     :parameters {:path [:map [:id s/LibraryId]]}
+     :post {:summary   "Trigger an asynchronous library scan"
+            :responses {202 {:body s/ScanTriggerResult}
+                        404 {:body s/APIError}}
+            :handler   (med/trigger-scan-handler ctx)}}]
    ["/api/media/items/:id"
-    {:get (med/get-media-item-handler ctx)}]
+    {:tags       ["media"]
+     :parameters {:path [:map [:id s/MediaItemId]]}
+     :get {:summary   "Get a media item"
+           :responses {200 {:body s/MediaItem}
+                       404 {:body s/APIError}}
+           :handler   (med/get-media-item-handler ctx)}}]
    ["/api/media/items/:id/playback-url"
-    {:get (med/get-item-playback-url-handler ctx)}]
+    {:tags       ["media"]
+     :parameters {:path [:map [:id s/MediaItemId]]}
+     :get {:summary   "Resolve a direct playback URL for a media item"
+           :responses {200 {:body s/PlaybackUrl}
+                       404 {:body s/APIError}
+                       422 {:body s/APIError}}
+           :handler   (med/get-item-playback-url-handler ctx)}}]
    ["/api/media/items/:id/stream"
-    {:get (med/redirect-to-stream-handler ctx)}]
+    {:tags       ["media"]
+     :parameters {:path [:map [:id s/MediaItemId]]}
+     :get {:summary "Proxy a media item's stream from its source"
+           :handler (med/redirect-to-stream-handler ctx)}}]
    ["/api/media/collections"
-     {:get  (med/list-collections-handler  ctx)
-      :post (med/create-collection-handler ctx)}]
+    {:tags ["media"]
+     :get  {:summary   "List collections"
+            :responses {200 {:body [:vector s/Collection]}}
+            :handler   (med/list-collections-handler ctx)}
+     :post {:summary    "Create a collection"
+            :parameters {:body s/CollectionCreate}
+            :responses  {201 {:body s/Collection}
+                         400 {:body s/CoercionError}}
+            :handler    (med/create-collection-handler ctx)}}]
 
    ;; ── Tags ────────────────────────────────────────────────────────────────
    ["/api/tags"
-     {:get (tags/list-all-tags-handler ctx)}]
+    {:tags ["tags"]
+     :get {:summary   "List all tags with usage counts"
+           :responses {200 {:body [:vector s/TagUsage]}}
+           :handler   (tags/list-all-tags-handler ctx)}}]
    ["/api/media-items/:id/tags"
-     {:get  (tags/get-tags-handler ctx)
-      :post (tags/add-tags-handler ctx)}]
+    {:tags       ["tags"]
+     :parameters {:path [:map [:id s/MediaItemId]]}
+     :get  {:summary   "List tags on a media item"
+            :responses {200 {:body [:vector s/TagName]}}
+            :handler   (tags/get-tags-handler ctx)}
+     :post {:summary    "Add tags to a media item"
+            :parameters {:body s/TagCreate}
+            :responses  {200 {:body s/TagAddResult}
+                         400 {:body s/APIError}
+                         404 {:body s/APIError}}
+            :handler    (tags/add-tags-handler ctx)}}]
    ["/api/media-items/:id/tags/:tag"
-     {:delete (tags/delete-tag-handler ctx)}]
+    {:tags       ["tags"]
+     :parameters {:path [:map
+                         [:id  s/MediaItemId]
+                         [:tag s/TagName]]}
+     :delete {:summary   "Remove a tag from a media item"
+              :responses {204 {}}
+              :handler   (tags/delete-tag-handler ctx)}}]
 
    ;; ── FFmpeg Profiles ─────────────────────────────────────────────────────
    ["/api/ffmpeg/profiles"
-    {:get  (ffmpeg/list-profiles-handler ctx)
-     :post (ffmpeg/create-profile-handler ctx)}]
+    {:tags ["ffmpeg"]
+     :get  {:summary   "List FFmpeg profiles"
+            :responses {200 {:body [:vector s/FFmpegProfile]}}
+            :handler   (ffmpeg/list-profiles-handler ctx)}
+     :post {:summary    "Create an FFmpeg profile"
+            :parameters {:body s/FFmpegProfileCreate}
+            :responses  {201 {:body s/FFmpegProfile}
+                         400 {:body s/APIError}}
+            :handler    (ffmpeg/create-profile-handler ctx)}}]
    ["/api/ffmpeg/profiles/:id"
-    {:get    (ffmpeg/get-profile-handler ctx)
-     :put    (ffmpeg/update-profile-handler ctx)
-     :delete (ffmpeg/delete-profile-handler ctx)}]
+    {:tags       ["ffmpeg"]
+     :parameters {:path [:map [:id s/FFmpegProfileId]]}
+     :get    {:summary   "Get an FFmpeg profile"
+              :responses {200 {:body s/FFmpegProfile}
+                          404 {:body s/APIError}}
+              :handler   (ffmpeg/get-profile-handler ctx)}
+     :put    {:summary    "Update an FFmpeg profile"
+              :parameters {:body s/FFmpegProfileUpdate}
+              :responses  {200 {:body s/FFmpegProfile}
+                           404 {:body s/APIError}
+                           400 {:body s/APIError}}
+              :handler    (ffmpeg/update-profile-handler ctx)}
+     :delete {:summary   "Delete an FFmpeg profile"
+              :responses {200 {:body s/FFmpegProfileDeleted}
+                          404 {:body s/APIError}
+                          400 {:body s/APIError}}
+              :handler   (ffmpeg/delete-profile-handler ctx)}}]
 
    ;; ── Version & Health ────────────────────────────────────────────────────
    ["/api/version"
-    {:get (fn [_] {:status 200
-                   :body {:git-commit (System/getenv "GIT_COMMIT")
-                          :git-timestamp (System/getenv "GIT_TIMESTAMP")
-                          :version-tag (System/getenv "VERSION_TAG")}})}]
+    {:tags ["meta"]
+     :get {:summary   "Build/version metadata"
+           :responses {200 {:body s/Version}}
+           :handler (fn [_] {:status 200
+                             :body {:git-commit    (System/getenv "GIT_COMMIT")
+                                    :git-timestamp (System/getenv "GIT_TIMESTAMP")
+                                    :version-tag   (System/getenv "VERSION_TAG")}})}}]
 
    ;; ── Test Utilities ──────────────────────────────────────────────────────
    ["/api/test/info"
-    {:get (test/test-info-handler ctx)}]
+    {:tags ["test"]
+     :get  {:summary "Test API metadata and usage examples"
+            :handler (test/test-info-handler ctx)}}]
    ["/api/test/collection"
-    {:post (test/create-test-collection-handler ctx)}]
+    {:tags ["test"]
+     :post {:summary    "Create a manual test collection with every media item"
+            :parameters {:body [:map [:name {:optional true} :string]]}
+            :handler    (test/create-test-collection-handler ctx)}}]
    ["/api/test/channels"
-    {:get  (test/list-test-channels-handler ctx)
-     :post (test/create-test-channel-handler ctx)}]
+    {:tags ["test"]
+     :get  {:summary "List test channels"
+            :handler (test/list-test-channels-handler ctx)}
+     :post {:summary    "Create a test channel for streaming verification"
+            :parameters {:body [:map
+                                [:number        {:optional true} :string]
+                                [:name          {:optional true} :string]
+                                [:collection-id {:optional true} :int]]}
+            :handler    (test/create-test-channel-handler ctx)}}]
    ["/api/test/channels/:identifier"
-    {:delete (test/delete-test-channel-handler ctx)}]
+    {:tags       ["test"]
+     :parameters {:path [:map [:identifier :string]]}
+     :delete {:summary "Delete a test channel"
+              :handler (test/delete-test-channel-handler ctx)}}]
    ["/api/test/channels/:identifier/artwork"
-    {:post (test/add-test-artwork-handler ctx)}]
+    {:tags       ["test"]
+     :parameters {:path [:map [:identifier :string]]}
+     :post {:summary "Attach a generated test logo to a channel"
+            :handler (test/add-test-artwork-handler ctx)}}]
 
    ;; ── Output formats ──────────────────────────────────────────────────────
    ["/xmltv"          {:get (epg/xmltv-handler ctx)}]
@@ -179,7 +371,10 @@
    ["/logos/:uuid" {:get (logos/logos-handler ctx)}]
 
    ;; ── Debug ───────────────────────────────────────────────────────────────
-   ["/api/debug/stream/:uuid" {:get (streaming/stream-debug-handler ctx)}]])
+   ["/api/debug/stream/:uuid"
+    {:tags ["debug"]
+     :get {:summary "Diagnostic information for a running HLS stream"
+           :handler (streaming/stream-debug-handler ctx)}}]])
 
 (defn make-handler
   "Creates the reitit Ring handler.

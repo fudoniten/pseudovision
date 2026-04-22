@@ -50,8 +50,11 @@ interactive `/swagger-ui/`, and request/response coercion for every endpoint.
   - Handlers simplified to read from `:parameters` (no more `parse-long` boilerplate)
   - Channel response bodies normalised to unqualified keys (`:id`, `:name`) —
     previously GET returned `:channels/id`, POST returned `:id`
-- ⏳ **Phase 3 — Remaining domains** — schedules, media, ffmpeg, tags, playouts,
-  test utilities (see §📘 below)
+- ✅ **Phase 3 — Remaining domains** — schedules, ffmpeg, tags, media, playouts,
+  test utilities annotated with malli schemas and reading from `:parameters`.
+  Every coerced route rejects malformed input with a 400
+  `{:error :in :humanized}` envelope; response bodies strip `:domain/` key
+  namespaces where the handler previously leaked them through.
 
 **🎉 STREAMING FULLY FUNCTIONAL AND TESTED (as of 2026-04-18):**
 
@@ -398,33 +401,23 @@ For each domain (schedules, media, ffmpeg, tags, playouts, test utilities):
 
 ### Domain rollout
 
-- [ ] **Schedules & Slots** (8 routes — `/api/schedules`, `/api/schedules/:id`,
-  `/api/schedules/:schedule-id/slots`, `/api/schedules/:schedule-id/slots/:id`)
-  - Entity schemas: `Schedule`, `Slot`, plus `ScheduleCreate`/`Update` and
-    `SlotCreate`/`Update`
-  - Slot has the most fields of any entity — playback orders, fill modes,
-    anchor types, per-slot filler/watermark overrides
-- [ ] **Playouts & Events** (5 routes — `/api/channels/:channel-id/playout`,
-  `/api/channels/:channel-id/playout/events`, events/:id)
-  - Entity schemas: `Playout`, `PlayoutEvent`, `ManualEventCreate`/`Update`
-  - Rebuild endpoint accepts `from` time parameter
-- [ ] **Media** (10 routes — sources, libraries, items, collections)
-  - Entity schemas: `MediaSource`, `MediaLibrary`, `MediaItem`, `Collection`,
-    plus per-resource Create schemas
-  - `/api/media/sources/:id/libraries/discover` returns discovery results —
-    schema the shape
-- [ ] **FFmpeg Profiles** (4 routes — `/api/ffmpeg/profiles`,
-  `/api/ffmpeg/profiles/:id`)
-  - Entity schema: `FFmpegProfile` (JSONB `config` field — can be typed with
-    a nested schema or left as `:map`)
-- [ ] **Tags** (4 routes — `/api/tags`, `/api/media-items/:id/tags`,
-  `/api/media-items/:id/tags/:tag`)
-  - Simple — `[:string]` for tag names; request body is `{:tags [...]  :source "..."}`
-- [ ] **Test utilities** (5 routes under `/api/test`)
-  - Low-fidelity schemas acceptable; internal tooling
-- [ ] **Health / version / debug** (3 routes — `/health`, `/api/version`,
-  `/api/debug/stream/:uuid`)
-  - Annotate with summaries only; no body coercion needed
+- [x] **Schedules & Slots** — 8 routes annotated with `Schedule`, `Slot`, and
+  their `Create`/`Update` variants; path ids coerced to int; slot enums
+  validated against `SlotAnchor` / `SlotFillMode` / `PlaybackOrder` /
+  `GuideMode` / `TailMode`.
+- [x] **Playouts & Events** — `Playout`, `PlayoutEvent`, `ManualEventCreate`,
+  `ManualEventUpdate`; rebuild endpoint coerces `:from` (enum now/horizon)
+  and `:horizon` (int).
+- [x] **Media** — `MediaSource`, `MediaLibrary`, `MediaItem`, `Collection`,
+  `DiscoveryResult`, `PlaybackUrl`, `ScanTriggerResult`; library-item query
+  string `parent-id` coerced to int.
+- [x] **FFmpeg Profiles** — `FFmpegProfile`, `FFmpegProfileCreate`,
+  `FFmpegProfileUpdate`, `FFmpegProfileDeleted`.
+- [x] **Tags** — `TagCreate`, `TagUsage`, `TagAddResult`.
+- [x] **Test utilities** — body/path schemas for the five `/api/test` routes
+  (low-fidelity maps — internal tooling).
+- [x] **Health / version** — `Health`, `Version`. The streaming/debug route
+  stays documentary only (no body coercion — response is HLS/JSON hybrid).
 
 ### Optional follow-ups after Phase 3
 

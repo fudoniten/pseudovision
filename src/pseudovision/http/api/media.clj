@@ -32,7 +32,7 @@
 
 (defn create-source-handler [{:keys [db]}]
   (fn [req]
-    (let [params (:body-params req)
+    (let [params (get-in req [:parameters :body])
           _      (log/info "create-source-handler received params" {:params params})
           config (conn/->connection-config params)
           _      (log/info "connection config" {:config config})
@@ -43,26 +43,24 @@
 
 (defn delete-source-handler [{:keys [db]}]
   (fn [req]
-    (let [source-id (parse-long (get-in req [:path-params :id]))]
+    (let [source-id (get-in req [:parameters :path :id])]
       (db/delete-media-source! db source-id)
-      {:status 204})))
+      {:status 204 :body nil})))
 
 (defn list-all-libraries-handler [{:keys [db]}]
   (fn [_req] {:status 200 :body (db/list-libraries db)}))
 
 (defn list-libraries-handler [{:keys [db]}]
   (fn [req]
-    (let [source-id (parse-long (get-in req [:path-params :id]))]
+    (let [source-id (get-in req [:parameters :path :id])]
       {:status 200 :body (db/list-libraries-for-source db source-id)})))
 
 (defn create-library-handler [{:keys [db]}]
   (fn [req]
-    (let [source-id (parse-long (get-in req [:path-params :id]))
-          params    (:body-params req)
+    (let [source-id (get-in req [:parameters :path :id])
+          params    (get-in req [:parameters :body])
           attrs     (assoc params :media-source-id source-id)]
-      (if (and (:name params) (:kind params))
-        {:status 201 :body (db/create-library! db attrs)}
-        {:status 400 :body {:error "Missing required fields: name and kind"}}))))
+      {:status 201 :body (db/create-library! db attrs)})))
 
 (defn- parse-attrs
   "Splits a comma-separated attrs string into a seq of trimmed strings, or
@@ -76,20 +74,19 @@
 
 (defn list-library-items-handler [{:keys [db]}]
   (fn [req]
-    (let [library-id (parse-long (get-in req [:path-params :id]))
-          qp         (:query-params req)
-          attrs      (parse-attrs (get qp "attrs"))
-          item-type  (not-empty (get qp "type"))
-          parent-str (get qp "parent-id")
+    (let [library-id (get-in req [:parameters :path :id])
+          qp         (get-in req [:parameters :query])
+          attrs      (parse-attrs (:attrs qp))
+          item-type  (not-empty (:type qp))
           opts       (cond-> {}
-                       attrs                    (assoc :attrs attrs)
-                       item-type                (assoc :type item-type)
-                       (contains? qp "parent-id") (assoc :parent-id (some-> parent-str parse-long)))]
+                       attrs                       (assoc :attrs attrs)
+                       item-type                   (assoc :type item-type)
+                       (contains? qp :parent-id)   (assoc :parent-id (:parent-id qp)))]
       {:status 200 :body (db/list-media-items db library-id opts)})))
 
 (defn trigger-scan-handler [{:keys [db media ffmpeg]}]
   (fn [req]
-    (let [library-id (parse-long (get-in req [:path-params :id]))
+    (let [library-id (get-in req [:parameters :path :id])
           library    (db/get-library db library-id)]
       (if library
         (let [source (db/get-media-source db (:libraries/media-source-id library))
@@ -97,13 +94,11 @@
           (log/info "Triggering library scan" {:library-id library-id
                                                :library-name (:libraries/name library)
                                                :kind kind})
-          ;; Run the scan asynchronously so the HTTP request returns quickly.
           (future
             (try
               (log/info "Starting library scan" {:library-id library-id :kind kind})
               (case kind
                 :jellyfin (jellyfin/scan-library! db source library)
-                ;; Default to local filesystem scanner for :local and others
                 (scanner/scan-library! db media ffmpeg library))
               (log/info "Library scan completed" {:library-id library-id :kind kind})
               (catch Exception e
@@ -114,7 +109,7 @@
 
 (defn discover-libraries-handler [{:keys [db]}]
   (fn [req]
-    (let [source-id (parse-long (get-in req [:path-params :id]))
+    (let [source-id (get-in req [:parameters :path :id])
           source    (db/get-media-source db source-id)]
       (if (nil? source)
         {:status 404 :body {:error "Media source not found"}}
@@ -137,7 +132,7 @@
 
 (defn create-collection-handler [{:keys [db]}]
   (fn [req]
-    {:status 201 :body (db/create-collection! db (:body-params req))}))
+    {:status 201 :body (db/create-collection! db (get-in req [:parameters :body]))}))
 
 ;; ---------------------------------------------------------------------------
 ;; Single item + playback URL
@@ -145,7 +140,7 @@
 
 (defn get-media-item-handler [{:keys [db]}]
   (fn [req]
-    (let [item-id (parse-long (get-in req [:path-params :id]))
+    (let [item-id (get-in req [:parameters :path :id])
           item    (db/get-media-item db item-id)]
       (if item
         {:status 200 :body item}
@@ -161,12 +156,12 @@
 
 (defn get-item-playback-url-handler [{:keys [db]}]
   (fn [req]
-    (let [item-id (parse-long (get-in req [:path-params :id]))
+    (let [item-id (get-in req [:parameters :path :id])
           result  (resolve-stream-url db item-id)]
       (cond
-        (nil? result)    {:status 404 :body {:error "Media item not found"}}
+        (nil? result)        {:status 404 :body {:error "Media item not found"}}
         (nil? (:url result)) {:status 422 :body {:error (str "Playback URL not supported for source kind: " (:kind result))}}
-        :else            {:status 200 :body result}))))
+        :else                {:status 200 :body result}))))
 
 (defmulti ^:private stream-media
   "Streams media content for a given source kind. Returns a Ring response map
@@ -207,7 +202,7 @@
 
 (defn redirect-to-stream-handler [{:keys [db]}]
   (fn [req]
-    (let [item-id (parse-long (get-in req [:path-params :id]))]
+    (let [item-id (get-in req [:parameters :path :id])]
       (if-let [row (db/get-media-item-with-source db item-id)]
         (let [kind        (or (some-> row :media-sources/kind str) "")
               conn-config (or (:media-sources/connection-config row)
@@ -216,4 +211,3 @@
             {:status 404 :body {:error "Media item not found"}}
             (stream-media row conn-config kind req)))
         {:status 404 :body {:error "Media item not found"}}))))
-
