@@ -1,6 +1,6 @@
 (ns pseudovision.http.api.test
   "Test utilities API endpoints.
-   
+
    Provides endpoints for creating and managing test channels for streaming verification."
   (:require [pseudovision.dev.test-channel :as tc]
             [pseudovision.db.channels :as db-channels]
@@ -9,248 +9,165 @@
             [honey.sql :as h]
             [honey.sql.helpers :as hh]
             [taoensso.timbre :as log]
-            [clojure.java.io :as io]
-            [clojure.java.shell :as shell])
+            [clojure.java.io :as io])
   (:import [java.util UUID]))
 
 (defn create-test-channel-handler
-  "POST /api/test/channels
-   
-   Creates a test channel for streaming verification.
-   
-   Request body (all optional):
-   {
-     \"number\": \"999\",           // Channel number (default: \"999\")
-     \"name\": \"Test Channel\",    // Channel name (default: \"Test Channel\")
-     \"collection_id\": 5          // Collection ID (default: first available)
-   }
-   
-   Response:
-   {
-     \"channel\": {...},
-     \"schedule\": {...},
-     \"playout\": {...},
-     \"uuid\": \"550e8400-e29b-41d4-a716-446655440000\",
-     \"stream_url\": \"http://localhost:8080/stream/550e8400-...\",
-     \"playlist_url\": \"http://localhost:8080/iptv/channels.m3u\",
-     \"epg_url\": \"http://localhost:8080/xmltv\"
-   }"
+  "POST /api/test/channels — creates a test channel for streaming verification."
   [{:keys [db]}]
   (fn [req]
     (try
-      (let [params (:body-params req)
-            opts (cond-> {:verbose false}  ; Don't print console output for API calls
-                   (:number params) (assoc :number (:number params))
-                   (:name params) (assoc :name (:name params))
-                   (:collection_id params) (assoc :collection-id (:collection_id params)))
-            
+      (let [params (or (get-in req [:parameters :body]) {})
+            opts (cond-> {:verbose false}
+                   (:number params)        (assoc :number (:number params))
+                   (:name params)          (assoc :name (:name params))
+                   (:collection-id params) (assoc :collection-id (:collection-id params)))
+
             result (tc/create-test-channel! db opts)
             host (or (get-in req [:headers "host"]) "localhost:8080")
             scheme (if (get-in req [:headers "x-forwarded-proto"])
                      (get-in req [:headers "x-forwarded-proto"])
                      "http")]
-        
-        (log/info "Created test channel via API" 
+
+        (log/info "Created test channel via API"
                   {:uuid (:uuid result)
                    :number (get-in result [:channel :channels/number])})
-        
+
         {:status 201
-         :body {:channel (:channel result)
-                :schedule (:schedule result)
-                :playout (:playout result)
-                :uuid (:uuid result)
-                :stream_url (str scheme "://" host "/stream/" (:uuid result))
-                :playlist_url (str scheme "://" host "/iptv/channels.m3u")
-                :epg_url (str scheme "://" host "/xmltv")}})
-      
+         :body {:channel      (:channel result)
+                :schedule     (:schedule result)
+                :playout      (:playout result)
+                :uuid         (:uuid result)
+                :stream-url   (str scheme "://" host "/stream/" (:uuid result))
+                :playlist-url (str scheme "://" host "/iptv/channels.m3u")
+                :epg-url      (str scheme "://" host "/xmltv")}})
+
       (catch Exception e
         (log/error e "Failed to create test channel via API")
         {:status 500
-         :body {:error "Failed to create test channel"
-                :message (.getMessage e)}}))))
+         :body {:error (str "Failed to create test channel: " (.getMessage e))}}))))
 
 (defn delete-test-channel-handler
-  "DELETE /api/test/channels/:identifier
-   
-   Deletes a test channel by UUID or channel number.
-   
-   Path params:
-   - identifier: Channel UUID or channel number (e.g., \"999\")
-   
-   Response:
-   {
-     \"deleted\": true,
-     \"channel\": {...}
-   }"
+  "DELETE /api/test/channels/:identifier — deletes a test channel by UUID or number."
   [{:keys [db]}]
   (fn [req]
-    (let [identifier (get-in req [:path-params :identifier])]
+    (let [identifier (get-in req [:parameters :path :identifier])]
       (try
         (if-let [deleted-channel (tc/delete-test-channel! db identifier {:verbose false})]
           (do
-            (log/info "Deleted test channel via API" 
+            (log/info "Deleted test channel via API"
                       {:identifier identifier
                        :channel-id (:channels/id deleted-channel)})
             {:status 200
              :body {:deleted true
                     :channel deleted-channel
                     :message (str "Deleted channel: " (:channels/name deleted-channel))}})
-          
+
           {:status 404
-           :body {:deleted false
-                  :error "Channel not found"
+           :body {:error      "Channel not found"
                   :identifier identifier}})
-        
+
         (catch Exception e
           (log/error e "Failed to delete test channel via API" {:identifier identifier})
           {:status 500
-           :body {:deleted false
-                  :error "Failed to delete test channel"
-                  :message (.getMessage e)}})))))
+           :body {:error (str "Failed to delete test channel: " (.getMessage e))}})))))
 
 (defn list-test-channels-handler
-  "GET /api/test/channels
-   
-   Lists all channels with 'Test' in the name or in the 'Testing' group.
-   Useful for finding test channels to clean up.
-   
-   Response:
-   {
-     \"channels\": [...]
-   }"
+  "GET /api/test/channels — lists channels with 'Test' in the name or the 'Testing' group."
   [{:keys [db]}]
   (fn [_req]
     (try
-      (let [test-channels (pseudovision.db.core/query 
+      (let [test-channels (db-core/query
                            db
-                           ["SELECT * FROM channels 
-                             WHERE name LIKE '%Test%' 
-                                OR group_name = 'Testing' 
+                           ["SELECT * FROM channels
+                             WHERE name LIKE '%Test%'
+                                OR group_name = 'Testing'
                              ORDER BY sort_number"])]
-        
+
         {:status 200
          :body {:channels test-channels
                 :count (count test-channels)}})
-      
+
       (catch Exception e
         (log/error e "Failed to list test channels via API")
         {:status 500
-         :body {:error "Failed to list test channels"
-                :message (.getMessage e)}}))))
+         :body {:error (str "Failed to list test channels: " (.getMessage e))}}))))
 
 (defn create-test-collection-handler
-  "POST /api/test/collection
-   
-   Creates a manual collection with ALL media items from all libraries.
-   This is a convenience endpoint for quick testing.
-   
-   Request body (optional):
-   {
-     \"name\": \"My Test Collection\"  // default: \"Test Collection (All Media)\"
-   }
-   
-   Response:
-   {
-     \"collection\": {...},
-     \"item_count\": 42
-   }"
+  "POST /api/test/collection — creates a manual collection with every media item."
   [{:keys [db]}]
   (fn [req]
     (try
-      (let [params (:body-params req)
+      (let [params (or (get-in req [:parameters :body]) {})
             coll-name (or (:name params) "Test Collection (All Media)")
-            
-            ;; Create manual collection
-            collection (pseudovision.db.core/execute-one! 
+
+            collection (db-core/execute-one!
                         db
                         (h/format
                           {:insert-into :collections
-                           :values [{:kind (sql-util/->pg-enum "collection_kind" "manual")
-                                    :name coll-name
-                                    :config (sql-util/->jsonb {})}]
+                           :values [{:kind   (sql-util/->pg-enum "collection_kind" "manual")
+                                     :name   coll-name
+                                     :config (sql-util/->jsonb {})}]
                            :returning [:*]}))
-            
-            collection-id (:collections/id collection)
-            
-            ;; Add ALL media items to it
-            ;; Using raw SQL for INSERT SELECT since HoneySQL syntax is complex
-            _ (pseudovision.db.core/execute! 
+
+            collection-id (:id collection)
+
+            _ (db-core/execute!
                db
                [(str "INSERT INTO collection_items (collection_id, media_item_id) "
                      "SELECT ?::int, id FROM media_items "
                      "ON CONFLICT (collection_id, media_item_id) DO NOTHING")
                 collection-id])
-            
-            ;; Count items
-            count-result (pseudovision.db.core/query-one
+
+            count-result (db-core/query-one
                           db
                           (h/format
                             {:select [[[:count :*] :count]]
                              :from :collection-items
                              :where [:= :collection-id collection-id]}))
-            
+
             item-count (:count count-result)]
-        
-        (log/info "Created test collection with all media" 
+
+        (log/info "Created test collection with all media"
                   {:collection-id collection-id
                    :name coll-name
                    :item-count item-count})
-        
+
         {:status 201
          :body {:collection collection
-                :item_count item-count
-                :message (str "Created collection with " item-count " items")}})
-      
+                :item-count item-count
+                :message    (str "Created collection with " item-count " items")}})
+
       (catch Exception e
         (log/error e "Failed to create test collection via API")
         {:status 500
-         :body {:error "Failed to create test collection"
-                :message (.getMessage e)}}))))
+         :body {:error (str "Failed to create test collection: " (.getMessage e))}}))))
 
 (defn add-test-artwork-handler
-  "POST /api/test/channels/:identifier/artwork
-   
-   Generates a simple test logo for a channel.
-   
-   Response:
-   {
-     \"artwork\": {...},
-     \"logo_url\": \"https://.../logos/{uuid}\"
-   }"
+  "POST /api/test/channels/:identifier/artwork — generates a simple test logo."
   [{:keys [db]}]
   (fn [req]
     (try
-      (let [identifier (get-in req [:path-params :identifier])
-            ;; Try to find channel by UUID or number
-            channel (or (try (db-channels/get-channel-by-uuid 
+      (let [identifier (get-in req [:parameters :path :identifier])
+            channel (or (try (db-channels/get-channel-by-uuid
                               db (UUID/fromString identifier))
                             (catch Exception _ nil))
                        (db-channels/get-channel-by-number db identifier))]
-        
+
         (if-not channel
-          {:status 404
-           :body {:error "Channel not found"}}
-          
+          {:status 404 :body {:error "Channel not found"}}
+
           (let [channel-id (:channels/id channel)
                 channel-uuid (:channels/uuid channel)
-                channel-number (:channels/number channel)
                 channel-name (:channels/name channel)
-                
-                ;; Generate a simple test logo as base64 data URI
-                ;; This is stored in the database, so no file system needed!
-                ;; 200x150 blue PNG with "CH {number}" and "TEST LOGO" text
                 logo-base64 (slurp (io/resource "test-logo.png.b64"))
                 logo-path logo-base64
-                
-                ;; Check if artwork already exists
-                existing-artwork (first (db-core/query 
-                                        db
-                                        ["SELECT * FROM channel_artwork WHERE channel_id = ? AND kind = 'logo'" 
-                                         channel-id]))
-                
-                ;; Insert or update database entry (DB entry only, file doesn't exist yet)
-                ;; This lets us test the M3U/XMLTV integration (they'll show the URL)
-                ;; The /logos endpoint will return 404 until a real file is uploaded
+
+                existing-artwork (first (db-core/query
+                                         db
+                                         ["SELECT * FROM channel_artwork WHERE channel_id = ? AND kind = 'logo'"
+                                          channel-id]))
+
                 artwork (if existing-artwork
                           (db-core/execute-one!
                            db
@@ -269,75 +186,64 @@
                                             :original-content-type "image/png"}])
                                (hh/returning :*)
                                h/format)))
-                
+
                 host (or (get-in req [:headers "host"]) "localhost:8080")
                 scheme (if (get-in req [:headers "x-forwarded-proto"])
                          (get-in req [:headers "x-forwarded-proto"])
                          "http")
                 logo-url (str scheme "://" host "/logos/" channel-uuid)]
-            
-            (log/info "Created test artwork for channel" 
+
+            (log/info "Created test artwork for channel"
                       {:channel-id channel-id
                        :channel-name channel-name
                        :path logo-path})
-            
+
             {:status 201
-             :body {:artwork artwork
-                    :logo_url logo-url
-                    :message (str "Created logo at " logo-path)}})))
-      
+             :body {:artwork  artwork
+                    :logo-url logo-url
+                    :message  (str "Created logo at " logo-path)}})))
+
       (catch Exception e
         (log/error e "Failed to create test artwork via API")
         {:status 500
-         :body {:error "Failed to create test artwork"
-                :message (.getMessage e)}}))))
+         :body {:error (str "Failed to create test artwork: " (.getMessage e))}}))))
 
 (defn test-info-handler
-  "GET /api/test/info
-   
-   Returns information about the test API and available collections.
-   
-   Response:
-   {
-     \"collections\": [...],
-     \"default_collection\": {...},
-     \"endpoints\": {...}
-   }"
+  "GET /api/test/info — metadata and usage examples for the test API."
   [{:keys [db]}]
   (fn [req]
     (try
-      (let [collections (pseudovision.db.core/query db ["SELECT * FROM collections ORDER BY id"])
+      (let [collections (db-core/query db ["SELECT * FROM collections ORDER BY id"])
             default-collection (first collections)
             host (or (get-in req [:headers "host"]) "localhost:8080")
             scheme (if (get-in req [:headers "x-forwarded-proto"])
                      (get-in req [:headers "x-forwarded-proto"])
                      "http")
             base-url (str scheme "://" host)]
-        
+
         {:status 200
-         :body {:collections collections
-                :default_collection default-collection
-                :endpoints {:create (str base-url "/api/test/channels")
-                           :list (str base-url "/api/test/channels")
-                           :delete (str base-url "/api/test/channels/:identifier")
-                           :add_artwork (str base-url "/api/test/channels/:identifier/artwork")
-                           :info (str base-url "/api/test/info")}
-                :usage {:create {:method "POST"
-                                :url (str base-url "/api/test/channels")
-                                :body {:number "999" 
-                                      :name "My Test Channel"
-                                      :collection_id (when default-collection 
-                                                      (:collections/id default-collection))}}
-                       :delete {:method "DELETE"
-                               :url (str base-url "/api/test/channels/999")}
-                       :add_artwork {:method "POST"
-                                    :url (str base-url "/api/test/channels/999/artwork")
-                                    :body {}}
-                       :list {:method "GET"
-                             :url (str base-url "/api/test/channels")}}}})
-      
+         :body {:collections        collections
+                :default-collection default-collection
+                :endpoints {:create      (str base-url "/api/test/channels")
+                            :list        (str base-url "/api/test/channels")
+                            :delete      (str base-url "/api/test/channels/:identifier")
+                            :add-artwork (str base-url "/api/test/channels/:identifier/artwork")
+                            :info        (str base-url "/api/test/info")}
+                :usage {:create      {:method "POST"
+                                      :url    (str base-url "/api/test/channels")
+                                      :body   {:number "999"
+                                               :name   "My Test Channel"
+                                               :collection-id (when default-collection
+                                                                (:collections/id default-collection))}}
+                        :delete      {:method "DELETE"
+                                      :url    (str base-url "/api/test/channels/999")}
+                        :add-artwork {:method "POST"
+                                      :url    (str base-url "/api/test/channels/999/artwork")
+                                      :body   {}}
+                        :list        {:method "GET"
+                                      :url    (str base-url "/api/test/channels")}}}})
+
       (catch Exception e
         (log/error e "Failed to get test info via API")
         {:status 500
-         :body {:error "Failed to get test info"
-                :message (.getMessage e)}}))))
+         :body {:error (str "Failed to get test info: " (.getMessage e))}}))))
