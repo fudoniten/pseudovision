@@ -2,7 +2,10 @@
   (:require [clojure.test :refer [deftest is testing]]
             [ring.mock.request :as mock]
             [cheshire.core     :as json]
-            [pseudovision.http.core :as http]))
+            [pseudovision.http.core :as http]
+            [pseudovision.db.channels :as chan]
+
+            [clojure.pprint :refer [pprint]]))
 
 ;; ---------------------------------------------------------------------------
 ;; Minimal in-memory db stub
@@ -31,17 +34,21 @@
 
 (deftest list-channels-returns-200
   (testing "GET /api/channels returns 200"
-    (with-redefs [pseudovision.db.channels/list-channels (fn [_] [test-channel])]
+    (with-redefs [chan/list-channels (fn [_] [test-channel])]
       (let [handler (make-test-handler)
             resp    (handler (mock/request :get "/api/channels"))]
         (is (= 200 (:status resp)))))))
 
+(defn pthru [o]
+  (println (format "DEBUG OUTPUT: %s" (with-out-str (pprint o))))
+  o)
+
 (deftest list-channels-unqualifies-response-keys
   (testing "GET /api/channels strips :channels/ namespace from response body"
-    (with-redefs [pseudovision.db.channels/list-channels (fn [_] [test-channel])]
+    (with-redefs [chan/list-channels (fn [_] [test-channel])]
       (let [handler (make-test-handler)
             resp    (handler (mock/request :get "/api/channels"))
-            body    (parse-json-body resp)]
+            body    (pthru (parse-json-body resp))]
         (is (vector? body))
         (is (= 1 (get-in body [0 :id])))
         (is (= "Test Channel" (get-in body [0 :name])))
@@ -49,7 +56,7 @@
 
 (deftest get-channel-not-found
   (testing "GET /api/channels/999 returns 404 when channel is missing"
-    (with-redefs [pseudovision.db.channels/get-channel (fn [_ _] nil)]
+    (with-redefs [chan/get-channel (fn [_ _] nil)]
       (let [handler (make-test-handler)
             resp    (handler (mock/request :get "/api/channels/999"))]
         (is (= 404 (:status resp)))))))
@@ -57,9 +64,9 @@
 (deftest get-channel-coerces-path-id-to-int
   (testing "GET /api/channels/7 passes int 7 to the db layer"
     (let [captured (atom nil)]
-      (with-redefs [pseudovision.db.channels/get-channel (fn [_ id]
-                                                           (reset! captured id)
-                                                           test-channel)]
+      (with-redefs [chan/get-channel (fn [_ id]
+                                       (reset! captured id)
+                                       test-channel)]
         (let [handler (make-test-handler)
               resp    (handler (mock/request :get "/api/channels/7"))]
           (is (= 200 (:status resp)))

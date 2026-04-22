@@ -3,7 +3,6 @@
             [pseudovision.db.core        :as db]
             [pseudovision.http.core      :as http]
             [pseudovision.cleanup        :as cleanup]
-            [pseudovision.util.sql       :as sql-util]
             [taoensso.timbre             :as log]))
 
 ;; ---------------------------------------------------------------------------
