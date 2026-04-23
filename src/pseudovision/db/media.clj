@@ -213,7 +213,7 @@
       (let [sql-vec  (-> (h/insert-into :media-items)
                          (h/values [prepared])
                          (h/on-conflict :library-path-id :remote-key)
-                         (h/do-update-set :state :remote-etag :position)
+                         (h/do-update-set :state :remote-key :remote-etag :position)
                          sql/format)]
         (log/info "Media item upsert SQL (with remote-key)" {:sql (first sql-vec)})
         (let [result (db/execute-one! ds sql-vec)]
