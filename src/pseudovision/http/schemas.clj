@@ -401,9 +401,20 @@
    [:should-sync  {:optional true} :boolean]])
 
 (def MediaItem
-  "Open — the list endpoint projects columns dynamically via the :attrs query."
-  [:map {:closed false}
-   [:id MediaItemId]])
+  "Open — the list endpoint projects columns dynamically via the :attrs query.
+   
+   This schema allows any additional fields since the endpoint uses dynamic
+   projection via the :attrs parameter."
+  [:map
+   [:id MediaItemId]
+   [:remote-key {:optional true} [:maybe :string]]
+   [:remote-etag {:optional true} [:maybe :string]]
+   [:kind {:optional true} [:maybe :string]]
+   [:state {:optional true} [:maybe :string]]
+   [:name {:optional true} [:maybe :string]]
+   [:year {:optional true} [:maybe :int]]
+   [:parent-id {:optional true} [:maybe :int]]
+   [:position {:optional true} [:maybe :int]]])
 
 (def DiscoveryResult
   [:map
