@@ -1,5 +1,5 @@
 {:paths ["src" "resources"]
- :deps  {org.clojure/clojure                  {:mvn/version "1.12.4"}
+ :deps  {org.clojure/clojure                  {:mvn/version "1.11.4"}
          org.clojure/tools.cli                {:mvn/version "1.4.256"}
          org.clojure/core.async               {:mvn/version "1.9.865"}
          camel-snake-kebab/camel-snake-kebab  {:mvn/version "0.4.3"}
@@ -26,12 +26,13 @@
  {:run
   {:main-opts ["-m" "pseudovision.main"]}
 
-  :test
-  {:extra-paths ["test"]
-   :extra-deps  {eftest/eftest         {:mvn/version "0.6.0"}
-                 ring/ring-mock        {:mvn/version "0.4.0"}
-                 com.h2database/h2     {:mvn/version "2.2.220"}}
-   :main-opts   ["-e" "(require '[eftest.runner :refer [find-tests run-tests]]) (run-tests (find-tests \"test\") {:multithread? false})"]}
+   ;; Switched from eftest to kaocha for better Clojure 1.11+ compatibility
+   :test
+   {:extra-paths ["test"]
+    :extra-deps  {lambdaisland/kaocha  {:mvn/version "1.91.1392"}
+                  ring/ring-mock        {:mvn/version "0.4.0"}
+                  com.h2database/h2     {:mvn/version "2.2.220"}}
+    :main-opts   ["-m" "kaocha.runner"]}
 
   ;; clojure -X:migrate :action migrate
   ;; clojure -X:migrate :action rollback
