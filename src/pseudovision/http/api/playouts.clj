@@ -4,11 +4,15 @@
             [pseudovision.util.time         :as t]
             [pseudovision.util.sql          :as sql-util]))
 
+(defn- unqualify-keys [m]
+  (when m
+    (reduce-kv (fn [acc k v] (assoc acc (keyword (name k)) v)) {} m)))
+
 (defn get-playout-handler [{:keys [db]}]
   (fn [req]
     (let [channel-id (get-in req [:parameters :path :channel-id])]
       (if-let [p (db/get-playout-for-channel db channel-id)]
-        {:status 200 :body p}
+        {:status 200 :body (unqualify-keys p)}
         {:status 404 :body {:error "No playout for this channel"}}))))
 
 (defn rebuild-playout-handler [{:keys [db]}]
@@ -37,7 +41,7 @@
       (if playout
         (let [now    (t/now)
               events (db/get-upcoming-events db (:playouts/id playout) now 500)]
-          {:status 200 :body events})
+          {:status 200 :body (mapv unqualify-keys events)})
         {:status 404 :body {:error "No playout for this channel"}}))))
 
 (defn- ->instant [x]

@@ -42,10 +42,9 @@
     result))
 
 (defn list-libraries [ds]
-  (db/query ds (-> (h/select :l.* :ms.name :ms.kind)
-                   (h/from [:libraries :l])
-                   (h/join [:media-sources :ms] [:= :l.media-source-id :ms.id])
-                   (h/order-by :l.name)
+  (db/query ds (-> (h/select :*)
+                   (h/from :libraries)
+                   (h/order-by :name)
                    sql/format)))
 
 (defn list-libraries-for-source [ds source-id]
