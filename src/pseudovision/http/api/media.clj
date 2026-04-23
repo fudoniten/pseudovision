@@ -7,6 +7,10 @@
             [pseudovision.media.connection  :as conn]
             [taoensso.timbre                :as log]))
 
+(defn- unqualify-keys [m]
+  (when m
+    (reduce-kv (fn [acc k v] (assoc acc (keyword (name k)) v)) {} m)))
+
 ;; ---------------------------------------------------------------------------
 ;; Playback URL helpers
 ;; ---------------------------------------------------------------------------
@@ -28,7 +32,7 @@
   nil)
 
 (defn list-sources-handler [{:keys [db]}]
-  (fn [_req] {:status 200 :body (db/list-media-sources db)}))
+  (fn [_req] {:status 200 :body (mapv unqualify-keys (db/list-media-sources db))}))
 
 (defn create-source-handler [{:keys [db]}]
   (fn [req]
@@ -48,12 +52,12 @@
       {:status 204 :body nil})))
 
 (defn list-all-libraries-handler [{:keys [db]}]
-  (fn [_req] {:status 200 :body (db/list-libraries db)}))
+  (fn [_req] {:status 200 :body (mapv unqualify-keys (db/list-libraries db))}))
 
 (defn list-libraries-handler [{:keys [db]}]
   (fn [req]
     (let [source-id (get-in req [:parameters :path :id])]
-      {:status 200 :body (db/list-libraries-for-source db source-id)})))
+      {:status 200 :body (mapv unqualify-keys (db/list-libraries-for-source db source-id))})))
 
 (defn create-library-handler [{:keys [db]}]
   (fn [req]
@@ -82,7 +86,7 @@
                        attrs                       (assoc :attrs attrs)
                        item-type                   (assoc :type item-type)
                        (contains? qp :parent-id)   (assoc :parent-id (:parent-id qp)))]
-      {:status 200 :body (db/list-media-items db library-id opts)})))
+      {:status 200 :body (mapv unqualify-keys (db/list-media-items db library-id opts))})))
 
 (defn trigger-scan-handler [{:keys [db media ffmpeg]}]
   (fn [req]
@@ -128,7 +132,7 @@
                         :libraries  (into existing created)}})))))))
 
 (defn list-collections-handler [{:keys [db]}]
-  (fn [_req] {:status 200 :body (db/list-collections db)}))
+  (fn [_req] {:status 200 :body (mapv unqualify-keys (db/list-collections db))}))
 
 (defn create-collection-handler [{:keys [db]}]
   (fn [req]
@@ -143,7 +147,7 @@
     (let [item-id (get-in req [:parameters :path :id])
           item    (db/get-media-item db item-id)]
       (if item
-        {:status 200 :body item}
+        {:status 200 :body (unqualify-keys item)}
         {:status 404 :body {:error "Media item not found"}}))))
 
 (defn- resolve-stream-url [db item-id]
