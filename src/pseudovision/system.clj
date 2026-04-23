@@ -31,7 +31,11 @@
                                       :rebuild-interval-minutes 60}
                                      scheduling)
      :pseudovision/cleanup   {}
-     :pseudovision/http      {:port (or (some-> server :port (parse-int)) 8080)}}))
+     :pseudovision/http      {:port       (or (some-> server :port (parse-int)) 8080)
+                              :db         (ig/ref :pseudovision/db)
+                              :ffmpeg     (ig/ref :pseudovision/ffmpeg)
+                              :media      (ig/ref :pseudovision/media)
+                              :scheduling (ig/ref :pseudovision/scheduling)}}))
 
 ;; ---------------------------------------------------------------------------
 ;; Logger
@@ -103,14 +107,3 @@
 (defmethod ig/halt-key! :pseudovision/http [_ server]
   (http/stop-server! server)
   (log/info "HTTP server stopped"))
-
-;; ---------------------------------------------------------------------------
-;; Integrant dependency declaration
-;; ---------------------------------------------------------------------------
-
-(defmethod ig/prep-key :pseudovision/http [_ opts]
-  (assoc opts
-         :db       (ig/ref :pseudovision/db)
-         :ffmpeg   (ig/ref :pseudovision/ffmpeg)
-         :media    (ig/ref :pseudovision/media)
-         :scheduling (ig/ref :pseudovision/scheduling)))
