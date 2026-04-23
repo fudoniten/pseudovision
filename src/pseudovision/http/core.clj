@@ -355,26 +355,56 @@
             :handler (test/add-test-artwork-handler ctx)}}]
 
    ;; ── Output formats ──────────────────────────────────────────────────────
-   ["/xmltv"          {:get (epg/xmltv-handler ctx)}]
-   ["/epg.xml"        {:get (epg/xmltv-handler ctx)}]   ; alias
+   ["/xmltv"
+    {:tags ["epg"]
+     :get  {:summary "Generate XMLTV EPG document (next 7 days)"
+            :handler (epg/xmltv-handler ctx)}}]
+   ["/epg.xml"
+    {:tags ["epg"]
+     :get  {:summary "XMLTV EPG document — alias for /xmltv"
+            :handler (epg/xmltv-handler ctx)}}]
+   ["/iptv/channels.m3u"
+    {:tags ["iptv"]
+     :get  {:summary "M3U playlist of all channels with stream URLs"
+            :handler (m3u/m3u-handler ctx)}}]
    ["/media/devices/X-Plex-Client-Profile-Extra"
-    {:get (m3u/hdhr-device-handler ctx)}]
-   ["/lineup.json"    {:get (m3u/hdhr-lineup-handler ctx)}]
-   ["/lineup_status.json" {:get (m3u/hdhr-status-handler ctx)}]
-   ["/iptv/channels.m3u" {:get (m3u/m3u-handler ctx)}]
+    {:tags ["hdhr"]
+     :get  {:summary "HDHomeRun device discovery document"
+            :handler (m3u/hdhr-device-handler ctx)}}]
+   ["/lineup.json"
+    {:tags ["hdhr"]
+     :get  {:summary "HDHomeRun channel lineup"
+            :handler (m3u/hdhr-lineup-handler ctx)}}]
+   ["/lineup_status.json"
+    {:tags ["hdhr"]
+     :get  {:summary "HDHomeRun tuner status"
+            :handler (m3u/hdhr-status-handler ctx)}}]
 
    ;; ── Streaming ───────────────────────────────────────────────────────────
-   ["/stream/:uuid"   {:get (streaming/stream-handler ctx)}]
-   ["/stream/:uuid/:segment" {:get (streaming/segment-handler ctx)}]
+   ["/stream/:uuid"
+    {:tags       ["streaming"]
+     :parameters {:path [:map [:uuid :uuid]]}
+     :get        {:summary "HLS playlist for a channel (starts FFmpeg if needed)"
+                  :handler (streaming/stream-handler ctx)}}]
+   ["/stream/:uuid/:segment"
+    {:tags       ["streaming"]
+     :parameters {:path [:map [:uuid :uuid] [:segment :string]]}
+     :get        {:summary "HLS transport-stream segment"
+                  :handler (streaming/segment-handler ctx)}}]
 
    ;; ── Artwork ─────────────────────────────────────────────────────────────
-   ["/logos/:uuid" {:get (logos/logos-handler ctx)}]
+   ["/logos/:uuid"
+    {:tags       ["artwork"]
+     :parameters {:path [:map [:uuid :uuid]]}
+     :get        {:summary "Channel logo/artwork by channel UUID"
+                  :handler (logos/logos-handler ctx)}}]
 
    ;; ── Debug ───────────────────────────────────────────────────────────────
    ["/api/debug/stream/:uuid"
-    {:tags ["debug"]
-     :get {:summary "Diagnostic information for a running HLS stream"
-           :handler (streaming/stream-debug-handler ctx)}}]])
+    {:tags       ["debug"]
+     :parameters {:path [:map [:uuid :uuid]]}
+     :get        {:summary  "Diagnostic information for a running HLS stream"
+                  :handler  (streaming/stream-debug-handler ctx)}}]])
 
 (defn make-handler
   "Creates the reitit Ring handler.
