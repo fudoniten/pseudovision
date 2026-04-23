@@ -402,7 +402,7 @@
 
 (def MediaItem
   "Open — the list endpoint projects columns dynamically via the :attrs query."
-  [:map
+  [:map {:closed false}
    [:id MediaItemId]])
 
 (def DiscoveryResult
