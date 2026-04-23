@@ -99,8 +99,8 @@
    :parent-id       :mi.parent-id
    :position        :mi.position
    :library-path-id :mi.library-path-id
-   :remote-key      :mi.remote-key
-   :remote-etag     :mi.remote-etag
+   :remote-key      [:mi.remote_key :remote-key]
+   :remote-etag     [:mi.remote_etag :remote-etag]
    :name            [:m.title :name]
    :year            :m.year
    :release-date    :m.release-date
