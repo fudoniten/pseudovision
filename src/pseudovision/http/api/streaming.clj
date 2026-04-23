@@ -322,11 +322,11 @@
 
 (defn stream-handler
   "Returns an HLS playlist for the given channel UUID.
-   
+
    Starts FFmpeg if not already running, then serves the generated playlist."
   [{:keys [db]}]
   (fn [req]
-    (let [uuid (get-in req [:path-params :uuid])]
+    (let [uuid (get-in req [:parameters :path :uuid])]
       (log/info "Stream request for channel" {:uuid uuid})
       
       (if-let [channel (db-channels/get-channel-by-uuid db uuid)]
@@ -408,9 +408,8 @@
   "Serves HLS segment files (.ts) for active streams."
   [{:keys [db]}]
   (fn [req]
-    (let [uuid-str (get-in req [:path-params :uuid])
-          uuid (java.util.UUID/fromString uuid-str)
-          segment-name (get-in req [:path-params :segment])]
+    (let [uuid         (get-in req [:parameters :path :uuid])
+          segment-name (get-in req [:parameters :path :segment])]
       (log/debug "Segment request" {:uuid uuid :segment segment-name})
       
       (if-let [stream (get @active-streams uuid)]
@@ -437,8 +436,7 @@
   "Returns debug information and FFmpeg logs for a stream."
   [_ctx]
   (fn [req]
-    (let [uuid-str (get-in req [:path-params :uuid])
-          uuid (java.util.UUID/fromString uuid-str)]
+    (let [uuid (get-in req [:parameters :path :uuid])]
       (log/debug "Stream debug request" {:uuid uuid})
       
       (if-let [stream (get @active-streams uuid)]

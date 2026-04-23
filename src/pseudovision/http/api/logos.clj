@@ -17,16 +17,10 @@
    Returns the first available artwork for the channel."
   [{:keys [db]}]
   (fn [req]
-    (let [uuid-str (get-in req [:path-params :uuid])
-          uuid (try (java.util.UUID/fromString uuid-str)
-                   (catch Exception _ nil))]
-      (if-not uuid
-        {:status 400
-         :body {:error "Invalid UUID"}}
-        
-        (if-let [channel (db/get-channel-by-uuid db uuid)]
-          (let [artwork (db/list-channel-artwork db (:channels/id channel))]
-            (if (seq artwork)
+    (let [uuid (get-in req [:parameters :path :uuid])]
+      (if-let [channel (db/get-channel-by-uuid db uuid)]
+        (let [artwork (db/list-channel-artwork db (:channels/id channel))]
+          (if (seq artwork)
               (let [logo (first artwork)
                     path (:channel-artwork/path logo)
                     content-type (or (:channel-artwork/original-content-type logo) "image/png")]
