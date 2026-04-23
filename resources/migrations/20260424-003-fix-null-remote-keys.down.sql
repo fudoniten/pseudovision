@@ -1,0 +1,3 @@
+-- Cannot restore deleted items
+-- Items will need to be re-synced from Jellyfin
+--;;
