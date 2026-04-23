@@ -428,7 +428,8 @@
                                         muuntaja-mw/format-negotiate-middleware
                                         muuntaja-mw/format-request-middleware
                                         mw/exception-middleware
-                                        rrc/coerce-request-middleware]}})
+                                        rrc/coerce-request-middleware
+                                        rrc/coerce-response-middleware]}})
                   (ring/routes
                    (swagger-ui/create-swagger-ui-handler
                     {:path "/swagger-ui"
