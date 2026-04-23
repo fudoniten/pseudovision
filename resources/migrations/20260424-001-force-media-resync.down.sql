@@ -1,0 +1,2 @@
+-- No-op: we can't restore the old etags
+--;;
