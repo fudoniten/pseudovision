@@ -57,4 +57,4 @@
               {:status 404
                :body {:error "No artwork configured for this channel"}}))
           {:status 404
-           :body {:error "Channel not found"}})))))
+           :body {:error "Channel not found"}}))))
