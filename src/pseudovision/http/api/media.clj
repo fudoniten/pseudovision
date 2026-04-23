@@ -86,7 +86,10 @@
                        attrs                       (assoc :attrs attrs)
                        item-type                   (assoc :type item-type)
                        (contains? qp :parent-id)   (assoc :parent-id (:parent-id qp)))]
-      {:status 200 :body (mapv unqualify-keys (db/list-media-items db library-id opts))})))
+      (log/info "list-library-items handler called" {:library-id library-id :attrs attrs :opts opts})
+      (let [result (mapv unqualify-keys (db/list-media-items db library-id opts))]
+        (log/info "list-library-items result sample" {:count (count result) :first (first result)})
+        {:status 200 :body result}))))
 
 (defn trigger-scan-handler [{:keys [db media ffmpeg]}]
   (fn [req]
