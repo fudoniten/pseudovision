@@ -8,7 +8,8 @@
   (http/make-handler {:db nil :ffmpeg {} :media {} :scheduling {}}))
 
 (defn- parse-json-body [resp]
-  (some-> resp :body (json/parse-string true)))
+  (let [parsed (some-> resp :body (json/parse-string true))]
+    (if (sequential? parsed) (vec parsed) parsed)))
 
 (defn- post-json [path body]
   (-> (mock/request :post path)

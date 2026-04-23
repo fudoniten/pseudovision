@@ -23,7 +23,8 @@
     (http/make-handler stub)))
 
 (defn- parse-json-body [resp]
-  (some-> resp :body (json/parse-string true)))
+  (let [parsed (some-> resp :body (json/parse-string true))]
+    (if (sequential? parsed) (vec parsed) parsed)))
 
 (defn- parse-json-body-str-keys [resp]
   (some-> resp :body (json/parse-string false)))
