@@ -151,8 +151,14 @@
     (db/query ds (-> with-parent (h/order-by :mi.id) sql/format))))
 
 (defn get-media-item [ds id]
-  (db/query-one ds (-> (h/select :mi.* :m.title :m.year :m.release-date
-                                 :m.plot :m.content-rating)
+  (db/query-one ds (-> (h/select :mi.id :mi.kind :mi.state :mi.parent-id :mi.position
+                                 [:mi.remote_key :remote-key]
+                                 [:mi.remote_etag :remote-etag]
+                                 [:m.title :name]
+                                 :m.year
+                                 [:m.release-date :release-date]
+                                 :m.plot
+                                 [:m.content-rating :content-rating])
                        (h/from [:media-items :mi])
                        (h/left-join [:metadata :m] [:= :m.media-item-id :mi.id])
                        (h/where [:= :mi.id id])
