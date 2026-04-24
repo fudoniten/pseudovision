@@ -125,7 +125,7 @@
             {:status 400 :body {:error "Library discovery is only supported for Jellyfin sources"}}
             (let [candidates   (jellyfin/discover-libraries! source)
                   existing     (db/list-libraries-for-source db source-id)
-                  existing-ids (set (keep :libraries/external_id existing))
+                  existing-ids (set (keep :libraries/external-id existing))
                   new-libs     (remove #(existing-ids (:external-id %)) candidates)
                   created      (mapv #(db/create-library! db (assoc % :media-source-id source-id))
                                      new-libs)]
