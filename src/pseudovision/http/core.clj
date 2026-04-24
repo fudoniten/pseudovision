@@ -19,7 +19,8 @@
             [pseudovision.http.api.tags       :as tags]
             [pseudovision.http.api.test       :as test]
             [pseudovision.http.api.ffmpeg     :as ffmpeg]
-            [pseudovision.http.api.logos      :as logos]))
+            [pseudovision.http.api.logos      :as logos]
+            [pseudovision.http.api.metrics    :as metrics]))
 
 (defn- routes [ctx]
   [""
@@ -410,7 +411,28 @@
     {:tags       ["debug"]
      :parameters {:path [:map [:uuid :uuid]]}
      :get        {:summary  "Diagnostic information for a running HLS stream"
-                  :handler  (streaming/stream-debug-handler ctx)}}]])
+                  :handler  (streaming/stream-debug-handler ctx)}}]
+
+   ;; ── Metrics ─────────────────────────────────────────────────────────────
+   ["/api/metrics/channels"
+    {:tags ["metrics"]
+     :get  {:summary    "List channel view events"
+            :parameters {:query [:map
+                                  [:channel-id {:optional true} :string]
+                                  [:from       {:optional true} :string]
+                                  [:to         {:optional true} :string]
+                                  [:limit      {:optional true} :string]]}
+            :handler    (metrics/list-channel-views-handler ctx)}}]
+   ["/api/metrics/media-items"
+    {:tags ["metrics"]
+     :get  {:summary    "List media item view events with percent_watched"
+            :parameters {:query [:map
+                                  [:channel-id    {:optional true} :string]
+                                  [:media-item-id {:optional true} :string]
+                                  [:from          {:optional true} :string]
+                                  [:to            {:optional true} :string]
+                                  [:limit         {:optional true} :string]]}
+            :handler    (metrics/list-media-item-views-handler ctx)}}]])
 
 (defn make-handler
   "Creates the reitit Ring handler.

@@ -30,7 +30,7 @@
      :pseudovision/scheduling (merge {:lookahead-hours 72
                                       :rebuild-interval-minutes 60}
                                      scheduling)
-      :pseudovision/cleanup   {}
+      :pseudovision/cleanup   {:db (ig/ref :pseudovision/db)}
       :pseudovision/http      {:port        (or (some-> server :port (parse-int)) 8080)
                                :db          (ig/ref :pseudovision/db)
                                :ffmpeg      (ig/ref :pseudovision/ffmpeg)
@@ -88,8 +88,8 @@
 ;; Cleanup daemon
 ;; ---------------------------------------------------------------------------
 
-(defmethod ig/init-key :pseudovision/cleanup [_ _opts]
-  (cleanup/start-cleanup-daemon))
+(defmethod ig/init-key :pseudovision/cleanup [_ {:keys [db]}]
+  (cleanup/start-cleanup-daemon db))
 
 (defmethod ig/halt-key! :pseudovision/cleanup [_ daemon]
   (cleanup/stop-cleanup-daemon daemon))

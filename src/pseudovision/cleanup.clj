@@ -49,19 +49,19 @@
 (defn run-cleanup-cycle
   "Runs a single cleanup cycle: removes dead streams and cleans up temp directories.
    Returns map with cleanup statistics."
-  []
+  [db]
   (try
-    (let [dead-streams (streaming/cleanup-dead-streams)
-          empty-dirs (cleanup-empty-stream-directories)
-          old-dirs (cleanup-old-stream-directories)]
+    (let [dead-streams (streaming/cleanup-dead-streams db)
+          empty-dirs   (cleanup-empty-stream-directories)
+          old-dirs     (cleanup-old-stream-directories)]
       (when (or (pos? dead-streams) (pos? empty-dirs) (pos? old-dirs))
-        (log/info "Cleanup cycle completed" 
-                 {:dead-streams dead-streams
+        (log/info "Cleanup cycle completed"
+                 {:dead-streams      dead-streams
                   :empty-directories empty-dirs
-                  :old-directories old-dirs}))
-      {:dead-streams dead-streams
+                  :old-directories   old-dirs}))
+      {:dead-streams      dead-streams
        :empty-directories empty-dirs
-       :old-directories old-dirs})
+       :old-directories   old-dirs})
     (catch Exception e
       (log/error e "Error during cleanup cycle")
       {:error (.getMessage e)})))
@@ -69,11 +69,11 @@
 (defn start-cleanup-daemon
   "Starts a background daemon that runs cleanup every 60 seconds.
    Returns a map with :executor that can be used to stop the daemon."
-  []
+  [db]
   (let [executor (Executors/newSingleThreadScheduledExecutor)]
     (log/info "Starting cleanup daemon (runs every 60 seconds)")
     (.scheduleAtFixedRate executor
-                         run-cleanup-cycle
+                         #(run-cleanup-cycle db)
                          60  ; initial delay (seconds)
                          60  ; period (seconds)
                          TimeUnit/SECONDS)

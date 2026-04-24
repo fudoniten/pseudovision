@@ -5,6 +5,7 @@
             [pseudovision.db.playouts :as db-playouts]
             [pseudovision.db.media :as db-media]
             [pseudovision.db.ffmpeg :as db-ffmpeg]
+            [pseudovision.db.metrics :as db-metrics]
             [pseudovision.media.connection :as conn]
             [pseudovision.ffmpeg.hls :as hls]
             [pseudovision.util.time :as t]
@@ -18,18 +19,35 @@
 ;; Global state (to be refactored into Integrant component later)
 (defonce active-streams (atom {}))
 
+(defn- end-stream-metrics!
+  "Closes all open view records for a stream entry. Safe to call on dead streams."
+  [db stream]
+  (let [now          (t/now)
+        elapsed-secs (if-let [ms (:stream-started-at stream)]
+                       (/ (- (System/currentTimeMillis) ms) 1000.0)
+                       0.0)]
+    (when-let [id (:channel-view-id stream)]
+      (db-metrics/end-channel-view! db id now))
+    (when-let [id (:media-view-id stream)]
+      (db-metrics/end-media-item-view! db id now elapsed-secs))))
+
 (defn cleanup-dead-streams
-  "Removes dead FFmpeg processes from active-streams.
+  "Removes dead FFmpeg processes from active-streams, closing their view records.
    Returns count of cleaned up streams."
-  []
+  [db]
   (let [before-count (count @active-streams)
         alive-streams (into {}
                            (filter (fn [[uuid stream]]
                                     (let [alive? (hls/process-alive? stream)]
                                       (when-not alive?
-                                        (log/warn "Removing dead stream" 
-                                                 {:uuid uuid 
-                                                  :pid (:pid stream)}))
+                                        (log/warn "Removing dead stream"
+                                                 {:uuid uuid
+                                                  :pid (:pid stream)})
+                                        (try
+                                          (end-stream-metrics! db stream)
+                                          (catch Exception e
+                                            (log/warn e "Failed to end metrics for dead stream"
+                                                      {:uuid uuid}))))
                                       alive?))
                                   @active-streams))]
     (reset! active-streams alive-streams)
@@ -208,11 +226,15 @@
       (.isAfter now transition-threshold))))
 
 (defn- stop-and-remove-stream
-  "Stops FFmpeg process and removes stream from active-streams."
-  [uuid stream]
-  (log/info "Stopping stream for transition" 
-            {:uuid uuid 
+  "Stops FFmpeg process, closes metrics view records, and removes stream from active-streams."
+  [db uuid stream]
+  (log/info "Stopping stream for transition"
+            {:uuid uuid
              :pid (:pid stream)})
+  (try
+    (end-stream-metrics! db stream)
+    (catch Exception e
+      (log/warn e "Failed to end metrics for stream" {:uuid uuid})))
   (hls/stop-ffmpeg stream)
   (swap! active-streams dissoc uuid))
 
@@ -232,62 +254,82 @@
                       :channel-id (:channels/id channel)}))
       
       ;; Load FFmpeg profile from database (used for both slate and regular streams)
-      (let [profile-id (:channels/ffmpeg-profile-id channel)
-            profile (when profile-id (db-ffmpeg/get-profile db profile-id))
-            profile-config (or (:ffmpeg-profiles/config profile) {})]
-        
+      (let [profile-id      (:channels/ffmpeg-profile-id channel)
+            profile         (when profile-id (db-ffmpeg/get-profile db profile-id))
+            profile-config  (or (:ffmpeg-profiles/config profile) {})
+            channel-id      (:channels/id channel)
+            channel-view-id (:id (db-metrics/insert-channel-view! db channel-id))]
+
         ;; Check if we're generating a slate or streaming real content
         (if (= (:type source-info) :generated-slate)
-          ;; Generate fallback slate with channel info
+          ;; Generate fallback slate — no media item view
           (let [upcoming-events (:upcoming-events source-info)]
-            (log/info "Starting fallback slate" 
+            (log/info "Starting fallback slate"
                       {:channel-name (:channels/name channel)
                        :channel-number (:channels/number channel)
                        :upcoming-count (count upcoming-events)})
             (let [command (hls/build-slate-command output-dir
-                                                  {:channel-name (:channels/name channel)
-                                                   :channel-number (:channels/number channel)
-                                                   :upcoming-events upcoming-events
-                                                   :profile-config profile-config})
-                  stream-info (hls/start-ffmpeg command output-dir)]
-              (log/info "Started fallback slate stream" 
-                        {:uuid uuid 
+                                                   {:channel-name    (:channels/name channel)
+                                                    :channel-number  (:channels/number channel)
+                                                    :upcoming-events upcoming-events
+                                                    :profile-config  profile-config})
+                  stream-info (hls/start-ffmpeg command output-dir)
+                  now-ms      (System/currentTimeMillis)]
+              (log/info "Started fallback slate stream"
+                        {:uuid         uuid
                          :channel-name (:channels/name channel)
-                         :pid (:pid stream-info)
-                         :output-dir output-dir})
-              (swap! active-streams assoc uuid 
+                         :pid          (:pid stream-info)
+                         :output-dir   output-dir})
+              (swap! active-streams assoc uuid
                      (assoc stream-info
-                            :channel-uuid uuid
-                            :last-access (System/currentTimeMillis)
-                            :source-info source-info))
+                            :channel-uuid      uuid
+                            :last-access       now-ms
+                            :stream-started-at now-ms
+                            :channel-view-id   channel-view-id
+                            :media-view-id     nil
+                            :source-info       source-info))
               stream-info))
-          
-          ;; Regular content stream
-          (let [source-url (:source-url source-info)
-                start-pos (:start-position source-info)]
-            (log/info "Preparing to start FFmpeg" 
-                      {:source-url source-url 
+
+          ;; Regular content stream — record a media item view
+          (let [source-url    (:source-url source-info)
+                start-pos     (or (:start-position source-info) 0)
+                media-item-id (:media-item-id source-info)
+                total-dur     (try
+                                (db-metrics/get-media-item-duration-secs db media-item-id)
+                                (catch Exception _ nil))
+                media-view-id (:id (db-metrics/insert-media-item-view!
+                                     db {:media-item-id       media-item-id
+                                         :channel-id          channel-id
+                                         :source-type         (:type source-info)
+                                         :start-position-secs start-pos
+                                         :total-duration-secs total-dur}))]
+            (log/info "Preparing to start FFmpeg"
+                      {:source-url   source-url
                        :start-position start-pos
-                       :source-type (:type source-info)
-                       :profile-id profile-id
+                       :source-type  (:type source-info)
+                       :profile-id   profile-id
                        :profile-name (:ffmpeg-profiles/name profile)})
-            (let [command (hls/build-hls-command source-url output-dir 
-                                                {:start-position-secs start-pos
-                                                 :profile-config profile-config})
-                  stream-info (hls/start-ffmpeg command output-dir)]
-              (log/info "Started new FFmpeg stream" 
-                        {:uuid uuid 
-                         :channel-name (:channels/name channel)
-                         :pid (:pid stream-info)
-                         :output-dir output-dir
-                         :source-type (:type source-info)
-                         :media-item-id (:media-item-id source-info)
+            (let [command     (hls/build-hls-command source-url output-dir
+                                                     {:start-position-secs start-pos
+                                                      :profile-config      profile-config})
+                  stream-info (hls/start-ffmpeg command output-dir)
+                  now-ms      (System/currentTimeMillis)]
+              (log/info "Started new FFmpeg stream"
+                        {:uuid          uuid
+                         :channel-name  (:channels/name channel)
+                         :pid           (:pid stream-info)
+                         :output-dir    output-dir
+                         :source-type   (:type source-info)
+                         :media-item-id media-item-id
                          :start-position start-pos})
-              (swap! active-streams assoc uuid 
+              (swap! active-streams assoc uuid
                      (assoc stream-info
-                            :channel-uuid uuid
-                            :last-access (System/currentTimeMillis)
-                            :source-info source-info))
+                            :channel-uuid      uuid
+                            :last-access       now-ms
+                            :stream-started-at now-ms
+                            :channel-view-id   channel-view-id
+                            :media-view-id     media-view-id
+                            :source-info       source-info))
               stream-info)))))))
 
 (defn- get-or-start-stream
@@ -304,7 +346,7 @@
       (log/info "Event transition required" 
                 {:uuid uuid 
                  :current-event-id (get-in existing-stream [:source-info :event :playout-events/id])})
-      (stop-and-remove-stream uuid existing-stream))
+      (stop-and-remove-stream db uuid existing-stream))
     
     ;; Now either reuse existing stream or start new one
     (if-let [stream (get @active-streams uuid)]
@@ -352,11 +394,13 @@
                                      error-excerpt)
                                    (catch Exception _ "Could not read FFmpeg log"))
                                  "No log file found")]
-                  (log/error "FFmpeg process died shortly after starting" 
-                            {:uuid uuid 
+                  (log/error "FFmpeg process died shortly after starting"
+                            {:uuid uuid
                              :pid (:pid stream)
                              :log-excerpt error-msg})
-                  ;; Remove dead stream from active streams
+                  ;; Close metrics and remove dead stream from active streams
+                  (try (end-stream-metrics! db stream)
+                       (catch Exception _ nil))
                   (swap! active-streams dissoc uuid)
                   {:status 500
                    :headers {"Content-Type" "application/json"}
