@@ -212,7 +212,7 @@
     {:tags       ["media"]
      :parameters {:path [:map [:id s/LibraryId]]}
      :delete {:summary   "Delete a library"
-              :responses {204 {:body nil}}
+              :responses {204 {}}
               :handler   (med/delete-library-handler ctx)}}]
    ["/api/media/libraries/:id/items"
     {:tags       ["media"]
