@@ -66,6 +66,12 @@
           attrs     (assoc params :media-source-id source-id)]
       {:status 201 :body (db/create-library! db attrs)})))
 
+(defn delete-library-handler [{:keys [db]}]
+  (fn [req]
+    (let [library-id (get-in req [:parameters :path :id])]
+      (db/delete-library! db library-id)
+      {:status 204 :body nil})))
+
 (defn- parse-attrs
   "Splits a comma-separated attrs string into a seq of trimmed strings, or
    returns nil if the input is blank/nil."

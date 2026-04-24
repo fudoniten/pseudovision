@@ -208,6 +208,12 @@
                         400 {:body s/APIError}
                         404 {:body s/APIError}}
             :handler   (med/discover-libraries-handler ctx)}}]
+   ["/api/media/libraries/:id"
+    {:tags       ["media"]
+     :parameters {:path [:map [:id s/LibraryId]]}
+     :delete {:summary   "Delete a library"
+              :responses {204 {:body nil}}
+              :handler   (med/delete-library-handler ctx)}}]
    ["/api/media/libraries/:id/items"
     {:tags       ["media"]
      :parameters {:path  [:map [:id s/LibraryId]]

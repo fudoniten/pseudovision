@@ -71,6 +71,13 @@
                :external-id     (:external-id attrs)})
     result))
 
+(defn delete-library! [ds id]
+  (let [result (db/execute-one! ds (-> (h/delete-from :libraries)
+                                       (h/where [:= :id id])
+                                       sql/format))]
+    (log/info "Deleted library" {:library-id id})
+    result))
+
 (defn list-library-paths [ds library-id]
   (db/query ds (-> (h/select :*)
                    (h/from :library-paths)
