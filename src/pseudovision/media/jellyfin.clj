@@ -243,7 +243,8 @@
            :title          (:Name item)
            :sort-title     (:SortName item)
            :original-title (:OriginalTitle item)
-           :year           (:ProductionYear item)
+           :year           (or (:ProductionYear item)
+                               (some-> (:PremiereDate item) (subs 0 4) parse-long))
            :plot           (:Overview item)
            :content-rating (:OfficialRating item)}
     (= kind :episode)
