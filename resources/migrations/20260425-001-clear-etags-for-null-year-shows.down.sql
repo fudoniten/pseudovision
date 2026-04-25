@@ -1,0 +1,2 @@
+-- No-op: old etag values cannot be restored.
+--;;
