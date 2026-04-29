@@ -189,6 +189,11 @@
 (def TagList
   [:vector {:description "Metadata tag names"} :string])
 
+(def DaysOfWeek
+  "Bitmask: Mon=1 Tue=2 Wed=4 Thu=8 Fri=16 Sat=32 Sun=64. Default 127 = every day."
+  [:int {:min 0 :max 127
+         :description "Day-of-week bitmask. Mon=1 Tue=2 Wed=4 Thu=8 Fri=16 Sat=32 Sun=64. 127 = every day."}])
+
 (def Slot
   [:map
    [:id                         SlotId]
@@ -223,7 +228,8 @@
    [:subtitle-mode              {:optional true} [:maybe SubtitleModeEnum]]
    [:fill-with-group-mode       {:optional true} :string]
    [:required-tags              {:optional true} TagList]
-   [:excluded-tags              {:optional true} TagList]])
+   [:excluded-tags              {:optional true} TagList]
+   [:days-of-week               {:optional true} DaysOfWeek]])
 
 (def SlotCreate
   [:map
@@ -257,7 +263,8 @@
    [:subtitle-mode              {:optional true} [:maybe SubtitleModeEnum]]
    [:fill-with-group-mode       {:optional true} :string]
    [:required-tags              {:optional true} TagList]
-   [:excluded-tags              {:optional true} TagList]])
+   [:excluded-tags              {:optional true} TagList]
+   [:days-of-week               {:optional true} DaysOfWeek]])
 
 (def SlotUpdate
   [:map
@@ -291,7 +298,8 @@
    [:subtitle-mode              {:optional true} [:maybe SubtitleModeEnum]]
    [:fill-with-group-mode       {:optional true} :string]
    [:required-tags              {:optional true} TagList]
-   [:excluded-tags              {:optional true} TagList]])
+   [:excluded-tags              {:optional true} TagList]
+   [:days-of-week               {:optional true} DaysOfWeek]])
 
 ;; ---------------------------------------------------------------------------
 ;; FFmpeg profiles

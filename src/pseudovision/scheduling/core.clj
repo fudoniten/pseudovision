@@ -31,7 +31,7 @@
             [pseudovision.util.sql  :as sql-util]
             [pseudovision.util.time :as t]
             [taoensso.timbre        :as log])
-  (:import [java.time Duration Instant ZoneId]))
+  (:import [java.time Duration Instant]))
 
 ;; ---------------------------------------------------------------------------
 ;; Helpers
@@ -99,15 +99,13 @@
       (Duration/ofSeconds 0)))
 
 (defn- next-fixed-start
-  "Returns the next wall-clock Instant when `slot` would fire on or after `after`."
+  "Returns the next wall-clock Instant when `slot` would fire on or after `after`.
+   Respects the slot's days_of_week bitmask: skips days whose bit is not set.
+   A nil or 0 mask means every day (preserves original behaviour)."
   [slot after zone-id]
-  (let [tod     (:schedule-slots/start-time slot)    ; java.time.Duration = offset from midnight
-        zdt     (.atZone after (ZoneId/of zone-id))
-        midnight (.toInstant zdt)
-        candidate (.plus midnight tod)]
-    (if (.isAfter candidate after)
-      candidate
-      (.plusSeconds candidate (* 24 3600)))))
+  (let [tod      (:schedule-slots/start-time slot)   ; Duration = offset from midnight
+        dow-mask (:schedule-slots/days-of-week slot)] ; nil → every day
+    (t/next-dow-occurrence tod dow-mask after zone-id)))
 
 ;; ---------------------------------------------------------------------------
 ;; Event emission for each fill mode
@@ -299,23 +297,39 @@
 
 (defn- process-slot
   "Processes one slot, advancing cursor and collecting events.
-   Returns [events cursor]."
+   Returns [events cursor].
+
+   If the slot has a days_of_week mask and the current cursor time falls on a
+   non-firing day, no events are emitted and next-start is fast-forwarded to
+   the slot's next valid occurrence.  The enumerator position is left unchanged
+   so sequential shows (e.g. Mad Men MWF) resume from exactly where they left
+   off on the next airing day."
   [db cursor slot channel playout-id slots opts]
-  (let [zone-id (get opts :zone-id "UTC")
-        fill    (keyword (or (:schedule-slots/fill-mode slot) "once"))]
-    (case fill
-      :once  (emit-once  db cursor slot playout-id opts)
-      :count (emit-count db cursor slot playout-id opts)
-      :block (emit-block db cursor slot channel playout-id opts)
-      :flood (let [flood-end (next-slot-start
-                              slots
-                              (:schedule-slots/slot-index slot)
-                              (:next-start cursor)
-                              zone-id)]
-               (emit-flood db cursor slot channel playout-id
-                           (assoc opts :flood-end flood-end)))
-      (do (log/warn "Unknown fill mode, skipping slot" {:fill fill})
-          [[] cursor]))))
+  (let [zone-id  (get opts :zone-id "UTC")
+        dow-mask (:schedule-slots/days-of-week slot)
+        now      (:next-start cursor)]
+    (if (and (= "fixed" (:schedule-slots/anchor slot))
+             (not (t/fires-on-day? dow-mask now zone-id)))
+      ;; This slot doesn't air today -- advance to its next valid fire time.
+      (let [next-fire (next-fixed-start slot now zone-id)]
+        (log/debug "Slot skipped (days_of_week)" {:slot-index (:schedule-slots/slot-index slot)
+                                                   :next-fire  (str next-fire)})
+        [[] (assoc cursor :next-start next-fire)])
+      ;; Normal path -- slot fires today (or is sequential).
+      (let [fill (keyword (or (:schedule-slots/fill-mode slot) "once"))]
+        (case fill
+          :once  (emit-once  db cursor slot playout-id opts)
+          :count (emit-count db cursor slot playout-id opts)
+          :block (emit-block db cursor slot channel playout-id opts)
+          :flood (let [flood-end (next-slot-start
+                                  slots
+                                  (:schedule-slots/slot-index slot)
+                                  now
+                                  zone-id)]
+                   (emit-flood db cursor slot channel playout-id
+                               (assoc opts :flood-end flood-end)))
+          (do (log/warn "Unknown fill mode, skipping slot" {:fill fill})
+              [[] cursor])))))
 
 ;; ---------------------------------------------------------------------------
 ;; Public API
