@@ -69,6 +69,7 @@
                     (update :start-time sql-util/->pg-interval)
                     (or (:guide_mode attrs) (:guide-mode attrs))
                     (update :guide-mode #(sql-util/->pg-enum "guide_mode" %)))
+                    ;; days-of-week is a plain INTEGER — no coercion needed
         sql-map (-> (h/insert-into :schedule-slots)
                     (h/values [processed])
                     (h/returning :*)
