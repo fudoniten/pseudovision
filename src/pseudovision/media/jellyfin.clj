@@ -11,6 +11,7 @@
      5. Upsert media_versions, media_files, media_streams, and metadata"
   (:require [clj-http.client              :as http]
             [clojure.string              :as str]
+            [camel-snake-kebab.core      :as csk]
             [next.jdbc                   :as jdbc]
             [honey.sql                   :as sql]
             [honey.sql.helpers           :as h]
@@ -492,7 +493,7 @@
                  :libraries (mapv #(select-keys % [:Name :CollectionType :ItemId]) folders)
                  :source-id source-id})
       (mapv (fn [folder]
-              {:name        (:Name folder)
+              {:name        (csk/->kebab-case (:Name folder))
                :kind        (jf-collection-type->kind (:CollectionType folder))
                :external-id (:ItemId folder)
                :should-sync true})
