@@ -89,13 +89,19 @@
 (defn get-upcoming-events
   "Returns the next N events for a playout starting from `after`.
    Includes any event currently in progress (finish-at > after), not just
-   events whose start-at is in the future."
-  [ds playout-id after limit]
+   events whose start-at is in the future.
+   
+   If cursor is provided, starts from events after that start-at timestamp."
+  [ds playout-id after limit & {:keys [cursor]}]
   (db/query ds (-> (h/select :*)
                    (h/from :playout-events)
-                   (h/where [:and
-                             [:= :playout-id playout-id]
-                             [:> :finish-at  after]])
+                   (h/where (if cursor
+                              [:and
+                               [:= :playout-id playout-id]
+                               [:> :start-at cursor]]
+                              [:and
+                               [:= :playout-id playout-id]
+                               [:> :finish-at  after]]))
                    (h/order-by :start-at)
                    (h/limit limit)
                    sql/format)))

@@ -1,5 +1,6 @@
 (ns pseudovision.http.api.channels
-  (:require [pseudovision.db.channels :as db]
+  (:require [pseudovision.db.channels     :as db]
+            [pseudovision.util.pagination  :as pagination]
             [taoensso.timbre :as log]))
 
 ;; ---------------------------------------------------------------------------
@@ -24,16 +25,23 @@
 
 (defn list-channels-handler [{:keys [db]}]
   (fn [req]
-    (if-let [uuid (get-in req [:parameters :query :uuid])]
-      (if-let [channel (db/get-channel-by-uuid db uuid)]
-        (do
-          (log/debug "Found channel by UUID" {:channel-id (:channels/id channel)})
-          {:status 200 :body (unqualify-keys channel)})
-        (do
-          (log/warn "Channel not found by UUID" {:uuid uuid})
-          {:status 404 :body {:error "Channel not found"}}))
-      {:status 200
-       :body   (mapv unqualify-keys (db/list-channels db))})))
+    (let [qp (get-in req [:parameters :query])]
+      (if-let [uuid (:uuid qp)]
+        ;; UUID filter - return single channel (backward compatibility)
+        (if-let [channel (db/get-channel-by-uuid db uuid)]
+          (do
+            (log/debug "Found channel by UUID" {:channel-id (:channels/id channel)})
+            {:status 200 :body (unqualify-keys channel)})
+          (do
+            (log/warn "Channel not found by UUID" {:uuid uuid})
+            {:status 404 :body {:error "Channel not found"}}))
+        ;; Paginated list
+        (let [limit  (or (:limit qp) 100)
+              offset (or (:offset qp) 0)
+              total  (db/count-channels db)
+              items  (mapv unqualify-keys (db/list-channels db {:limit limit :offset offset}))]
+          {:status 200
+           :body (pagination/offset-pagination-response items limit offset total)})))))
 
 (defn get-channel-handler [{:keys [db]}]
   (fn [req]

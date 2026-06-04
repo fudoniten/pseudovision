@@ -49,10 +49,10 @@
   "Get all tags for a media item."
   [db media-item-id]
   (let [tags (db-core/query db (-> (h/select :mt.name)
-                                  (h/from [:metadata-tags :mt])
-                                  (h/join [:metadata :m] [:= :m.id :mt.metadata-id])
-                                  (h/where [:= :m.media-item-id media-item-id])
-                                  sql/format))]
+                                   (h/from [:metadata-tags :mt])
+                                   (h/join [:metadata :m] [:= :m.id :mt.metadata-id])
+                                   (h/where [:= :m.media-item-id media-item-id])
+                                   sql/format))]
     (set (map :metadata-tags/name tags))))
 
 (defn- matches-tag-filters?
@@ -63,10 +63,10 @@
   (when (or (seq required-tags) (seq excluded-tags))
     (let [item-tags (get-item-tags db (:media-items/id item))]
       (and
-        ;; Must have all required tags
-        (every? #(contains? item-tags %) required-tags)
-        ;; Must not have any excluded tags
-        (not-any? #(contains? item-tags %) excluded-tags))))
+       ;; Must have all required tags
+       (every? #(contains? item-tags %) required-tags)
+       ;; Must not have any excluded tags
+       (not-any? #(contains? item-tags %) excluded-tags))))
   ;; If no tag filters, item matches
   true)
 
@@ -313,7 +313,7 @@
       ;; This slot doesn't air today -- advance to its next valid fire time.
       (let [next-fire (next-fixed-start slot now zone-id)]
         (log/debug "Slot skipped (days_of_week)" {:slot-index (:schedule-slots/slot-index slot)
-                                                   :next-fire  (str next-fire)})
+                                                  :next-fire  (str next-fire)})
         [[] (assoc cursor :next-start next-fire)])
       ;; Normal path -- slot fires today (or is sequential).
       (let [fill (keyword (or (:schedule-slots/fill-mode slot) "once"))]
@@ -329,7 +329,7 @@
                    (emit-flood db cursor slot channel playout-id
                                (assoc opts :flood-end flood-end)))
           (do (log/warn "Unknown fill mode, skipping slot" {:fill fill})
-              [[] cursor])))))
+              [[] cursor]))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Public API

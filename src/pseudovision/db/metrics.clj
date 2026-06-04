@@ -73,22 +73,23 @@
 
 (defn list-channel-views
   "Returns channel_views joined to channel name/uuid.
-   opts: {:channel-id int, :from Instant, :to Instant, :limit int}"
+   opts: {:channel-id int, :from Instant, :to Instant, :limit int, :cursor Instant}"
   [ds opts]
   (db/query ds
     (cond-> (-> (h/select :cv.* :c.name :c.uuid)
                 (h/from [:channel-views :cv])
                 (h/join [:channels :c] [:= :c.id :cv.channel-id])
                 (h/order-by [:cv.started-at :desc])
-                (h/limit (or (:limit opts) 200)))
+                (h/limit (or (:limit opts) 100)))
       (:channel-id opts) (h/where [:= :cv.channel-id (:channel-id opts)])
+      (:cursor opts)     (h/where [:< :cv.started-at (:cursor opts)])
       (:from opts)       (h/where [:>= :cv.started-at (:from opts)])
       (:to opts)         (h/where [:< :cv.started-at (:to opts)])
       true               sql/format)))
 
 (defn list-media-item-views
   "Returns media_item_views joined to channel name/uuid and metadata title.
-   opts: {:channel-id int, :media-item-id int, :from Instant, :to Instant, :limit int}"
+   opts: {:channel-id int, :media-item-id int, :from Instant, :to Instant, :limit int, :cursor Instant}"
   [ds opts]
   (db/query ds
     (cond-> (-> (h/select :mv.* [:m.title :title] :c.name :c.uuid)
@@ -96,9 +97,10 @@
                 (h/join [:channels :c] [:= :c.id :mv.channel-id])
                 (h/left-join [:metadata :m] [:= :m.media-item-id :mv.media-item-id])
                 (h/order-by [:mv.started-at :desc])
-                (h/limit (or (:limit opts) 200)))
+                (h/limit (or (:limit opts) 100)))
       (:channel-id opts)    (h/where [:= :mv.channel-id (:channel-id opts)])
       (:media-item-id opts) (h/where [:= :mv.media-item-id (:media-item-id opts)])
+      (:cursor opts)        (h/where [:< :mv.started-at (:cursor opts)])
       (:from opts)          (h/where [:>= :mv.started-at (:from opts)])
       (:to opts)            (h/where [:< :mv.started-at (:to opts)])
       true                  sql/format)))

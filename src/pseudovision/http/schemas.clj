@@ -28,6 +28,37 @@
   [:string {:description "ISO-8601 timestamp, e.g. \"2026-04-22T18:30:00Z\""}])
 
 ;; ---------------------------------------------------------------------------
+;; Pagination
+;; ---------------------------------------------------------------------------
+
+(def PaginationQuery
+  "Query parameters for offset-based pagination."
+  [:map
+   [:limit  {:optional true} [:int {:min 1 :max 1000 :description "Maximum number of items to return (default varies by endpoint)"}]]
+   [:offset {:optional true} [:int {:min 0 :description "Number of items to skip (default: 0)"}]]])
+
+(def CursorPaginationQuery
+  "Query parameters for cursor-based pagination (time-series data)."
+  [:map
+   [:limit  {:optional true} [:int {:min 1 :max 1000 :description "Maximum number of items to return"}]]
+   [:cursor {:optional true} [:string {:description "Opaque cursor for fetching next page"}]]])
+
+(def PaginationMeta
+  "Metadata for paginated responses."
+  [:map
+   [:limit     :int]
+   [:offset    :int]
+   [:total     :int]
+   [:has_more  :boolean]])
+
+(def CursorPaginationMeta
+  "Metadata for cursor-based paginated responses."
+  [:map
+   [:limit       :int]
+   [:has_more    :boolean]
+   [:next_cursor {:optional true} [:maybe :string]]])
+
+;; ---------------------------------------------------------------------------
 ;; Error envelope
 ;; ---------------------------------------------------------------------------
 
@@ -72,6 +103,12 @@
    [:stream-selector                {:optional true} [:maybe :string]]
    [:is-enabled                     :boolean]
    [:show-in-epg                    :boolean]])
+
+(def PaginatedChannels
+  "Paginated response for channels."
+  [:map
+   [:items [:vector Channel]]
+   [:pagination PaginationMeta]])
 
 ;; ---------------------------------------------------------------------------
 ;; Channel — POST request body
@@ -157,6 +194,12 @@
    [:keep-multi-part-together   :boolean]
    [:treat-collections-as-shows :boolean]])
 
+(def PaginatedSchedules
+  "Paginated response for schedules."
+  [:map
+   [:items [:vector Schedule]]
+   [:pagination PaginationMeta]])
+
 (def ScheduleCreate
   [:map
    [:name                       :string]
@@ -230,6 +273,12 @@
    [:required-tags              {:optional true} TagList]
    [:excluded-tags              {:optional true} TagList]
    [:days-of-week               {:optional true} DaysOfWeek]])
+
+(def PaginatedSlots
+  "Paginated response for schedule slots."
+  [:map
+   [:items [:vector Slot]]
+   [:pagination PaginationMeta]])
 
 (def SlotCreate
   [:map
@@ -348,6 +397,12 @@
    [:name  TagName]
    [:count :int]])
 
+(def PaginatedTags
+  "Paginated response for tags."
+  [:map
+   [:items [:vector TagUsage]]
+   [:pagination PaginationMeta]])
+
 (def TagAddResult
   [:map
    [:item-id    :int]
@@ -384,6 +439,12 @@
    [:path-replacements     {:optional true} [:maybe [:sequential [:map]]]]
    [:last-collections-scan {:optional true} [:maybe Instant]]])
 
+(def PaginatedMediaSources
+  "Paginated response for media sources."
+  [:map
+   [:items [:vector MediaSource]]
+   [:pagination PaginationMeta]])
+
 (def MediaSourceCreate
   [:map
    [:name               :string]
@@ -400,6 +461,12 @@
    [:external-id     {:optional true} [:maybe :string]]
    [:should-sync     {:optional true} :boolean]
    [:last-scan       {:optional true} [:maybe Instant]]])
+
+(def PaginatedMediaLibraries
+  "Paginated response for media libraries."
+  [:map
+   [:items [:vector MediaLibrary]]
+   [:pagination PaginationMeta]])
 
 (def MediaLibraryCreate
   [:map
@@ -424,6 +491,12 @@
    [:parent-id {:optional true} [:maybe :int]]
    [:position {:optional true} [:maybe :int]]])
 
+(def PaginatedMediaItems
+  "Paginated response for media items."
+  [:map
+   [:items [:vector MediaItem]]
+   [:pagination PaginationMeta]])
+
 (def DiscoveryResult
   [:map
    [:discovered :int]
@@ -442,6 +515,12 @@
    [:name                      :string]
    [:use-custom-playback-order {:optional true} :boolean]
    [:config                    {:optional true} [:map]]])
+
+(def PaginatedCollections
+  "Paginated response for collections."
+  [:map
+   [:items [:vector Collection]]
+   [:pagination PaginationMeta]])
 
 (def CollectionCreate
   [:map
@@ -509,6 +588,12 @@
    [:subtitle-mode               {:optional true} [:maybe SubtitleModeEnum]]
    [:slot-id                     {:optional true} [:maybe :int]]
    [:is-manual                   {:optional true} :boolean]])
+
+(def PaginatedPlayoutEvents
+  "Paginated response for playout events."
+  [:map
+   [:items [:vector PlayoutEvent]]
+   [:pagination CursorPaginationMeta]])
 
 (def ManualEventCreate
   "Body for POST /api/channels/:channel-id/playout/events.

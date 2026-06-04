@@ -3,7 +3,8 @@
 
    Tags are stored in metadata_tags table and enable flexible content
    selection in schedule slots via required_tags/excluded_tags filters."
-  (:require [pseudovision.db.core :as db-core]
+  (:require [pseudovision.db.core       :as db-core]
+            [pseudovision.util.pagination :as pagination]
             [honey.sql.helpers :as h]
             [honey.sql :as sql]
             [taoensso.timbre :as log]))
@@ -97,13 +98,26 @@
 (defn list-all-tags-handler
   "GET /api/tags — list all unique tags with usage counts."
   [{:keys [db]}]
-  (fn [_req]
-    (let [tags (db-core/query db (-> (h/select :name [:%count.* :count])
-                                     (h/from :metadata-tags)
-                                     (h/group-by :name)
-                                     (h/order-by [:count :desc] :name)
-                                     sql/format))]
-      {:status 200 :body (mapv (fn [t]
-                                 {:name  (:metadata-tags/name t)
-                                  :count (:count t)})
-                               tags)})))
+  (fn [req]
+    (let [qp     (get-in req [:parameters :query])
+          limit  (or (:limit qp) 100)
+          offset (or (:offset qp) 0)
+          ;; Count total unique tags
+          total-result (db-core/query-one db (-> (h/select [[:%count.distinct.name :count]])
+                                                 (h/from :metadata-tags)
+                                                 sql/format))
+          total  (or (:count total-result) 0)
+          ;; Fetch paginated tags
+          tags   (db-core/query db (-> (h/select :name [:%count.* :count])
+                                       (h/from :metadata-tags)
+                                       (h/group-by :name)
+                                       (h/order-by [:count :desc] :name)
+                                       (h/limit limit)
+                                       (h/offset offset)
+                                       sql/format))
+          items  (mapv (fn [t]
+                         {:name  (:metadata-tags/name t)
+                          :count (:count t)})
+                       tags)]
+      {:status 200
+       :body (pagination/offset-pagination-response items limit offset total)})))

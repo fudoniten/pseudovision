@@ -2,7 +2,8 @@
   (:require [pseudovision.db.playouts      :as db]
             [pseudovision.scheduling.core  :as sched]
             [pseudovision.util.time         :as t]
-            [pseudovision.util.sql          :as sql-util]))
+            [pseudovision.util.sql          :as sql-util]
+            [pseudovision.util.pagination   :as pagination]))
 
 (defn- unqualify-keys [m]
   (when m
@@ -34,14 +35,30 @@
                   :horizon-days horizon-days}})
         {:status 404 :body {:error "No playout for this channel"}}))))
 
+(defn- parse-instant [s]
+  (when s
+    (try (java.time.Instant/parse s)
+         (catch Exception _ nil))))
+
 (defn list-events-handler [{:keys [db]}]
   (fn [req]
     (let [channel-id (get-in req [:parameters :path :channel-id])
+          qp         (get-in req [:parameters :query])
+          limit      (or (:limit qp) 100)
+          cursor     (parse-instant (:cursor qp))
           playout    (db/get-playout-for-channel db channel-id)]
       (if playout
         (let [now    (t/now)
-              events (db/get-upcoming-events db (:playouts/id playout) now 500)]
-          {:status 200 :body (mapv unqualify-keys events)})
+              events (db/get-upcoming-events db (:playouts/id playout) now limit 
+                                            :cursor cursor)
+              items  (mapv unqualify-keys events)]
+          {:status 200
+           :body (pagination/cursor-pagination-response 
+                   items 
+                   limit 
+                   (fn [last-item]
+                     (when-let [start-at (:start-at last-item)]
+                       (str start-at))))})
         {:status 404 :body {:error "No playout for this channel"}}))))
 
 (defn- ->instant [x]

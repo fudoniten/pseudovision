@@ -9,8 +9,29 @@
 ;; Media sources and libraries
 ;; ---------------------------------------------------------------------------
 
-(defn list-media-sources [ds]
-  (db/query ds (-> (h/select :*) (h/from :media-sources) sql/format)))
+(defn count-media-sources
+  "Counts total media sources."
+  [ds]
+  (let [result (db/query-one ds (-> (h/select [[:%count.* :count]])
+                                    (h/from :media-sources)
+                                    sql/format))]
+    (or (:count result) 0)))
+
+(defn list-media-sources
+  "Lists media sources with optional pagination.
+   
+   opts:
+   - :limit  - maximum number of sources to return
+   - :offset - number of sources to skip"
+  ([ds]
+   (list-media-sources ds nil))
+  ([ds opts]
+   (db/query ds (-> (h/select :*)
+                    (h/from :media-sources)
+                    (cond->
+                      (:limit opts)  (h/limit (:limit opts))
+                      (:offset opts) (h/offset (:offset opts)))
+                    sql/format))))
 
 (defn get-media-source [ds id]
   (db/query-one ds (-> (h/select :*)
@@ -41,11 +62,30 @@
     (log/info "Deleted media source" {:source-id id})
     result))
 
-(defn list-libraries [ds]
-  (db/query ds (-> (h/select :*)
-                   (h/from :libraries)
-                   (h/order-by :name)
-                   sql/format)))
+(defn count-libraries
+  "Counts total libraries."
+  [ds]
+  (let [result (db/query-one ds (-> (h/select [[:%count.* :count]])
+                                    (h/from :libraries)
+                                    sql/format))]
+    (or (:count result) 0)))
+
+(defn list-libraries
+  "Lists libraries with optional pagination.
+   
+   opts:
+   - :limit  - maximum number of libraries to return
+   - :offset - number of libraries to skip"
+  ([ds]
+   (list-libraries ds nil))
+  ([ds opts]
+   (db/query ds (-> (h/select :*)
+                    (h/from :libraries)
+                    (h/order-by :name)
+                    (cond->
+                      (:limit opts)  (h/limit (:limit opts))
+                      (:offset opts) (h/offset (:offset opts)))
+                    sql/format))))
 
 (defn list-libraries-for-source [ds source-id]
   (db/query ds (-> (h/select :*)
@@ -121,6 +161,33 @@
 
 (def ^:private default-item-attrs [:id :name])
 
+(defn- build-media-items-base-query
+  "Builds the base query for media items with filters, without pagination."
+  [library-id opts]
+  (let [base (-> (h/from [:media-items :mi])
+                 (h/join [:library-paths :lp] [:= :lp.id :mi.library-path-id])
+                 (h/where [:= :lp.library-id library-id]))
+        with-type (cond-> base
+                    (:type opts)
+                    (h/where [:= :mi.kind (sql-util/->pg-enum "media_item_kind" (name (:type opts)))]))
+        with-parent (cond-> with-type
+                      (contains? opts :parent-id)
+                      (h/where [:= :mi.parent-id (:parent-id opts)]))]
+    with-parent))
+
+(defn count-media-items
+  "Counts total media items in a library with optional filtering.
+   
+   opts:
+   - :type      - media_item_kind keyword or string to filter by (e.g. :movie)
+   - :parent-id - when present in opts (even if nil), filters by parent_id"
+  [ds library-id opts]
+  (let [query (-> (build-media-items-base-query library-id opts)
+                  (h/select [[:%count.* :count]])
+                  sql/format)
+        result (db/query-one ds query)]
+    (or (:count result) 0)))
+
 (defn list-media-items
   "List media items in a library with optional attribute selection and filtering.
 
@@ -130,7 +197,9 @@
                   correlated subquery counting direct children of each item.
    - :type      - media_item_kind keyword or string to filter by (e.g. :movie)
    - :parent-id - when present in opts (even if nil), adds a WHERE clause on
-                  parent_id; pass an integer to list children of that item."
+                  parent_id; pass an integer to list children of that item.
+   - :limit     - maximum number of items to return
+   - :offset    - number of items to skip"
   [ds library-id opts]
   (let [attrs       (mapv keyword (or (seq (:attrs opts)) default-item-attrs))
         need-meta?  (some metadata-attrs attrs)
@@ -142,20 +211,16 @@
                               :from   [[:media-items :ch]]
                               :where  [:= :ch.parent-id :mi.id]}
                              :child-count]))
-        base        (-> (apply h/select select-cols)
-                        (h/from [:media-items :mi])
-                        (h/join [:library-paths :lp] [:= :lp.id :mi.library-path-id])
-                        (h/where [:= :lp.library-id library-id]))
+        base        (-> (build-media-items-base-query library-id opts)
+                        (h/select select-cols))
         with-meta   (cond-> base
                       need-meta?
                       (h/left-join [:metadata :m] [:= :m.media-item-id :mi.id]))
-        with-type   (cond-> with-meta
-                      (:type opts)
-                      (h/where [:= :mi.kind (sql-util/->pg-enum "media_item_kind" (name (:type opts)))]))
-        with-parent (cond-> with-type
-                      (contains? opts :parent-id)
-                      (h/where [:= :mi.parent-id (:parent-id opts)]))]
-    (db/query ds (-> with-parent (h/order-by :mi.id) sql/format))))
+        with-order  (h/order-by with-meta :mi.id)
+        with-pagination (cond-> with-order
+                          (:limit opts)  (h/limit (:limit opts))
+                          (:offset opts) (h/offset (:offset opts)))]
+    (db/query ds (sql/format with-pagination))))
 
 (defn get-media-item [ds id]
   (db/query-one ds (-> (h/select :mi.id :mi.kind :mi.state :mi.parent-id :mi.position
@@ -254,11 +319,30 @@
 ;; Collections
 ;; ---------------------------------------------------------------------------
 
-(defn list-collections [ds]
-  (db/query ds (-> (h/select :*)
-                   (h/from :collections)
-                   (h/order-by :name)
-                   sql/format)))
+(defn count-collections
+  "Counts total collections."
+  [ds]
+  (let [result (db/query-one ds (-> (h/select [[:%count.* :count]])
+                                    (h/from :collections)
+                                    sql/format))]
+    (or (:count result) 0)))
+
+(defn list-collections
+  "Lists collections with optional pagination.
+   
+   opts:
+   - :limit  - maximum number of collections to return
+   - :offset - number of collections to skip"
+  ([ds]
+   (list-collections ds nil))
+  ([ds opts]
+   (db/query ds (-> (h/select :*)
+                    (h/from :collections)
+                    (h/order-by :name)
+                    (cond->
+                      (:limit opts)  (h/limit (:limit opts))
+                      (:offset opts) (h/offset (:offset opts)))
+                    sql/format))))
 
 (defn get-collection [ds id]
   (db/query-one ds (-> (h/select :*)

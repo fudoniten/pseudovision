@@ -1,5 +1,6 @@
 (ns pseudovision.http.api.schedules
-  (:require [pseudovision.db.schedules :as db]))
+  (:require [pseudovision.db.schedules     :as db]
+            [pseudovision.util.pagination  :as pagination]))
 
 ;; ---------------------------------------------------------------------------
 ;; Response shape normalisation
@@ -20,8 +21,14 @@
 ;; ---------------------------------------------------------------------------
 
 (defn list-schedules-handler [{:keys [db]}]
-  (fn [_req]
-    {:status 200 :body (mapv unqualify-keys (db/list-schedules db))}))
+  (fn [req]
+    (let [qp     (get-in req [:parameters :query])
+          limit  (or (:limit qp) 100)
+          offset (or (:offset qp) 0)
+          total  (db/count-schedules db)
+          items  (mapv unqualify-keys (db/list-schedules db {:limit limit :offset offset}))]
+      {:status 200
+       :body (pagination/offset-pagination-response items limit offset total)})))
 
 (defn get-schedule-handler [{:keys [db]}]
   (fn [req]
@@ -54,8 +61,14 @@
 
 (defn list-slots-handler [{:keys [db]}]
   (fn [req]
-    (let [schedule-id (get-in req [:parameters :path :schedule-id])]
-      {:status 200 :body (mapv unqualify-keys (db/list-slots db schedule-id))})))
+    (let [schedule-id (get-in req [:parameters :path :schedule-id])
+          qp          (get-in req [:parameters :query])
+          limit       (or (:limit qp) 100)
+          offset      (or (:offset qp) 0)
+          total       (db/count-slots db schedule-id)
+          items       (mapv unqualify-keys (db/list-slots db schedule-id {:limit limit :offset offset}))]
+      {:status 200
+       :body (pagination/offset-pagination-response items limit offset total)})))
 
 (defn get-slot-handler [{:keys [db]}]
   (fn [req]

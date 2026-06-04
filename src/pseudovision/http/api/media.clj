@@ -5,6 +5,7 @@
             [pseudovision.media.scanner     :as scanner]
             [pseudovision.media.jellyfin    :as jellyfin]
             [pseudovision.media.connection  :as conn]
+            [pseudovision.util.pagination   :as pagination]
             [taoensso.timbre                :as log]))
 
 (defn- unqualify-keys [m]
@@ -32,7 +33,14 @@
   nil)
 
 (defn list-sources-handler [{:keys [db]}]
-  (fn [_req] {:status 200 :body (mapv unqualify-keys (db/list-media-sources db))}))
+  (fn [req]
+    (let [qp     (get-in req [:parameters :query])
+          limit  (or (:limit qp) 100)
+          offset (or (:offset qp) 0)
+          total  (db/count-media-sources db)
+          items  (mapv unqualify-keys (db/list-media-sources db {:limit limit :offset offset}))]
+      {:status 200
+       :body (pagination/offset-pagination-response items limit offset total)})))
 
 (defn create-source-handler [{:keys [db]}]
   (fn [req]
@@ -52,7 +60,14 @@
       {:status 204 :body nil})))
 
 (defn list-all-libraries-handler [{:keys [db]}]
-  (fn [_req] {:status 200 :body (mapv unqualify-keys (db/list-libraries db))}))
+  (fn [req]
+    (let [qp     (get-in req [:parameters :query])
+          limit  (or (:limit qp) 100)
+          offset (or (:offset qp) 0)
+          total  (db/count-libraries db)
+          items  (mapv unqualify-keys (db/list-libraries db {:limit limit :offset offset}))]
+      {:status 200
+       :body (pagination/offset-pagination-response items limit offset total)})))
 
 (defn list-libraries-handler [{:keys [db]}]
   (fn [req]
@@ -88,14 +103,18 @@
           qp         (get-in req [:parameters :query])
           attrs      (parse-attrs (:attrs qp))
           item-type  (not-empty (:type qp))
-          opts       (cond-> {}
+          limit      (or (:limit qp) 50)
+          offset     (or (:offset qp) 0)
+          opts       (cond-> {:limit limit :offset offset}
                        attrs                       (assoc :attrs attrs)
                        item-type                   (assoc :type item-type)
                        (contains? qp :parent-id)   (assoc :parent-id (:parent-id qp)))]
       (log/info "list-library-items handler called" {:library-id library-id :attrs attrs :opts opts})
-      (let [result (mapv unqualify-keys (db/list-media-items db library-id opts))]
-        (log/info "list-library-items result sample" {:count (count result) :first (first result)})
-        {:status 200 :body result}))))
+      (let [total  (db/count-media-items db library-id opts)
+            items  (mapv unqualify-keys (db/list-media-items db library-id opts))]
+        (log/info "list-library-items result" {:count (count items) :total total :limit limit :offset offset})
+        {:status 200
+         :body (pagination/offset-pagination-response items limit offset total)}))))
 
 (defn trigger-scan-handler [{:keys [db media ffmpeg]}]
   (fn [req]
@@ -141,7 +160,14 @@
                         :libraries  (into existing created)}})))))))
 
 (defn list-collections-handler [{:keys [db]}]
-  (fn [_req] {:status 200 :body (mapv unqualify-keys (db/list-collections db))}))
+  (fn [req]
+    (let [qp     (get-in req [:parameters :query])
+          limit  (or (:limit qp) 100)
+          offset (or (:offset qp) 0)
+          total  (db/count-collections db)
+          items  (mapv unqualify-keys (db/list-collections db {:limit limit :offset offset}))]
+      {:status 200
+       :body (pagination/offset-pagination-response items limit offset total)})))
 
 (defn create-collection-handler [{:keys [db]}]
   (fn [req]

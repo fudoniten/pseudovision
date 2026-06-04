@@ -9,11 +9,30 @@
 ;; Schedules
 ;; ---------------------------------------------------------------------------
 
-(defn list-schedules [ds]
-  (db/query ds (-> (h/select :*)
-                   (h/from :schedules)
-                   (h/order-by :name)
-                   sql/format)))
+(defn count-schedules
+  "Counts total schedules."
+  [ds]
+  (let [result (db/query-one ds (-> (h/select [[:%count.* :count]])
+                                    (h/from :schedules)
+                                    sql/format))]
+    (or (:count result) 0)))
+
+(defn list-schedules
+  "Lists schedules with optional pagination.
+   
+   opts:
+   - :limit  - maximum number of schedules to return
+   - :offset - number of schedules to skip"
+  ([ds]
+   (list-schedules ds nil))
+  ([ds opts]
+   (db/query ds (-> (h/select :*)
+                    (h/from :schedules)
+                    (h/order-by :name)
+                    (cond->
+                      (:limit opts)  (h/limit (:limit opts))
+                      (:offset opts) (h/offset (:offset opts)))
+                    sql/format))))
 
 (defn get-schedule [ds id]
   (db/query-one ds (-> (h/select :*)
@@ -42,12 +61,32 @@
 ;; Schedule slots
 ;; ---------------------------------------------------------------------------
 
-(defn list-slots [ds schedule-id]
-  (db/query ds (-> (h/select :*)
-                   (h/from :schedule-slots)
-                   (h/where [:= :schedule-id schedule-id])
-                   (h/order-by :slot-index)
-                   sql/format)))
+(defn count-slots
+  "Counts total slots in a schedule."
+  [ds schedule-id]
+  (let [result (db/query-one ds (-> (h/select [[:%count.* :count]])
+                                    (h/from :schedule-slots)
+                                    (h/where [:= :schedule-id schedule-id])
+                                    sql/format))]
+    (or (:count result) 0)))
+
+(defn list-slots
+  "Lists slots in a schedule with optional pagination.
+   
+   opts:
+   - :limit  - maximum number of slots to return
+   - :offset - number of slots to skip"
+  ([ds schedule-id]
+   (list-slots ds schedule-id nil))
+  ([ds schedule-id opts]
+   (db/query ds (-> (h/select :*)
+                    (h/from :schedule-slots)
+                    (h/where [:= :schedule-id schedule-id])
+                    (h/order-by :slot-index)
+                    (cond->
+                      (:limit opts)  (h/limit (:limit opts))
+                      (:offset opts) (h/offset (:offset opts)))
+                    sql/format))))
 
 (defn get-slot [ds id]
   (db/query-one ds (-> (h/select :*)

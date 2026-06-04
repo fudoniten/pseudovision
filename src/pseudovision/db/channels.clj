@@ -3,11 +3,30 @@
             [honey.sql.helpers :as h]
             [pseudovision.db.core :as db]))
 
-(defn list-channels [ds]
-  (db/query ds (-> (h/select :*)
-                   (h/from :channels)
-                   (h/order-by :sort-number)
-                   sql/format)))
+(defn count-channels
+  "Counts total channels."
+  [ds]
+  (let [result (db/query-one ds (-> (h/select [[:%count.* :count]])
+                                    (h/from :channels)
+                                    sql/format))]
+    (or (:count result) 0)))
+
+(defn list-channels
+  "Lists channels with optional pagination.
+   
+   opts:
+   - :limit  - maximum number of channels to return
+   - :offset - number of channels to skip"
+  ([ds]
+   (list-channels ds nil))
+  ([ds opts]
+   (db/query ds (-> (h/select :*)
+                    (h/from :channels)
+                    (h/order-by :sort-number)
+                    (cond->
+                      (:limit opts)  (h/limit (:limit opts))
+                      (:offset opts) (h/offset (:offset opts)))
+                    sql/format))))
 
 (defn get-channel [ds id]
   (db/query-one ds (-> (h/select :*)
