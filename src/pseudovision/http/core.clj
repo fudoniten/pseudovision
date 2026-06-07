@@ -43,8 +43,14 @@
    ["/api/channels"
     {:tags    ["channels"]
      :get     {:summary     "List channels (optionally filter by UUID)"
+               ;; IMPORTANT: When combining pagination parameters with other filters,
+               ;; flatten all into a single :map. DO NOT use :merge operator.
+               ;; ❌ WRONG:  [:merge [:map [:limit...] [:offset...]] [:map [:uuid...]]]
+               ;; ✅ CORRECT: [:map [:limit...] [:offset...] [:uuid...]]
                :parameters  {:query [:map
-                                     [:uuid {:optional true} :uuid]]}
+                                     [:limit  {:optional true} :int]
+                                     [:offset {:optional true} :int]
+                                     [:uuid   {:optional true} :uuid]]}
                :responses   {200 {:body [:or s/Channel [:vector s/Channel]]}
                              404 {:body s/APIError}}
                :handler     (ch/list-channels-handler ctx)}
