@@ -408,4 +408,4 @@
     (if playout
       (let [result (build! ds {:lookahead-hours (* new-horizon-days 24)} playout)]
         (if (= result :no-schedule) 0 result))
-      0))))
+      0)))
