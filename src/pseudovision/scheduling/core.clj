@@ -216,13 +216,16 @@
                        (cursor/bump-guide-group))]
             [events c'])
 
-          ;; No more items; pad the rest
+          ;; No more items; pad the rest with tail filler
           (empty? (:items e))
-          (let [c' (-> cursor
+          (let [base-cursor (cursor/save-enumerator cursor ckey e)
+                [fill-events cursor'] (apply-filler db base-cursor slot channel
+                                                    :tail cursor-time block-end
+                                                    playout-id opts)
+                c' (-> cursor'
                        (assoc :next-start block-end)
-                       (cursor/save-enumerator ckey e)
                        (cursor/bump-guide-group))]
-            [events c'])
+            [(into events fill-events) c'])
 
           :else
           (let [[item e'] (enum/next-item e)
@@ -230,25 +233,29 @@
                 to        (t/add-duration cursor-time dur)]
             (if (.isAfter to block-end)
               ;; Item overflows the block — respect tail_mode
-              (let [tail-events
+              (let [cursor-with-enum (cursor/save-enumerator cursor ckey e)
+                    [tail-events cursor-after-tail]
                     (case (:schedule-slots/tail-mode slot "none")
-                      "filler" []   ;; TODO: inject filler content
-                      "offline" []  ;; TODO: inject offline segment
+                      "filler"
+                      (apply-filler db cursor-with-enum slot channel
+                                    :tail cursor-time block-end playout-id opts)
+                      "offline"
+                      [[] cursor-with-enum]
                       ;; "none": trim the overflowing item to fill the block
                       ;; exactly, then replay it in full at the next block start.
-                      [{:playout-id    playout-id
-                        :media-item-id (:media-items/id item)
-                        :kind          (sql-util/->pg-enum "event_kind" "content")
-                        :start-at      cursor-time
-                        :finish-at     block-end
-                        :guide-group   guide
-                        :slot-id       (:schedule-slots/id slot)
-                        :is-manual     false}])]
-                (let [c' (-> cursor
-                             (assoc :next-start block-end)
-                             (cursor/save-enumerator ckey e)
-                             (cursor/bump-guide-group))]
-                  [(into events tail-events) c']))
+                      [[{:playout-id    playout-id
+                         :media-item-id (:media-items/id item)
+                         :kind          (sql-util/->pg-enum "event_kind" "content")
+                         :start-at      cursor-time
+                         :finish-at     block-end
+                         :guide-group   guide
+                         :slot-id       (:schedule-slots/id slot)
+                         :is-manual     false}]
+                       cursor-with-enum])
+                    c' (-> cursor-after-tail
+                           (assoc :next-start block-end)
+                           (cursor/bump-guide-group))]
+                [(into events tail-events) c']))
               (recur to e'
                      (conj events {:playout-id    playout-id
                                    :media-item-id (:media-items/id item)
