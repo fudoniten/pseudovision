@@ -22,12 +22,14 @@
             [honey.sql.helpers         :as h]
             [pseudovision.db.core      :as db-core]
             [pseudovision.db.channels  :as channels-db]
+            [pseudovision.db.filler    :as filler-db]
             [pseudovision.db.media     :as media-db]
             [pseudovision.db.playouts  :as playout-db]
             [pseudovision.db.schedules :as schedules-db]
             [pseudovision.db.collections :as col-db]
             [pseudovision.scheduling.cursor      :as cursor]
             [pseudovision.scheduling.enumerators :as enum]
+            [pseudovision.scheduling.filler      :as filler]
             [pseudovision.util.sql  :as sql-util]
             [pseudovision.util.time :as t]
             [taoensso.timbre        :as log])
@@ -97,6 +99,23 @@
   [item]
   (or (some-> (:media-versions/duration item))
       (Duration/ofSeconds 0)))
+
+(defn- apply-filler
+  "Resolves the filler preset for `role`, loads its items, fills the gap from
+   `from` to `to` using cursor-managed enumerator state, and returns
+   [filler-events updated-cursor]. Returns [[] cursor] when no preset is
+   configured for the role on this slot/channel."
+  [db cursor slot channel role from to playout-id opts]
+  (if-let [preset-ref (filler/resolve-filler-preset role slot channel)]
+    (if-let [preset (filler-db/get-filler-preset db (:id preset-ref))]
+      (let [items   (filler-db/load-filler-items db preset)
+            ckey    (str "filler:" (name role) ":" (:filler-presets/id preset))
+            e       (cursor/get-enumerator cursor ckey items :random {:seed (get opts :seed 0)})
+            result  (filler/fill-gap from to preset items e playout-id)
+            cursor' (cursor/save-enumerator cursor ckey (:enumerator result))]
+        [(:events result) cursor'])
+      [[] cursor])
+    [[] cursor]))
 
 (defn- next-fixed-start
   "Returns the next wall-clock Instant when `slot` would fire on or after `after`.
