@@ -137,25 +137,29 @@
         ckey    (collection-key slot)
         order   (keyword (or (:schedule-slots/playback-order slot) "chronological"))
         enum-opts {:seed (get opts :seed 0)
-                   :batch-size (or (:schedule-slots/marathon-batch-size slot) 5)}
-        e       (cursor/get-enumerator cursor ckey items order enum-opts)
-        [item e'] (enum/next-item e)
-        dur     (item-duration item)
-        from    (:next-start cursor)
-        to      (t/add-duration from dur)
-        event   {:playout-id    playout-id
-                 :media-item-id (:media-items/id item)
-                 :kind          (sql-util/->pg-enum "event_kind" "content")
-                 :start-at      from
-                 :finish-at     to
-                 :guide-group   (:next-guide-group cursor)
-                 :slot-id       (:schedule-slots/id slot)
-                 :is-manual     false}
-        cursor' (-> cursor
-                    (assoc :next-start to)
-                    (cursor/save-enumerator ckey e')
-                    (cursor/bump-guide-group))]
-    [[event] cursor']))
+                   :batch-size (or (:schedule-slots/marathon-batch-size slot) 5)}]
+    (if (empty? items)
+      (do (log/warn "emit-once: no items for slot; skipping"
+                    {:slot-id (:schedule-slots/id slot)})
+          [[] cursor])
+      (let [e         (cursor/get-enumerator cursor ckey items order enum-opts)
+            [item e'] (enum/next-item e)
+            dur       (item-duration item)
+            from      (:next-start cursor)
+            to        (t/add-duration from dur)
+            event     {:playout-id    playout-id
+                       :media-item-id (:media-items/id item)
+                       :kind          (sql-util/->pg-enum "event_kind" "content")
+                       :start-at      from
+                       :finish-at     to
+                       :guide-group   (:next-guide-group cursor)
+                       :slot-id       (:schedule-slots/id slot)
+                       :is-manual     false}
+            cursor'   (-> cursor
+                          (assoc :next-start to)
+                          (cursor/save-enumerator ckey e')
+                          (cursor/bump-guide-group))]
+        [[event] cursor'])))
 
 (defn- emit-count
   "Emit exactly item-count items, return [events cursor]."
@@ -167,28 +171,32 @@
                    :batch-size (or (:schedule-slots/marathon-batch-size slot) 5)}
         n      (or (:schedule-slots/item-count slot) 1)
         guide  (:next-guide-group cursor)]
-    (loop [i      0
-           from   (:next-start cursor)
-           e      (cursor/get-enumerator cursor ckey items order enum-opts)
-           events []]
-      (if (>= i n)
-        (let [cursor' (-> cursor
-                          (assoc :next-start from)
-                          (cursor/save-enumerator ckey e)
-                          (cursor/bump-guide-group))]
-          [events cursor'])
-        (let [[item e'] (enum/next-item e)
-              dur       (item-duration item)
-              to        (t/add-duration from dur)]
-          (recur (inc i) to e'
-                 (conj events {:playout-id    playout-id
-                               :media-item-id (:media-items/id item)
-                               :kind          (sql-util/->pg-enum "event_kind" "content")
-                               :start-at      from
-                               :finish-at     to
-                               :guide-group   guide
-                               :slot-id       (:schedule-slots/id slot)
-                               :is-manual     false})))))))
+    (if (empty? items)
+      (do (log/warn "emit-count: no items for slot; skipping"
+                    {:slot-id (:schedule-slots/id slot)})
+          [[] cursor])
+      (loop [i      0
+             from   (:next-start cursor)
+             e      (cursor/get-enumerator cursor ckey items order enum-opts)
+             events []]
+        (if (>= i n)
+          (let [cursor' (-> cursor
+                            (assoc :next-start from)
+                            (cursor/save-enumerator ckey e)
+                            (cursor/bump-guide-group))]
+            [events cursor'])
+          (let [[item e'] (enum/next-item e)
+                dur       (item-duration item)
+                to        (t/add-duration from dur)]
+            (recur (inc i) to e'
+                   (conj events {:playout-id    playout-id
+                                 :media-item-id (:media-items/id item)
+                                 :kind          (sql-util/->pg-enum "event_kind" "content")
+                                 :start-at      from
+                                 :finish-at     to
+                                 :guide-group   guide
+                                 :slot-id       (:schedule-slots/id slot)
+                                 :is-manual     false}))))))))
 
 (defn- emit-block
   "Fill a fixed-duration block.  Pads the tail with filler if configured.
