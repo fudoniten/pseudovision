@@ -452,7 +452,7 @@
                         [[] cursor'])
                       cursor''' (cursor/advance-slot cursor'' (count slots))]
                   (recur cursor''' (mod (inc slot-idx) (count slots))
-                         (into events (into new-events gap-events)))))))))))
+                         (into events (into new-events gap-events))))))))))))
 
 (defn rebuild-from-now!
   "Delete all future events and regenerate from NOW.
