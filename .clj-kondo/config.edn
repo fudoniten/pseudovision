@@ -1,0 +1,19 @@
+{;; Project-level clj-kondo configuration.
+ ;;
+ ;; Run locally:  clojure -M:lint
+ ;; In CI:        nix check (uses pkgs.clj-kondo standalone binary)
+
+ :linters
+ {;; Private-var access via #'ns/fn is intentional in tests.
+  :private-call {:level :off}
+
+  ;; HoneySQL thread-first macros look like unused return values to kondo.
+  :unused-value {:level :warning}
+
+  ;; Warn on vars that are def'd but never used.
+  :unused-namespace {:level :warning}
+  :unused-referred-var {:level :warning}}
+
+ :lint-as
+ {;; Integrant's defmethod-like macro needs the same treatment as defmethod.
+  integrant.core/defmethod clojure.core/defmethod}}

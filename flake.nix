@@ -134,6 +134,17 @@
             name = "pseudovision/pseudovision";
             src = ./.;
           };
+
+          lint = pkgs.runCommand "pseudovision-lint" {
+            nativeBuildInputs = [ pkgs.clj-kondo ];
+          } ''
+            # clj-kondo exits non-zero on errors (--fail-level error);
+            # warnings are printed but do not fail the check.
+            clj-kondo \
+              --lint ${./src} ${./test} \
+              --fail-level error
+            touch $out
+          '';
         } // (pkgs.lib.optionalAttrs pkgs.stdenv.isLinux integrationTests);
       });
 }
