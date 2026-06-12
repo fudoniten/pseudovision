@@ -8,8 +8,8 @@
 
    Filler item selection uses the same enumerator system as main content
    so shuffle seeds are preserved across rebuilds."
-  (:require [pseudovision.db.collections :as col]
-            [pseudovision.scheduling.enumerators :as enum]
+  (:require [pseudovision.scheduling.enumerators :as enum]
+            [pseudovision.util.sql  :as sql-util]
             [pseudovision.util.time :as t])
   (:import [java.time Duration Instant]))
 
@@ -72,7 +72,7 @@
                        enum'
                        (conj events {:playout-id    playout-id
                                      :media-item-id (:media-items/id item)
-                                     :kind          (name (:filler-presets/role preset))
+                                     :kind          (sql-util/->pg-enum "event_kind" (:filler-presets/role preset))
                                      :start-at      cursor
                                      :finish-at     finish
                                      :is-manual     false})))))))
@@ -93,7 +93,7 @@
               (recur (inc i) finish enum'
                      (conj events {:playout-id    playout-id
                                    :media-item-id (:media-items/id item)
-                                   :kind          (name (:filler-presets/role preset))
+                                   :kind          (sql-util/->pg-enum "event_kind" (:filler-presets/role preset))
                                    :start-at      cursor
                                    :finish-at     finish
                                    :is-manual     false}))))))

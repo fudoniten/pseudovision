@@ -154,7 +154,8 @@
       (let [ev (first events)]
         (is (= 7        (:playout-id    ev)))
         (is (= 1        (:media-item-id ev)))
-        (is (= "tail"   (:kind          ev)))
+        ;; :kind is a PGobject; str extracts its value portably
+        (is (= "tail"   (str (:kind ev))))
         (is (= t0       (:start-at      ev)))
         (is (= gap-end  (:finish-at     ev)))
         (is (false?     (:is-manual     ev)))))))

@@ -62,16 +62,13 @@
 
 (deftest load-filler-items-collection-takes-precedence-over-media-item
   (testing "collection-id is checked before media-item-id"
-    (let [items  [{:media-items/id 1}]
-          preset {:filler-presets/collection-id  5
-                  :filler-presets/media-item-id  99}
-          coll   {:collections/id 5 :collections/kind "manual"}
-          called (atom nil)]
-      (with-redefs [db/query-one              (fn [_ q]
-                                                (reset! called q)
-                                                coll)
-                    col-db/resolve-collection  (fn [_ _] items)]
-        (sut/load-filler-items nil preset)
-        ;; query should target collections table, not media_items
-        (is (some #(= % :collections) (flatten @called))
-            "should query collections, not media_items")))))
+    ;; When both are set, collection-id wins: the result comes from
+    ;; resolve-collection, not a single-item lookup on media-item-id.
+    (let [collection-items [{:media-items/id 1} {:media-items/id 2}]
+          preset           {:filler-presets/collection-id 5
+                            :filler-presets/media-item-id 99}
+          coll             {:collections/id 5 :collections/kind "manual"}]
+      (with-redefs [db/query-one             (fn [_ _] coll)
+                    col-db/resolve-collection (fn [_ _] collection-items)]
+        (is (= collection-items (sut/load-filler-items nil preset))
+            "should return collection items, not the single media-item")))))

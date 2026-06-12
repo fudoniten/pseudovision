@@ -62,15 +62,15 @@
    - Must have ALL required tags (AND logic)
    - Must have NONE of the excluded tags (NOT logic)"
   [db item required-tags excluded-tags]
-  (when (or (seq required-tags) (seq excluded-tags))
+  (if (or (seq required-tags) (seq excluded-tags))
     (let [item-tags (get-item-tags db (:media-items/id item))]
       (and
        ;; Must have all required tags
        (every? #(contains? item-tags %) required-tags)
        ;; Must not have any excluded tags
-       (not-any? #(contains? item-tags %) excluded-tags))))
-  ;; If no tag filters, item matches
-  true)
+       (not-any? #(contains? item-tags %) excluded-tags)))
+    ;; If no tag filters, item matches
+    true))
 
 (defn- load-items
   "Returns the ordered seq of playable media items for a slot.
