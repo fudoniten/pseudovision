@@ -283,12 +283,26 @@
            e           (cursor/get-enumerator cursor ckey items order enum-opts)
            events      []]
       (let [remaining (t/duration-between cursor-time end)]
-        (if (or (.isNegative remaining) (.isZero remaining) (empty? (:items e)))
+        (cond
+          (or (.isNegative remaining) (.isZero remaining))
           (let [c' (-> cursor
                        (assoc :next-start end)
                        (cursor/save-enumerator ckey e)
                        (cursor/bump-guide-group))]
             [events c'])
+
+          ;; Content exhausted before flood-end — fill the tail with fallback filler
+          (empty? (:items e))
+          (let [base-cursor (cursor/save-enumerator cursor ckey e)
+                [fill-events cursor'] (apply-filler db base-cursor slot channel
+                                                    :fallback cursor-time end
+                                                    playout-id opts)
+                c' (-> cursor'
+                       (assoc :next-start end)
+                       (cursor/bump-guide-group))]
+            [(into events fill-events) c'])
+
+          :else
           (let [[item e'] (enum/next-item e)
                 dur       (item-duration item)
                 to        (t/add-duration cursor-time dur)]
@@ -410,9 +424,27 @@
                 (let [[new-events cursor'] (process-slot
                                             tx cursor slot channel
                                             playout-id slots opts')
-                      cursor''  (cursor/advance-slot cursor' (count slots))]
-                  (recur cursor'' (mod (inc slot-idx) (count slots))
-                         (into events new-events)))))))))))
+                      ;; Fill any dead air between this slot's end and the next
+                      ;; fixed-anchor slot — but only on the same calendar day.
+                      ;; Flood slots already fill to their endpoint, so skip them.
+                      fill-mode   (keyword (or (:schedule-slots/fill-mode slot) "once"))
+                      zone-id     (get opts' :zone-id "UTC")
+                      next-slot   (nth slots (mod (inc slot-idx) (count slots)) nil)
+                      gap-end     (when (and (not= fill-mode :flood)
+                                             (= "fixed" (:schedule-slots/anchor next-slot)))
+                                    (t/time-of-day-on-same-day
+                                     (:schedule-slots/start-time next-slot)
+                                     (:next-start cursor')
+                                     zone-id))
+                      [gap-events cursor'']
+                      (if gap-end
+                        (apply-filler tx cursor' {} channel
+                                      :fallback (:next-start cursor') gap-end
+                                      playout-id opts')
+                        [[] cursor'])
+                      cursor''' (cursor/advance-slot cursor'' (count slots))]
+                  (recur cursor''' (mod (inc slot-idx) (count slots))
+                         (into events (into new-events gap-events)))))))))))
 
 (defn rebuild-from-now!
   "Delete all future events and regenerate from NOW.
