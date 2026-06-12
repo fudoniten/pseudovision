@@ -18,9 +18,11 @@
 ;; ---------------------------------------------------------------------------
 
 (defn resolve-filler-preset
-  "Returns the filler preset map for `role` by checking slot then channel."
+  "Returns the filler preset map for `role` by checking slot then channel.
+   Slot keys are qualified (e.g. :schedule-slots/tail-filler-id) as returned
+   by the DB layer; channel uses :channels/fallback-filler-id."
   [role slot channel]
-  (let [slot-fk    (keyword (str (name role) "-filler-id"))
+  (let [slot-fk    (keyword "schedule-slots" (str (name role) "-filler-id"))
         channel-fk :channels/fallback-filler-id]
     (cond
       (get slot    slot-fk)    {:id (get slot    slot-fk) :source :slot}
