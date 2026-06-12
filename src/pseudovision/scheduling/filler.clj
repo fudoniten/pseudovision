@@ -8,8 +8,8 @@
 
    Filler item selection uses the same enumerator system as main content
    so shuffle seeds are preserved across rebuilds."
-  (:require [pseudovision.db.collections :as col]
-            [pseudovision.scheduling.enumerators :as enum]
+  (:require [pseudovision.scheduling.enumerators :as enum]
+            [pseudovision.util.sql  :as sql-util]
             [pseudovision.util.time :as t])
   (:import [java.time Duration Instant]))
 
@@ -18,9 +18,11 @@
 ;; ---------------------------------------------------------------------------
 
 (defn resolve-filler-preset
-  "Returns the filler preset map for `role` by checking slot then channel."
+  "Returns the filler preset map for `role` by checking slot then channel.
+   Slot keys are qualified (e.g. :schedule-slots/tail-filler-id) as returned
+   by the DB layer; channel uses :channels/fallback-filler-id."
   [role slot channel]
-  (let [slot-fk    (keyword (str (name role) "-filler-id"))
+  (let [slot-fk    (keyword "schedule-slots" (str (name role) "-filler-id"))
         channel-fk :channels/fallback-filler-id]
     (cond
       (get slot    slot-fk)    {:id (get slot    slot-fk) :source :slot}
@@ -70,7 +72,7 @@
                        enum'
                        (conj events {:playout-id    playout-id
                                      :media-item-id (:media-items/id item)
-                                     :kind          (name (:filler-presets/role preset))
+                                     :kind          (sql-util/->pg-enum "event_kind" (:filler-presets/role preset))
                                      :start-at      cursor
                                      :finish-at     finish
                                      :is-manual     false})))))))
@@ -91,7 +93,7 @@
               (recur (inc i) finish enum'
                      (conj events {:playout-id    playout-id
                                    :media-item-id (:media-items/id item)
-                                   :kind          (name (:filler-presets/role preset))
+                                   :kind          (sql-util/->pg-enum "event_kind" (:filler-presets/role preset))
                                    :start-at      cursor
                                    :finish-at     finish
                                    :is-manual     false}))))))

@@ -4,7 +4,8 @@
 /target/
 /tmp/
 /.idea/
-/.clj-kondo/
+/.clj-kondo/*
+!/.clj-kondo/config.edn
 *.iml
 .DS_Store
 /.nrepl-port

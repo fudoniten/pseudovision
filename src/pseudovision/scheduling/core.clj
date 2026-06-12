@@ -22,12 +22,14 @@
             [honey.sql.helpers         :as h]
             [pseudovision.db.core      :as db-core]
             [pseudovision.db.channels  :as channels-db]
+            [pseudovision.db.filler    :as filler-db]
             [pseudovision.db.media     :as media-db]
             [pseudovision.db.playouts  :as playout-db]
             [pseudovision.db.schedules :as schedules-db]
             [pseudovision.db.collections :as col-db]
             [pseudovision.scheduling.cursor      :as cursor]
             [pseudovision.scheduling.enumerators :as enum]
+            [pseudovision.scheduling.filler      :as filler]
             [pseudovision.util.sql  :as sql-util]
             [pseudovision.util.time :as t]
             [taoensso.timbre        :as log])
@@ -60,15 +62,15 @@
    - Must have ALL required tags (AND logic)
    - Must have NONE of the excluded tags (NOT logic)"
   [db item required-tags excluded-tags]
-  (when (or (seq required-tags) (seq excluded-tags))
+  (if (or (seq required-tags) (seq excluded-tags))
     (let [item-tags (get-item-tags db (:media-items/id item))]
       (and
        ;; Must have all required tags
        (every? #(contains? item-tags %) required-tags)
        ;; Must not have any excluded tags
-       (not-any? #(contains? item-tags %) excluded-tags))))
-  ;; If no tag filters, item matches
-  true)
+       (not-any? #(contains? item-tags %) excluded-tags)))
+    ;; If no tag filters, item matches
+    true))
 
 (defn- load-items
   "Returns the ordered seq of playable media items for a slot.
@@ -98,6 +100,23 @@
   (or (some-> (:media-versions/duration item))
       (Duration/ofSeconds 0)))
 
+(defn- apply-filler
+  "Resolves the filler preset for `role`, loads its items, fills the gap from
+   `from` to `to` using cursor-managed enumerator state, and returns
+   [filler-events updated-cursor]. Returns [[] cursor] when no preset is
+   configured for the role on this slot/channel."
+  [db cursor slot channel role from to playout-id opts]
+  (if-let [preset-ref (filler/resolve-filler-preset role slot channel)]
+    (if-let [preset (filler-db/get-filler-preset db (:id preset-ref))]
+      (let [items   (filler-db/load-filler-items db preset)
+            ckey    (str "filler:" (name role) ":" (:filler-presets/id preset))
+            e       (cursor/get-enumerator cursor ckey items :random {:seed (get opts :seed 0)})
+            result  (filler/fill-gap from to preset items e playout-id)
+            cursor' (cursor/save-enumerator cursor ckey (:enumerator result))]
+        [(:events result) cursor'])
+      [[] cursor])
+    [[] cursor]))
+
 (defn- next-fixed-start
   "Returns the next wall-clock Instant when `slot` would fire on or after `after`.
    Respects the slot's days_of_week bitmask: skips days whose bit is not set.
@@ -118,25 +137,29 @@
         ckey    (collection-key slot)
         order   (keyword (or (:schedule-slots/playback-order slot) "chronological"))
         enum-opts {:seed (get opts :seed 0)
-                   :batch-size (or (:schedule-slots/marathon-batch-size slot) 5)}
-        e       (cursor/get-enumerator cursor ckey items order enum-opts)
-        [item e'] (enum/next-item e)
-        dur     (item-duration item)
-        from    (:next-start cursor)
-        to      (t/add-duration from dur)
-        event   {:playout-id    playout-id
-                 :media-item-id (:media-items/id item)
-                 :kind          (sql-util/->pg-enum "event_kind" "content")
-                 :start-at      from
-                 :finish-at     to
-                 :guide-group   (:next-guide-group cursor)
-                 :slot-id       (:schedule-slots/id slot)
-                 :is-manual     false}
-        cursor' (-> cursor
-                    (assoc :next-start to)
-                    (cursor/save-enumerator ckey e')
-                    (cursor/bump-guide-group))]
-    [[event] cursor']))
+                   :batch-size (or (:schedule-slots/marathon-batch-size slot) 5)}]
+    (if (empty? items)
+      (do (log/warn "emit-once: no items for slot; skipping"
+                    {:slot-id (:schedule-slots/id slot)})
+          [[] cursor])
+      (let [e         (cursor/get-enumerator cursor ckey items order enum-opts)
+            [item e'] (enum/next-item e)
+            dur       (item-duration item)
+            from      (:next-start cursor)
+            to        (t/add-duration from dur)
+            event     {:playout-id    playout-id
+                       :media-item-id (:media-items/id item)
+                       :kind          (sql-util/->pg-enum "event_kind" "content")
+                       :start-at      from
+                       :finish-at     to
+                       :guide-group   (:next-guide-group cursor)
+                       :slot-id       (:schedule-slots/id slot)
+                       :is-manual     false}
+            cursor'   (-> cursor
+                          (assoc :next-start to)
+                          (cursor/save-enumerator ckey e')
+                          (cursor/bump-guide-group))]
+        [[event] cursor'])))
 
 (defn- emit-count
   "Emit exactly item-count items, return [events cursor]."
@@ -148,28 +171,32 @@
                    :batch-size (or (:schedule-slots/marathon-batch-size slot) 5)}
         n      (or (:schedule-slots/item-count slot) 1)
         guide  (:next-guide-group cursor)]
-    (loop [i      0
-           from   (:next-start cursor)
-           e      (cursor/get-enumerator cursor ckey items order enum-opts)
-           events []]
-      (if (>= i n)
-        (let [cursor' (-> cursor
-                          (assoc :next-start from)
-                          (cursor/save-enumerator ckey e)
-                          (cursor/bump-guide-group))]
-          [events cursor'])
-        (let [[item e'] (enum/next-item e)
-              dur       (item-duration item)
-              to        (t/add-duration from dur)]
-          (recur (inc i) to e'
-                 (conj events {:playout-id    playout-id
-                               :media-item-id (:media-items/id item)
-                               :kind          (sql-util/->pg-enum "event_kind" "content")
-                               :start-at      from
-                               :finish-at     to
-                               :guide-group   guide
-                               :slot-id       (:schedule-slots/id slot)
-                               :is-manual     false})))))))
+    (if (empty? items)
+      (do (log/warn "emit-count: no items for slot; skipping"
+                    {:slot-id (:schedule-slots/id slot)})
+          [[] cursor])
+      (loop [i      0
+             from   (:next-start cursor)
+             e      (cursor/get-enumerator cursor ckey items order enum-opts)
+             events []]
+        (if (>= i n)
+          (let [cursor' (-> cursor
+                            (assoc :next-start from)
+                            (cursor/save-enumerator ckey e)
+                            (cursor/bump-guide-group))]
+            [events cursor'])
+          (let [[item e'] (enum/next-item e)
+                dur       (item-duration item)
+                to        (t/add-duration from dur)]
+            (recur (inc i) to e'
+                   (conj events {:playout-id    playout-id
+                                 :media-item-id (:media-items/id item)
+                                 :kind          (sql-util/->pg-enum "event_kind" "content")
+                                 :start-at      from
+                                 :finish-at     to
+                                 :guide-group   guide
+                                 :slot-id       (:schedule-slots/id slot)
+                                 :is-manual     false}))))))))
 
 (defn- emit-block
   "Fill a fixed-duration block.  Pads the tail with filler if configured.
@@ -197,13 +224,16 @@
                        (cursor/bump-guide-group))]
             [events c'])
 
-          ;; No more items; pad the rest
+          ;; No more items; pad the rest with tail filler
           (empty? (:items e))
-          (let [c' (-> cursor
+          (let [base-cursor (cursor/save-enumerator cursor ckey e)
+                [fill-events cursor'] (apply-filler db base-cursor slot channel
+                                                    :tail cursor-time block-end
+                                                    playout-id opts)
+                c' (-> cursor'
                        (assoc :next-start block-end)
-                       (cursor/save-enumerator ckey e)
                        (cursor/bump-guide-group))]
-            [events c'])
+            [(into events fill-events) c'])
 
           :else
           (let [[item e'] (enum/next-item e)
@@ -211,25 +241,29 @@
                 to        (t/add-duration cursor-time dur)]
             (if (.isAfter to block-end)
               ;; Item overflows the block — respect tail_mode
-              (let [tail-events
+              (let [cursor-with-enum (cursor/save-enumerator cursor ckey e)
+                    [tail-events cursor-after-tail]
                     (case (:schedule-slots/tail-mode slot "none")
-                      "filler" []   ;; TODO: inject filler content
-                      "offline" []  ;; TODO: inject offline segment
+                      "filler"
+                      (apply-filler db cursor-with-enum slot channel
+                                    :tail cursor-time block-end playout-id opts)
+                      "offline"
+                      [[] cursor-with-enum]
                       ;; "none": trim the overflowing item to fill the block
                       ;; exactly, then replay it in full at the next block start.
-                      [{:playout-id    playout-id
-                        :media-item-id (:media-items/id item)
-                        :kind          (sql-util/->pg-enum "event_kind" "content")
-                        :start-at      cursor-time
-                        :finish-at     block-end
-                        :guide-group   guide
-                        :slot-id       (:schedule-slots/id slot)
-                        :is-manual     false}])]
-                (let [c' (-> cursor
-                             (assoc :next-start block-end)
-                             (cursor/save-enumerator ckey e)
-                             (cursor/bump-guide-group))]
-                  [(into events tail-events) c']))
+                      [[{:playout-id    playout-id
+                         :media-item-id (:media-items/id item)
+                         :kind          (sql-util/->pg-enum "event_kind" "content")
+                         :start-at      cursor-time
+                         :finish-at     block-end
+                         :guide-group   guide
+                         :slot-id       (:schedule-slots/id slot)
+                         :is-manual     false}]
+                       cursor-with-enum])
+                    c' (-> cursor-after-tail
+                           (assoc :next-start block-end)
+                           (cursor/bump-guide-group))]
+                [(into events tail-events) c']))
               (recur to e'
                      (conj events {:playout-id    playout-id
                                    :media-item-id (:media-items/id item)
@@ -257,12 +291,26 @@
            e           (cursor/get-enumerator cursor ckey items order enum-opts)
            events      []]
       (let [remaining (t/duration-between cursor-time end)]
-        (if (or (.isNegative remaining) (.isZero remaining) (empty? (:items e)))
+        (cond
+          (or (.isNegative remaining) (.isZero remaining))
           (let [c' (-> cursor
                        (assoc :next-start end)
                        (cursor/save-enumerator ckey e)
                        (cursor/bump-guide-group))]
             [events c'])
+
+          ;; Content exhausted before flood-end — fill the tail with fallback filler
+          (empty? (:items e))
+          (let [base-cursor (cursor/save-enumerator cursor ckey e)
+                [fill-events cursor'] (apply-filler db base-cursor slot channel
+                                                    :fallback cursor-time end
+                                                    playout-id opts)
+                c' (-> cursor'
+                       (assoc :next-start end)
+                       (cursor/bump-guide-group))]
+            [(into events fill-events) c'])
+
+          :else
           (let [[item e'] (enum/next-item e)
                 dur       (item-duration item)
                 to        (t/add-duration cursor-time dur)]
@@ -384,9 +432,27 @@
                 (let [[new-events cursor'] (process-slot
                                             tx cursor slot channel
                                             playout-id slots opts')
-                      cursor''  (cursor/advance-slot cursor' (count slots))]
-                  (recur cursor'' (mod (inc slot-idx) (count slots))
-                         (into events new-events)))))))))))
+                      ;; Fill any dead air between this slot's end and the next
+                      ;; fixed-anchor slot — but only on the same calendar day.
+                      ;; Flood slots already fill to their endpoint, so skip them.
+                      fill-mode   (keyword (or (:schedule-slots/fill-mode slot) "once"))
+                      zone-id     (get opts' :zone-id "UTC")
+                      next-slot   (nth slots (mod (inc slot-idx) (count slots)) nil)
+                      gap-end     (when (and (not= fill-mode :flood)
+                                             (= "fixed" (:schedule-slots/anchor next-slot)))
+                                    (t/time-of-day-on-same-day
+                                     (:schedule-slots/start-time next-slot)
+                                     (:next-start cursor')
+                                     zone-id))
+                      [gap-events cursor'']
+                      (if gap-end
+                        (apply-filler tx cursor' {} channel
+                                      :fallback (:next-start cursor') gap-end
+                                      playout-id opts')
+                        [[] cursor'])
+                      cursor''' (cursor/advance-slot cursor'' (count slots))]
+                  (recur cursor''' (mod (inc slot-idx) (count slots))
+                         (into events (into new-events gap-events)))))))))))
 
 (defn rebuild-from-now!
   "Delete all future events and regenerate from NOW.

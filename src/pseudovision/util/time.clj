@@ -83,6 +83,19 @@
   [^Instant inst]
   (.toString inst))
 
+(defn time-of-day-on-same-day
+  "Returns the Instant for `tod` (Duration offset from midnight) on the same
+   calendar day as `inst` in `zone-id`, but only if that fire-time is strictly
+   after `inst`. Returns nil if `inst` is already at or past that time today.
+   Used by the build loop to detect dead air before the next fixed-anchor slot."
+  [^Duration tod ^Instant inst zone-id]
+  (let [zone     (ZoneId/of zone-id)
+        day      (.atZone inst zone)
+        midnight (-> day .toLocalDate (.atStartOfDay zone) .toInstant)
+        fire     (.plus midnight tod)]
+    (when (.isAfter fire inst)
+      fire)))
+
 ;; ---------------------------------------------------------------------------
 ;; Day-of-week bitmask helpers  (used by the scheduler for days_of_week slots)
 ;; ---------------------------------------------------------------------------
