@@ -19,6 +19,7 @@
             [pseudovision.http.api.tags       :as tags]
             [pseudovision.http.api.test       :as test]
             [pseudovision.http.api.ffmpeg     :as ffmpeg]
+            [pseudovision.http.api.filler     :as filler]
             [pseudovision.http.api.logos      :as logos]
             [pseudovision.http.api.metrics    :as metrics]))
 
@@ -134,6 +135,14 @@
      :delete  {:summary   "Delete a slot"
                :responses {204 {}}
                :handler   (sc/delete-slot-handler ctx)}}]
+   ["/api/schedules/:schedule-id/slots/reorder"
+    {:tags       ["schedules"]
+     :parameters {:path [:map [:schedule-id s/ScheduleId]]}
+     :post {:summary    "Reorder slots by providing an ordered list of slot IDs"
+            :parameters {:body s/SlotReorderRequest}
+            :responses  {200 {:body s/SlotReorderResult}
+                         400 {:body s/CoercionError}}
+            :handler    (sc/reorder-slots-handler ctx)}}]
 
    ;; ── Playouts ────────────────────────────────────────────────────────────
    ["/api/channels/:channel-id/playout"
@@ -192,6 +201,12 @@
    ["/api/media/sources/:id"
     {:tags       ["media"]
      :parameters {:path [:map [:id s/MediaSourceId]]}
+     :put    {:summary    "Update a media source"
+              :parameters {:body s/MediaSourceUpdate}
+              :responses  {200 {:body s/MediaSource}
+                           404 {:body s/APIError}
+                           400 {:body s/CoercionError}}
+              :handler    (med/update-source-handler ctx)}
      :delete {:summary   "Delete a media source"
               :responses {204 {}}
               :handler   (med/delete-source-handler ctx)}}]
@@ -223,9 +238,32 @@
    ["/api/media/libraries/:id"
     {:tags       ["media"]
      :parameters {:path [:map [:id s/LibraryId]]}
+     :put    {:summary    "Update a library"
+              :parameters {:body s/MediaLibraryUpdate}
+              :responses  {200 {:body s/MediaLibrary}
+                           404 {:body s/APIError}
+                           400 {:body s/CoercionError}}
+              :handler    (med/update-library-handler ctx)}
      :delete {:summary   "Delete a library"
               :responses {204 {}}
               :handler   (med/delete-library-handler ctx)}}]
+   ["/api/media/libraries/:id/paths"
+    {:tags       ["media"]
+     :parameters {:path [:map [:id s/LibraryId]]}
+     :get  {:summary   "List paths for a library"
+            :responses {200 {:body [:vector s/LibraryPath]}}
+            :handler   (med/list-library-paths-handler ctx)}
+     :post {:summary    "Add a path to a library"
+            :parameters {:body s/LibraryPathCreate}
+            :responses  {201 {:body s/LibraryPath}
+                         400 {:body s/CoercionError}}
+            :handler    (med/create-library-path-handler ctx)}}]
+   ["/api/media/libraries/:id/paths/:path-id"
+    {:tags       ["media"]
+     :parameters {:path [:map [:id s/LibraryId] [:path-id s/LibraryPathId]]}
+     :delete {:summary   "Remove a path from a library"
+              :responses {204 {}}
+              :handler   (med/delete-library-path-handler ctx)}}]
    ["/api/media/libraries/:id/items"
      {:tags       ["media"]
       :parameters {:path  [:map [:id s/LibraryId]]
@@ -275,6 +313,67 @@
              :responses  {201 {:body s/Collection}
                           400 {:body s/CoercionError}}
              :handler    (med/create-collection-handler ctx)}}]
+   ["/api/media/collections/:id"
+    {:tags       ["media"]
+     :parameters {:path [:map [:id s/CollectionId]]}
+     :get    {:summary   "Get a collection"
+              :responses {200 {:body s/Collection}
+                          404 {:body s/APIError}}
+              :handler   (med/get-collection-handler ctx)}
+     :put    {:summary    "Update a collection"
+              :parameters {:body s/CollectionUpdate}
+              :responses  {200 {:body s/Collection}
+                           404 {:body s/APIError}
+                           400 {:body s/CoercionError}}
+              :handler    (med/update-collection-handler ctx)}
+     :delete {:summary   "Delete a collection"
+              :responses {204 {}}
+              :handler   (med/delete-collection-handler ctx)}}]
+   ["/api/media/collections/:id/items"
+    {:tags       ["media"]
+     :parameters {:path [:map [:id s/CollectionId]]}
+     :get  {:summary   "List items in a manual collection"
+            :responses {200 {:body [:vector s/CollectionItem]}}
+            :handler   (med/list-collection-items-handler ctx)}
+     :post {:summary    "Add a media item to a manual collection"
+            :parameters {:body s/CollectionItemAdd}
+            :responses  {204 {}}
+            :handler    (med/add-collection-item-handler ctx)}}]
+   ["/api/media/collections/:id/items/:item-id"
+    {:tags       ["media"]
+     :parameters {:path [:map [:id s/CollectionId] [:item-id s/MediaItemId]]}
+     :delete {:summary   "Remove a media item from a collection"
+              :responses {204 {}}
+              :handler   (med/remove-collection-item-handler ctx)}}]
+
+   ;; ── Filler Presets ───────────────────────────────────────────────────────
+   ["/api/filler-presets"
+    {:tags ["filler"]
+     :get  {:summary    "List filler presets (paginated)"
+            :parameters {:query s/PaginationQuery}
+            :responses  {200 {:body s/PaginatedFillerPresets}}
+            :handler    (filler/list-presets-handler ctx)}
+     :post {:summary    "Create a filler preset"
+            :parameters {:body s/FillerPresetCreate}
+            :responses  {201 {:body s/FillerPreset}
+                         400 {:body s/CoercionError}}
+            :handler    (filler/create-preset-handler ctx)}}]
+   ["/api/filler-presets/:id"
+    {:tags       ["filler"]
+     :parameters {:path [:map [:id s/FillerPresetId]]}
+     :get    {:summary   "Get a filler preset"
+              :responses {200 {:body s/FillerPreset}
+                          404 {:body s/APIError}}
+              :handler   (filler/get-preset-handler ctx)}
+     :put    {:summary    "Update a filler preset"
+              :parameters {:body s/FillerPresetUpdate}
+              :responses  {200 {:body s/FillerPreset}
+                           404 {:body s/APIError}
+                           400 {:body s/CoercionError}}
+              :handler    (filler/update-preset-handler ctx)}
+     :delete {:summary   "Delete a filler preset"
+              :responses {204 {}}
+              :handler   (filler/delete-preset-handler ctx)}}]
 
    ;; ── Tags ────────────────────────────────────────────────────────────────
    ["/api/tags"

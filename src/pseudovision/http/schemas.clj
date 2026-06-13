@@ -351,6 +351,85 @@
    [:days-of-week               {:optional true} DaysOfWeek]])
 
 ;; ---------------------------------------------------------------------------
+;; Filler presets
+;; ---------------------------------------------------------------------------
+
+(def FillerPresetId [:int {:min 1}])
+
+(def FillerRole
+  [:enum {:description "Where this preset is injected"}
+   "pre" "mid" "post" "pad" "tail" "fallback"])
+
+(def FillerMode
+  [:enum {:description "How the fill duration/count is specified"}
+   "duration" "count" "random_count" "pad_to_minute"])
+
+(def FillerCategory
+  [:enum {:description "Content category for filler items"}
+   "commercial" "promo" "bumper" "short" "documentary"
+   "music_video" "countdown" "credit_roll" "trailer" "interstitial" "other"])
+
+(def FillerPreset
+  [:map
+   [:id                    FillerPresetId]
+   [:name                  :string]
+   [:role                  FillerRole]
+   [:mode                  FillerMode]
+   [:category              {:optional true} FillerCategory]
+   [:duration              {:optional true} [:maybe Interval]]
+   [:count                 {:optional true} [:maybe :int]]
+   [:pad-to-nearest-minute {:optional true} [:maybe :int]]
+   [:allow-watermarks      {:optional true} :boolean]
+   [:use-chapters-as-items {:optional true} :boolean]
+   [:collection-id         {:optional true} [:maybe :int]]
+   [:media-item-id         {:optional true} [:maybe :int]]])
+
+(def PaginatedFillerPresets
+  [:map
+   [:items [:vector FillerPreset]]
+   [:pagination PaginationMeta]])
+
+(def FillerPresetCreate
+  [:map
+   [:name                  :string]
+   [:role                  FillerRole]
+   [:mode                  FillerMode]
+   [:category              {:optional true} FillerCategory]
+   [:duration              {:optional true} Interval]
+   [:count                 {:optional true} :int]
+   [:pad-to-nearest-minute {:optional true} :int]
+   [:allow-watermarks      {:optional true} :boolean]
+   [:use-chapters-as-items {:optional true} :boolean]
+   [:collection-id         {:optional true} :int]
+   [:media-item-id         {:optional true} :int]])
+
+(def FillerPresetUpdate
+  [:map
+   [:name                  {:optional true} :string]
+   [:role                  {:optional true} FillerRole]
+   [:mode                  {:optional true} FillerMode]
+   [:category              {:optional true} FillerCategory]
+   [:duration              {:optional true} [:maybe Interval]]
+   [:count                 {:optional true} [:maybe :int]]
+   [:pad-to-nearest-minute {:optional true} [:maybe :int]]
+   [:allow-watermarks      {:optional true} :boolean]
+   [:use-chapters-as-items {:optional true} :boolean]
+   [:collection-id         {:optional true} [:maybe :int]]
+   [:media-item-id         {:optional true} [:maybe :int]]])
+
+;; ---------------------------------------------------------------------------
+;; Slot reorder
+;; ---------------------------------------------------------------------------
+
+(def SlotReorderRequest
+  [:map
+   [:slot-ids [:vector SlotId]]])
+
+(def SlotReorderResult
+  [:map
+   [:slots [:vector Slot]]])
+
+;; ---------------------------------------------------------------------------
 ;; FFmpeg profiles
 ;; ---------------------------------------------------------------------------
 
@@ -452,6 +531,11 @@
    [:connection-config  {:optional true} [:map]]
    [:path-replacements  {:optional true} [:sequential [:map]]]])
 
+(def MediaSourceUpdate
+  [:map
+   [:name               {:optional true} :string]
+   [:path-replacements  {:optional true} [:sequential [:map]]]])
+
 (def MediaLibrary
   [:map
    [:id              LibraryId]
@@ -474,6 +558,23 @@
    [:kind         LibraryKind]
    [:external-id  {:optional true} :string]
    [:should-sync  {:optional true} :boolean]])
+
+(def MediaLibraryUpdate
+  [:map
+   [:name        {:optional true} :string]
+   [:should-sync {:optional true} :boolean]])
+
+(def LibraryPathId [:int {:min 1}])
+
+(def LibraryPath
+  [:map
+   [:id         LibraryPathId]
+   [:library-id LibraryId]
+   [:path       :string]])
+
+(def LibraryPathCreate
+  [:map
+   [:path :string]])
 
 (def MediaItem
   "Open — the list endpoint projects columns dynamically via the :attrs query.
@@ -528,6 +629,23 @@
    [:kind                      {:optional true} CollectionKind]
    [:use-custom-playback-order {:optional true} :boolean]
    [:config                    {:optional true} [:map]]])
+
+(def CollectionUpdate
+  [:map
+   [:name                      {:optional true} :string]
+   [:use-custom-playback-order {:optional true} :boolean]
+   [:config                    {:optional true} [:map]]])
+
+(def CollectionItem
+  [:map
+   [:collection-id :int]
+   [:media-item-id :int]
+   [:custom-order  {:optional true} [:maybe :int]]
+   [:name          {:optional true} [:maybe :string]]])
+
+(def CollectionItemAdd
+  [:map
+   [:media-item-id :int]])
 
 (def ScanTriggerResult
   [:map [:message :string]])

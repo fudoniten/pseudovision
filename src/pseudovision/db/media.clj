@@ -55,6 +55,18 @@
                  :kind      (:kind attrs)})
       result)))
 
+(defn update-media-source! [ds id attrs]
+  (let [prepared (cond-> attrs
+                   (:kind attrs)               (update :kind #(sql-util/->pg-enum "media_source_kind" %))
+                   (:connection-config attrs)  (update :connection-config sql-util/->jsonb)
+                   (:path-replacements attrs)  (update :path-replacements sql-util/->jsonb))
+        result (db/execute-one! ds (-> (h/update :media-sources)
+                                       (h/set prepared)
+                                       (h/where [:= :id id])
+                                       sql/format))]
+    (log/info "Updated media source" {:source-id id})
+    result))
+
 (defn delete-media-source! [ds id]
   (let [result (db/execute-one! ds (-> (h/delete-from :media-sources)
                                        (h/where [:= :id id])
@@ -111,6 +123,14 @@
                :external-id     (:external-id attrs)})
     result))
 
+(defn update-library! [ds id attrs]
+  (let [result (db/execute-one! ds (-> (h/update :libraries)
+                                       (h/set attrs)
+                                       (h/where [:= :id id])
+                                       sql/format))]
+    (log/info "Updated library" {:library-id id})
+    result))
+
 (defn delete-library! [ds id]
   (let [result (db/execute-one! ds (-> (h/delete-from :libraries)
                                        (h/where [:= :id id])
@@ -127,12 +147,18 @@
 (defn create-library-path! [ds attrs]
   (let [result (db/execute-one! ds (-> (h/insert-into :library-paths)
                                        (h/values [attrs])
+                                       (h/returning :*)
                                        sql/format))]
     (log/info "Created library path"
               {:library-path-id (:library-paths/id result)
                :library-id      (:library-id attrs)
                :path            (:path attrs)})
     result))
+
+(defn delete-library-path! [ds id]
+  (db/execute-one! ds (-> (h/delete-from :library-paths)
+                          (h/where [:= :id id])
+                          sql/format)))
 
 ;; ---------------------------------------------------------------------------
 ;; Media items
@@ -361,6 +387,31 @@
                :name          (:name attrs)
                :kind          (:kind attrs)})
     result))
+
+(defn update-collection! [ds id attrs]
+  (let [result (db/execute-one! ds (-> (h/update :collections)
+                                       (h/set (cond-> attrs
+                                                (:config attrs) (update :config sql-util/->jsonb)))
+                                       (h/where [:= :id id])
+                                       sql/format))]
+    (log/info "Updated collection" {:collection-id id})
+    result))
+
+(defn delete-collection! [ds id]
+  (db/execute-one! ds (-> (h/delete-from :collections)
+                          (h/where [:= :id id])
+                          sql/format)))
+
+(defn list-items-in-collection
+  "Returns collection_items rows for a manual collection, ordered by custom_order."
+  [ds collection-id]
+  (db/query ds (-> (h/select :ci.* [:mi.id :media-item-id] [:m.title :name])
+                   (h/from [:collection-items :ci])
+                   (h/join [:media-items :mi] [:= :mi.id :ci.media-item-id])
+                   (h/left-join [:metadata :m] [:= :m.media-item-id :mi.id])
+                   (h/where [:= :ci.collection-id collection-id])
+                   (h/order-by [[:coalesce :ci.custom-order :mi.id]])
+                   sql/format)))
 
 (defn add-item-to-collection! [ds collection-id media-item-id]
   (let [result (db/execute-one! ds (-> (h/insert-into :collection-items)
