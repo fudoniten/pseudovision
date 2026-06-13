@@ -147,8 +147,12 @@
                :responses {204 {}}
                :handler   (sc/delete-slot-handler ctx)}}]
    ["/api/schedules/:schedule-id/slots/reorder"
-    {:tags       ["schedules"]
-     :parameters {:path [:map [:schedule-id s/ScheduleId]]}
+    {:tags        ["schedules"]
+     ;; Static "reorder" segment overlaps the sibling ":id" route. Reitit's
+     ;; trie router matches the static segment first, so this is safe — opt
+     ;; out of the startup path-conflict check.
+     :conflicting true
+     :parameters  {:path [:map [:schedule-id s/ScheduleId]]}
      :post {:summary    "Reorder slots by providing an ordered list of slot IDs"
             :parameters {:body s/SlotReorderRequest}
             :responses  {200 {:body s/SlotReorderResult}
