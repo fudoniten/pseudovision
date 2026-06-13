@@ -20,24 +20,70 @@
                    (h/order-by [[:coalesce :ci.custom-order :mi.id]])
                    sql/format)))
 
+;; ---------------------------------------------------------------------------
+;; Smart-collection helpers
+;; ---------------------------------------------------------------------------
+
+(defn- tag-exists-subq
+  "HoneySQL EXISTS subquery: does mi.id have a metadata tag matching `name-clause`?"
+  [name-clause]
+  [:exists {:select [1]
+            :from   [[:metadata :m]]
+            :join   [[:metadata-tags :mt] [:= :mt.metadata-id :m.id]]
+            :where  [:and [:= :m.media-item-id :mi.id] name-clause]}])
+
+(defn- smart-tag-clause
+  "Returns a HoneySQL WHERE fragment for required/excluded tag lists.
+   match-mode is \"all\" (default) or \"any\" — applies to include-tags only.
+
+   match=all  → item must have every include-tag (one EXISTS per tag, ANDed)
+   match=any  → item must have at least one include-tag (one EXISTS with OR)
+   exclude    → item must have none of the exclude-tags (NOT EXISTS with OR)"
+  [match-mode include-tags exclude-tags]
+  (let [include? (seq include-tags)
+        exclude? (seq exclude-tags)
+        any?     (= match-mode "any")
+        clauses  (cond-> []
+                   (and include? (not any?))
+                   (into (map (fn [t] (tag-exists-subq [:= :mt.name t])) include-tags))
+                   (and include? any?)
+                   (conj (tag-exists-subq (into [:or] (map (fn [t] [:= :mt.name t]) include-tags))))
+                   exclude?
+                   (conj [:not (tag-exists-subq (into [:or] (map (fn [t] [:= :mt.name t]) exclude-tags)))]))]
+    (when (seq clauses)
+      (into [:and] clauses))))
+
 (defmethod resolve-collection :smart [ds collection]
-  ;; Basic smart collection query support
-  ;; Supports filtering by media-type (movie, episode, music_video)
-  (let [query-config (get-in collection [:collections/config "query"] {})
-        media-type (get query-config "media-type")]
-    (log/info "Resolving smart collection" 
-              {:id (:collections/id collection) 
-               :query query-config
-               :media-type media-type})
-    (db/query ds (-> (h/select :mi.* :mv.duration)
-                     (h/from [:media-items :mi])
-                     (h/left-join [:media-versions :mv] [:= :mv.media-item-id :mi.id])
-                     (cond->
-                       ;; Filter by media type if specified
-                       media-type
-                       (h/where [:= :mi.kind (keyword media-type)]))
-                     (h/order-by :mi.id)
-                     sql/format))))
+  ;; Supported config keys (all optional):
+  ;;   "media-type"    — "movie" | "episode" | "music_video" etc.
+  ;;   "include-tags"  — item must have ALL (or ANY) of these tags
+  ;;   "exclude-tags"  — item must have NONE of these tags
+  ;;   "match"         — "all" (default) | "any"  applies to include-tags
+  ;;   "order-by"      — "id" (default) | "title" | "random" | "year"
+  (let [q            (get-in collection [:collections/config "query"] {})
+        media-type   (get q "media-type")
+        include-tags (get q "include-tags" [])
+        exclude-tags (get q "exclude-tags" [])
+        match-mode   (get q "match" "all")
+        order-kw     (case (get q "order-by" "id")
+                       "title"  :mi.title
+                       "year"   :mi.year
+                       "random" [[:random]]
+                       :mi.id)
+        tag-clause   (smart-tag-clause match-mode include-tags exclude-tags)]
+    (log/info "Resolving smart collection"
+              {:id (:collections/id collection)
+               :media-type media-type
+               :include-tags include-tags
+               :exclude-tags exclude-tags
+               :match match-mode})
+    (db/query ds (cond-> (-> (h/select :mi.* :mv.duration)
+                             (h/from [:media-items :mi])
+                             (h/left-join [:media-versions :mv] [:= :mv.media-item-id :mi.id])
+                             (h/order-by order-kw))
+                   media-type  (h/where [:= :mi.kind (keyword media-type)])
+                   tag-clause  (h/where tag-clause)
+                   true        sql/format))))
 
 (defmethod resolve-collection :playlist [ds collection]
   ;; Items are stored in the config JSONB as an ordered list of collection
