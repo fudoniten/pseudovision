@@ -108,6 +108,53 @@
         "nothing fits a 10s gap when the shortest item is 30s")))
 
 ;; ---------------------------------------------------------------------------
+;; airing-penalties (global recency scoring)
+;; ---------------------------------------------------------------------------
+
+(defn- inst [s] (.plusSeconds (java.time.Instant/parse "2026-04-27T20:00:00Z") s))
+
+(deftest airing-penalties-decay-with-distance
+  (testing "a recent airing scores higher than an older one; out-of-window = 0"
+    (let [ref     (inst 0)
+          window  (Duration/ofMinutes 10)        ; 600s
+          airings {:just-now [(inst -30)]        ; 30s ago  -> ~0.95
+                   :a-while  [(inst -300)]       ; 5m ago   -> ~0.5
+                   :ancient  [(inst -1200)]}     ; 20m ago  -> out of window
+          p       (pack/airing-penalties airings ref window)]
+      (is (> (:just-now p) (:a-while p)) "more recent => higher penalty")
+      (is (nil? (:ancient p))            "airings beyond the window are ignored")
+      (is (< 0.9 (:just-now p) 1.0))
+      (is (< 0.4 (:a-while p) 0.6)))))
+
+(deftest airing-penalties-stack-and-are-symmetric
+  (testing "multiple nearby airings stack; future airings penalise too"
+    (let [ref     (inst 0)
+          window  (Duration/ofMinutes 10)
+          airings {:twice  [(inst -60) (inst -120)]   ; two recent airings
+                   :future [(inst 60)]}               ; about to air elsewhere
+          p       (pack/airing-penalties airings ref window)]
+      (is (> (:twice p) 1.0)  "two airings stack above a single one")
+      (is (pos? (:future p))  "an imminent airing on another channel is penalised"))))
+
+(deftest packing-respects-global-recency
+  (testing "pack steers away from items that just aired on another channel"
+    (let [window  (Duration/ofMinutes 30)
+          ;; Pretend every p* and s* item aired seconds ago on other channels.
+          airings (into {} (for [it library
+                                 :let [id (:media-items/id it)]
+                                 :when (#{\p \s} (first (name id)))]
+                             [id [(inst -10)]]))
+          recency (pack/airing-penalties airings (inst 0) window)
+          counts  (frequencies
+                   (for [seed (range 60)
+                         id   (mapv :media-items/id
+                                    (pack/pack gap-9m library :seed seed :recency recency))]
+                     (first (name id))))]
+      (is (< (+ (get counts \p 0) (get counts \s 0))
+             (+ (get counts \b 0) (get counts \m 0)))
+          (str "global recency did not steer selection: " counts)))))
+
+;; ---------------------------------------------------------------------------
 ;; Simulated sitcom day — the scenario that motivated this
 ;; ---------------------------------------------------------------------------
 

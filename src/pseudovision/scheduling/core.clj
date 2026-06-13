@@ -30,6 +30,7 @@
             [pseudovision.scheduling.cursor      :as cursor]
             [pseudovision.scheduling.enumerators :as enum]
             [pseudovision.scheduling.filler      :as filler]
+            [pseudovision.scheduling.packing     :as packing]
             [pseudovision.util.sql  :as sql-util]
             [pseudovision.util.time :as t]
             [taoensso.timbre        :as log])
@@ -131,6 +132,57 @@
                  (or ceil from))]
     (if (and ceil (.isAfter target ceil)) ceil target)))
 
+(defn- lay-out-filler
+  "Turns an ordered seq of filler items into back-to-back event maps starting at
+   `from`.  Stamps guide-group / slot-id so the rows share the content event
+   column set (guide_group is NOT NULL)."
+  [from items role playout-id guide slot-id]
+  (loop [t from, items (seq items), events []]
+    (if (empty? items)
+      events
+      (let [it  (first items)
+            dur (or (:media-versions/duration it) (Duration/ofSeconds 0))
+            fin (t/add-duration t dur)]
+        (recur fin (rest items)
+               (conj events {:playout-id    playout-id
+                             :media-item-id (:media-items/id it)
+                             :kind          (sql-util/->pg-enum "event_kind" (name role))
+                             :start-at      t
+                             :finish-at     fin
+                             :guide-group   guide
+                             :slot-id       slot-id
+                             :is-manual     false}))))))
+
+(defn- pack-filler
+  "Variety-oriented fill of [from, until] using the bin-packer.  Selection is
+   biased away from items that aired recently anywhere (global recency, carried
+   in opts as :filler-airings-atom + :recency-window) and seeded per-gap so
+   different breaks differ while rebuilds stay stable.  Records the chosen
+   airings back into the recency atom so later gaps in this build space away
+   from them too.  Returns [events cursor] (the packer keeps no enumerator
+   state, so the cursor is returned unchanged)."
+  [cursor slot role from until items playout-id opts]
+  (let [airings-atom (:filler-airings-atom opts)
+        window       (:recency-window opts)
+        recency      (if (and airings-atom window)
+                       (packing/airing-penalties @airings-atom from window)
+                       {})
+        seed         (bit-xor (long (get opts :seed 0)) (.getEpochSecond ^Instant from))
+        target       (t/duration-between from until)
+        picked       (packing/pack target items
+                                   :seed seed
+                                   :recency recency
+                                   :tolerance (:filler-tolerance opts))
+        events       (lay-out-filler from picked role playout-id
+                                     (:next-guide-group cursor)
+                                     (:schedule-slots/id slot))]
+    (when (and airings-atom window)
+      (swap! airings-atom
+             (fn [m] (reduce (fn [acc ev]
+                               (update acc (:media-item-id ev) (fnil conj []) (:finish-at ev)))
+                             m events))))
+    [events cursor]))
+
 (defn- apply-filler
   "Resolves the filler preset for `role`, loads its items, emits filler events,
    and returns [filler-events updated-cursor].  Returns [[] cursor] when no
@@ -140,28 +192,33 @@
      - gap roles (:tail, :fallback) fill the interval [from, to] exactly.
      - inline roles (:pre, :mid, :post) fill a preset-sized chunk starting at
        `from`, with `to` acting as an upper bound (it may be nil for slots that
-       have no natural deadline, e.g. count-mode slots)."
+       have no natural deadline, e.g. count-mode slots).
+
+   For duration-mode presets, when packing is enabled (opts :pack-filler?, set
+   by build!), the gap is bin-packed for variety; otherwise the original
+   cursor-managed enumerator fill is used (count mode always uses it)."
   [db cursor slot channel role from to playout-id opts]
   (if-let [preset-ref (filler/resolve-filler-preset role slot channel)]
     (if-let [preset (filler-db/get-filler-preset db (:id preset-ref))]
-      (let [items   (filler-db/load-filler-items db preset)
-            ckey    (str "filler:" (name role) ":" (:filler-presets/id preset))
-            until   (if (#{:pre :mid :post} role)
-                      (point-filler-window preset from to)
-                      to)
-            e       (cursor/get-enumerator cursor ckey items :random {:seed (get opts :seed 0)})
-            result  (filler/fill-gap from until preset items e playout-id)
-            ;; fill-gap emits the bare content columns; stamp the same
-            ;; guide-group / slot-id that content events carry so every row
-            ;; bulk-inserted in build! has an identical column set. guide_group
-            ;; is NOT NULL, so filler rows must supply it or the whole build
-            ;; transaction rolls back.
-            guide   (:next-guide-group cursor)
-            slot-id (:schedule-slots/id slot)
-            events  (mapv #(assoc % :guide-group guide :slot-id slot-id)
-                          (:events result))
-            cursor' (cursor/save-enumerator cursor ckey (:enumerator result))]
-        [events cursor'])
+      (let [items (filler-db/load-filler-items db preset)
+            until (if (#{:pre :mid :post} role)
+                    (point-filler-window preset from to)
+                    to)]
+        (if (and (:pack-filler? opts)
+                 (= "duration" (:filler-presets/mode preset)))
+          (pack-filler cursor slot role from until items playout-id opts)
+          (let [ckey    (str "filler:" (name role) ":" (:filler-presets/id preset))
+                e       (cursor/get-enumerator cursor ckey items :random {:seed (get opts :seed 0)})
+                result  (filler/fill-gap from until preset items e playout-id)
+                ;; fill-gap emits the bare content columns; stamp the same
+                ;; guide-group / slot-id that content events carry so every row
+                ;; bulk-inserted in build! has an identical column set.
+                guide   (:next-guide-group cursor)
+                slot-id (:schedule-slots/id slot)
+                events  (mapv #(assoc % :guide-group guide :slot-id slot-id)
+                              (:events result))
+                cursor' (cursor/save-enumerator cursor ckey (:enumerator result))]
+            [events cursor'])))
       [[] cursor])
     [[] cursor]))
 
@@ -488,11 +545,21 @@
                     {:playout-id playout-id})
           :no-schedule)
       (let [saved-cursor (cursor/<-json (:playouts/cursor playout))
-            initial-cur  (or saved-cursor (cursor/init now))]
+            initial-cur  (or saved-cursor (cursor/init now))
+            window       (get opts :recency-window (t/hours->duration 4))]
         (jdbc/with-transaction [tx db]
           ;; Remove all auto-generated events from the future horizon
           (playout-db/delete-non-manual-events-after! tx playout-id now)
 
+          ;; Seed global filler recency from what is already scheduled on every
+          ;; OTHER channel across the build window. This playout's own future
+          ;; filler was just deleted above, so it won't double-count; in-build
+          ;; picks are appended to this atom as we go (see pack-filler).
+          (let [airings (playout-db/recent-filler-airings
+                         tx (t/sub-duration now window) horizon)
+                opts'   (assoc opts' :pack-filler? (get opts :pack-filler? true)
+                                     :recency-window window
+                                     :filler-airings-atom (atom airings))]
           (loop [cursor   initial-cur
                  slot-idx 0
                  events   []]
@@ -534,7 +601,7 @@
                         [[] cursor'])
                       cursor''' (cursor/advance-slot cursor'' (count slots))]
                   (recur cursor''' (mod (inc slot-idx) (count slots))
-                         (into events (into new-events gap-events))))))))))))
+                         (into events (into new-events gap-events)))))))))))))
 
 (defn rebuild-from-now!
   "Delete all future events and regenerate from NOW.

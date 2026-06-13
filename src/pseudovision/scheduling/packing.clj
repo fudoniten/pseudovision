@@ -75,6 +75,35 @@
                    (conj used pick)
                    (conj picked pick))))))))
 
+(defn airing-penalties
+  "Turns a record of recent airings into the `recency` map `pack` expects.
+
+   `airings` is item-id -> seq of finish Instants (when that item last aired,
+   anywhere — across all channels for global recency, plus the in-progress
+   build's own picks).  `ref` is the instant of the gap being filled and
+   `window` a Duration.  Each airing within `window` of `ref` contributes a
+   penalty that decays linearly with distance (an airing right at `ref` scores
+   ~1, one a full window away scores ~0); multiple nearby airings stack.
+   Distance is absolute, so an item about to air on another channel just after
+   `ref` is penalised too, giving symmetric global spacing.
+
+   Returns item-id -> penalty (only positive entries)."
+  [airings ^java.time.Instant ref ^Duration window]
+  (let [w (.getSeconds window)]
+    (if-not (pos? w)
+      {}
+      (let [ref-s (.getEpochSecond ref)]
+        (into {}
+              (for [[id finishes] airings
+                    :let [p (reduce (fn [acc ^java.time.Instant f]
+                                      (let [d (Math/abs (- ref-s (.getEpochSecond f)))]
+                                        (if (< d w)
+                                          (+ acc (- 1.0 (/ (double d) (double w))))
+                                          acc)))
+                                    0.0 finishes)]
+                    :when (pos? p)]
+                [id p]))))))
+
 (defn pack
   "Selects an ordered playlist of filler items that fills `target` (a Duration)
    as fully as possible while maximizing variety.  Never exceeds `target`.
