@@ -112,8 +112,17 @@
             ckey    (str "filler:" (name role) ":" (:filler-presets/id preset))
             e       (cursor/get-enumerator cursor ckey items :random {:seed (get opts :seed 0)})
             result  (filler/fill-gap from to preset items e playout-id)
+            ;; fill-gap emits the bare content columns; stamp the same
+            ;; guide-group / slot-id that content events carry so every row
+            ;; bulk-inserted in build! has an identical column set. guide_group
+            ;; is NOT NULL, so filler rows must supply it or the whole build
+            ;; transaction rolls back.
+            guide   (:next-guide-group cursor)
+            slot-id (:schedule-slots/id slot)
+            events  (mapv #(assoc % :guide-group guide :slot-id slot-id)
+                          (:events result))
             cursor' (cursor/save-enumerator cursor ckey (:enumerator result))]
-        [(:events result) cursor'])
+        [events cursor'])
       [[] cursor])
     [[] cursor]))
 

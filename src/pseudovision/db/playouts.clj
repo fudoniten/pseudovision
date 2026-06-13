@@ -126,13 +126,28 @@
                           (h/returning :*)
                           sql/format)))
 
+(defn uniform-rows
+  "Normalises a collection of row maps to a single, stable column set: the
+   union of all keys (in first-seen order), with any key absent from a row
+   filled with nil.
+
+   bulk-insert-events! mixes content events (which carry :guide-group and
+   :slot-id) with filler events that may not. HoneySQL renders a heterogeneous
+   `values` collection by emitting NULL for missing keys, which silently
+   breaks NOT NULL columns. Making the shape explicit here keeps column
+   ordering deterministic and the insert independent of HoneySQL's behaviour."
+  [rows]
+  (let [cols (into [] (comp (mapcat keys) (distinct)) rows)]
+    (mapv (fn [r] (reduce (fn [m k] (assoc m k (get r k))) (array-map) cols))
+          rows)))
+
 (defn bulk-insert-events!
   "Inserts a batch of event maps in one statement."
   [ds events]
   (when (seq events)
     (jdbc/execute! ds
                    (-> (h/insert-into :playout-events)
-                       (h/values events)
+                       (h/values (uniform-rows events))
                        sql/format))))
 
 (defn update-event! [ds id attrs]
