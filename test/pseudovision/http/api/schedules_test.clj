@@ -152,6 +152,24 @@
           (is (= 5 (:id @captured)))
           (is (= {:custom-title "Weekly Special"} (:attrs @captured))))))))
 
+(deftest reorder-slots-via-coerced-path
+  (testing "PUT /api/schedules/1/slot-order passes the schedule-id and slot-ids to db"
+    (let [captured (atom nil)]
+      (with-redefs [pseudovision.db.schedules/reorder-slots!
+                    (fn [_ schedule-id slot-ids]
+                      (reset! captured {:schedule-id schedule-id :slot-ids slot-ids}))
+                    pseudovision.db.schedules/list-slots
+                    (fn [_ schedule-id]
+                      [{:schedule-slots/id 3 :schedule-slots/schedule-id schedule-id :schedule-slots/slot-index 0}
+                       {:schedule-slots/id 1 :schedule-slots/schedule-id schedule-id :schedule-slots/slot-index 1}])]
+        (let [resp ((make-test-handler)
+                    (put-json "/api/schedules/1/slot-order" {:slot-ids [3 1]}))
+              body (parse-json-body resp)]
+          (is (= 200 (:status resp)))
+          (is (= 1 (:schedule-id @captured)))
+          (is (= [3 1] (:slot-ids @captured)))
+          (is (= [3 1] (mapv :id (:slots body)))))))))
+
 (deftest openapi-spec-lists-schedules-paths
   (testing "OpenAPI document enumerates the migrated schedule paths"
     (let [resp ((make-test-handler) (mock/request :get "/openapi.json"))
@@ -160,4 +178,5 @@
       (is (some? (get-in body ["paths" "/api/schedules"])))
       (is (some? (get-in body ["paths" "/api/schedules/{id}"])))
       (is (some? (get-in body ["paths" "/api/schedules/{schedule-id}/slots"])))
-      (is (some? (get-in body ["paths" "/api/schedules/{schedule-id}/slots/{id}"]))))))
+      (is (some? (get-in body ["paths" "/api/schedules/{schedule-id}/slots/{id}"])))
+      (is (some? (get-in body ["paths" "/api/schedules/{schedule-id}/slot-order"]))))))

@@ -133,6 +133,7 @@ pre-coercion behaviour until they're migrated.
 | GET | `/api/schedules/:id/slots` | List slots |
 | POST | `/api/schedules/:id/slots` | Add a slot |
 | GET/PUT/DELETE | `/api/schedules/:id/slots/:slot-id` | Manage a slot |
+| PUT | `/api/schedules/:id/slot-order` | Reorder slots (ordered list of slot IDs) |
 
 ### Playouts
 | Method | Path | Description |
