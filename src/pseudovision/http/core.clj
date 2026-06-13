@@ -146,14 +146,16 @@
                                    [:id          s/SlotId]]}
                :responses {204 {}}
                :handler   (sc/delete-slot-handler ctx)}}]
-   ["/api/schedules/:schedule-id/slots/reorder"
+   ;; Reorder lives as its own sub-resource rather than under /slots/ so it
+   ;; never collides with the ":id" path parameter of the slot routes.
+   ["/api/schedules/:schedule-id/slot-order"
     {:tags       ["schedules"]
      :parameters {:path [:map [:schedule-id s/ScheduleId]]}
-     :post {:summary    "Reorder slots by providing an ordered list of slot IDs"
-            :parameters {:body s/SlotReorderRequest}
-            :responses  {200 {:body s/SlotReorderResult}
-                         400 {:body s/CoercionError}}
-            :handler    (sc/reorder-slots-handler ctx)}}]
+     :put {:summary    "Reorder slots by providing an ordered list of slot IDs"
+           :parameters {:body s/SlotReorderRequest}
+           :responses  {200 {:body s/SlotReorderResult}
+                        400 {:body s/CoercionError}}
+           :handler    (sc/reorder-slots-handler ctx)}}]
 
    ;; ── Playouts ────────────────────────────────────────────────────────────
    ["/api/channels/:channel-id/playout"
