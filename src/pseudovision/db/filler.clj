@@ -2,7 +2,9 @@
   (:require [honey.sql :as sql]
             [honey.sql.helpers :as h]
             [pseudovision.db.core :as db]
-            [pseudovision.db.collections :as col-db]))
+            [pseudovision.db.collections :as col-db]
+            [pseudovision.util.sql :as sql-util]
+            [taoensso.timbre :as log]))
 
 (defn get-filler-preset
   "Fetches a filler_presets row by id. Returns nil if not found or id is nil."
@@ -34,3 +36,50 @@
       (if item [item] []))
 
     :else []))
+
+;; ---------------------------------------------------------------------------
+;; CRUD
+;; ---------------------------------------------------------------------------
+
+(defn count-filler-presets [ds]
+  (let [result (db/query-one ds (-> (h/select [[:%count.* :count]])
+                                    (h/from :filler-presets)
+                                    sql/format))]
+    (or (:count result) 0)))
+
+(defn list-filler-presets
+  ([ds] (list-filler-presets ds nil))
+  ([ds opts]
+   (db/query ds (-> (h/select :*)
+                    (h/from :filler-presets)
+                    (h/order-by :name)
+                    (cond->
+                      (:limit opts)  (h/limit (:limit opts))
+                      (:offset opts) (h/offset (:offset opts)))
+                    sql/format))))
+
+(defn create-filler-preset! [ds attrs]
+  (let [prepared (cond-> attrs
+                   (:role attrs)     (update :role     #(sql-util/->pg-enum "filler_role"     %))
+                   (:mode attrs)     (update :mode     #(sql-util/->pg-enum "filler_mode"     %))
+                   (:category attrs) (update :category #(sql-util/->pg-enum "filler_category" %)))
+        result   (db/execute-one! ds (-> (h/insert-into :filler-presets)
+                                         (h/values [prepared])
+                                         (h/returning :*)
+                                         sql/format))]
+    (log/info "Created filler preset" {:id (:filler-presets/id result) :name (:name attrs)})
+    result))
+
+(defn update-filler-preset! [ds id attrs]
+  (db/execute-one! ds (-> (h/update :filler-presets)
+                           (h/set (cond-> attrs
+                                    (:role attrs)     (update :role     #(sql-util/->pg-enum "filler_role"     %))
+                                    (:mode attrs)     (update :mode     #(sql-util/->pg-enum "filler_mode"     %))
+                                    (:category attrs) (update :category #(sql-util/->pg-enum "filler_category" %))))
+                           (h/where [:= :id id])
+                           sql/format)))
+
+(defn delete-filler-preset! [ds id]
+  (db/execute-one! ds (-> (h/delete-from :filler-presets)
+                           (h/where [:= :id id])
+                           sql/format)))

@@ -53,6 +53,15 @@
       (log/info "final attrs" {:attrs attrs})
       {:status 201 :body (db/create-media-source! db attrs)})))
 
+(defn update-source-handler [{:keys [db]}]
+  (fn [req]
+    (let [source-id (get-in req [:parameters :path :id])
+          params    (get-in req [:parameters :body])
+          attrs     (select-keys params [:name :path-replacements])]
+      (if-let [s (db/update-media-source! db source-id attrs)]
+        {:status 200 :body (unqualify-keys s)}
+        {:status 404 :body {:error "Media source not found"}}))))
+
 (defn delete-source-handler [{:keys [db]}]
   (fn [req]
     (let [source-id (get-in req [:parameters :path :id])]
@@ -81,10 +90,36 @@
           attrs     (assoc params :media-source-id source-id)]
       {:status 201 :body (db/create-library! db attrs)})))
 
+(defn update-library-handler [{:keys [db]}]
+  (fn [req]
+    (let [library-id (get-in req [:parameters :path :id])
+          attrs      (get-in req [:parameters :body])]
+      (if-let [lib (db/update-library! db library-id attrs)]
+        {:status 200 :body (unqualify-keys lib)}
+        {:status 404 :body {:error "Library not found"}}))))
+
 (defn delete-library-handler [{:keys [db]}]
   (fn [req]
     (let [library-id (get-in req [:parameters :path :id])]
       (db/delete-library! db library-id)
+      {:status 204 :body nil})))
+
+(defn list-library-paths-handler [{:keys [db]}]
+  (fn [req]
+    (let [library-id (get-in req [:parameters :path :id])]
+      {:status 200 :body (mapv unqualify-keys (db/list-library-paths db library-id))})))
+
+(defn create-library-path-handler [{:keys [db]}]
+  (fn [req]
+    (let [library-id (get-in req [:parameters :path :id])
+          path       (get-in req [:parameters :body :path])
+          attrs      {:library-id library-id :path path}]
+      {:status 201 :body (unqualify-keys (db/create-library-path! db attrs))})))
+
+(defn delete-library-path-handler [{:keys [db]}]
+  (fn [req]
+    (let [path-id (get-in req [:parameters :path :path-id])]
+      (db/delete-library-path! db path-id)
       {:status 204 :body nil})))
 
 (defn- parse-attrs
@@ -171,7 +206,46 @@
 
 (defn create-collection-handler [{:keys [db]}]
   (fn [req]
-    {:status 201 :body (db/create-collection! db (get-in req [:parameters :body]))}))
+    {:status 201 :body (unqualify-keys (db/create-collection! db (get-in req [:parameters :body])))}))
+
+(defn get-collection-handler [{:keys [db]}]
+  (fn [req]
+    (let [id (get-in req [:parameters :path :id])]
+      (if-let [c (db/get-collection db id)]
+        {:status 200 :body (unqualify-keys c)}
+        {:status 404 :body {:error "Collection not found"}}))))
+
+(defn update-collection-handler [{:keys [db]}]
+  (fn [req]
+    (let [id    (get-in req [:parameters :path :id])
+          attrs (get-in req [:parameters :body])]
+      (if-let [c (db/update-collection! db id attrs)]
+        {:status 200 :body (unqualify-keys c)}
+        {:status 404 :body {:error "Collection not found"}}))))
+
+(defn delete-collection-handler [{:keys [db]}]
+  (fn [req]
+    (db/delete-collection! db (get-in req [:parameters :path :id]))
+    {:status 204 :body nil}))
+
+(defn list-collection-items-handler [{:keys [db]}]
+  (fn [req]
+    (let [id (get-in req [:parameters :path :id])]
+      {:status 200 :body (mapv unqualify-keys (db/list-items-in-collection db id))})))
+
+(defn add-collection-item-handler [{:keys [db]}]
+  (fn [req]
+    (let [id      (get-in req [:parameters :path :id])
+          item-id (get-in req [:parameters :body :media-item-id])]
+      (db/add-item-to-collection! db id item-id)
+      {:status 204 :body nil})))
+
+(defn remove-collection-item-handler [{:keys [db]}]
+  (fn [req]
+    (let [id      (get-in req [:parameters :path :id])
+          item-id (get-in req [:parameters :path :item-id])]
+      (db/remove-item-from-collection! db id item-id)
+      {:status 204 :body nil})))
 
 ;; ---------------------------------------------------------------------------
 ;; Single item + playback URL

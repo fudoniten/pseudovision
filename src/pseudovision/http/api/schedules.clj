@@ -95,3 +95,11 @@
   (fn [req]
     (db/delete-slot! db (get-in req [:parameters :path :id]))
     {:status 204 :body nil}))
+
+(defn reorder-slots-handler [{:keys [db]}]
+  (fn [req]
+    (let [schedule-id (get-in req [:parameters :path :schedule-id])
+          slot-ids    (get-in req [:parameters :body :slot-ids])]
+      (db/reorder-slots! db schedule-id slot-ids)
+      (let [slots (mapv unqualify-keys (db/list-slots db schedule-id))]
+        {:status 200 :body {:slots slots}}))))
