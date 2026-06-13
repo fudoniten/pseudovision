@@ -100,18 +100,57 @@
   (or (some-> (:media-versions/duration item))
       (Duration/ofSeconds 0)))
 
+(defn- events-end
+  "Returns the finish time of the last event in `events`, or `default` when
+   `events` is empty.  Used to advance the cursor past injected filler."
+  [events default]
+  (if (seq events)
+    (:finish-at (last events))
+    default))
+
+(defn- point-filler-window
+  "For an inline (pre/mid/post) filler insert starting at `from`, returns the
+   instant the fill should run until.  Unlike gap filler (tail/fallback), the
+   length of an inline insert is dictated by the preset, not by an external
+   deadline:
+     - duration mode      → from + preset duration
+     - pad_to_minute mode → next n-minute boundary
+     - count modes        → no intrinsic deadline; fill-gap stops after N items
+   `ceil` (may be nil) caps the window so the insert can't overrun the
+   surrounding block."
+  [preset from ceil]
+  (let [target (case (:filler-presets/mode preset)
+                 "duration"      (if-let [d (:filler-presets/duration preset)]
+                                   (t/add-duration from d)
+                                   (or ceil from))
+                 "pad_to_minute" (if-let [n (:filler-presets/pad-to-nearest-minute preset)]
+                                   (t/ceil-to-n-minutes from n)
+                                   (or ceil from))
+                 ;; count / random_count: fill-gap counts items and ignores the
+                 ;; boundary, so any in-range value works.
+                 (or ceil from))]
+    (if (and ceil (.isAfter target ceil)) ceil target)))
+
 (defn- apply-filler
-  "Resolves the filler preset for `role`, loads its items, fills the gap from
-   `from` to `to` using cursor-managed enumerator state, and returns
-   [filler-events updated-cursor]. Returns [[] cursor] when no preset is
-   configured for the role on this slot/channel."
+  "Resolves the filler preset for `role`, loads its items, emits filler events,
+   and returns [filler-events updated-cursor].  Returns [[] cursor] when no
+   preset is configured for the role on this slot/channel.
+
+   The fill window depends on the role:
+     - gap roles (:tail, :fallback) fill the interval [from, to] exactly.
+     - inline roles (:pre, :mid, :post) fill a preset-sized chunk starting at
+       `from`, with `to` acting as an upper bound (it may be nil for slots that
+       have no natural deadline, e.g. count-mode slots)."
   [db cursor slot channel role from to playout-id opts]
   (if-let [preset-ref (filler/resolve-filler-preset role slot channel)]
     (if-let [preset (filler-db/get-filler-preset db (:id preset-ref))]
       (let [items   (filler-db/load-filler-items db preset)
             ckey    (str "filler:" (name role) ":" (:filler-presets/id preset))
+            until   (if (#{:pre :mid :post} role)
+                      (point-filler-window preset from to)
+                      to)
             e       (cursor/get-enumerator cursor ckey items :random {:seed (get opts :seed 0)})
-            result  (filler/fill-gap from to preset items e playout-id)
+            result  (filler/fill-gap from until preset items e playout-id)
             ;; fill-gap emits the bare content columns; stamp the same
             ;; guide-group / slot-id that content events carry so every row
             ;; bulk-inserted in build! has an identical column set. guide_group
@@ -171,8 +210,11 @@
         [[event] cursor']))))
 
 (defn emit-count
-  "Emit exactly item-count items, return [events cursor]."
-  [db cursor slot playout-id opts]
+  "Emit exactly item-count items, return [events cursor].
+   Injects pre-roll filler before the first item, mid-roll filler between
+   items, and post-roll filler after the last item, when configured.  A count
+   slot has no time deadline, so inline filler is sized purely by its preset."
+  [db cursor slot channel playout-id opts]
   (let [items  (load-items db slot)
         ckey   (collection-key slot)
         order  (keyword (or (:schedule-slots/playback-order slot) "chronological"))
@@ -184,32 +226,46 @@
       (do (log/warn "emit-count: no items for slot; skipping"
                     {:slot-id (:schedule-slots/id slot)})
           [[] cursor])
-      (loop [i      0
-             from   (:next-start cursor)
-             e      (cursor/get-enumerator cursor ckey items order enum-opts)
-             events []]
-        (if (>= i n)
-          (let [cursor' (-> cursor
-                            (assoc :next-start from)
-                            (cursor/save-enumerator ckey e)
-                            (cursor/bump-guide-group))]
-            [events cursor'])
-          (let [[item e'] (enum/next-item e)
-                dur       (item-duration item)
-                to        (t/add-duration from dur)]
-            (recur (inc i) to e'
-                   (conj events {:playout-id    playout-id
-                                 :media-item-id (:media-items/id item)
-                                 :kind          (sql-util/->pg-enum "event_kind" "content")
-                                 :start-at      from
-                                 :finish-at     to
-                                 :guide-group   guide
-                                 :slot-id       (:schedule-slots/id slot)
-                                 :is-manual     false}))))))))
+      (let [start              (:next-start cursor)
+            [pre-events cur0]  (apply-filler db cursor slot channel
+                                             :pre start nil playout-id opts)
+            pre-end            (events-end pre-events start)]
+        (loop [i      0
+               from   pre-end
+               cur    cur0
+               e      (cursor/get-enumerator cur0 ckey items order enum-opts)
+               events (vec pre-events)]
+          (if (>= i n)
+            (let [base               (cursor/save-enumerator cur ckey e)
+                  [post-events cur1] (apply-filler db base slot channel
+                                                   :post from nil playout-id opts)
+                  cursor'            (-> cur1
+                                         (assoc :next-start (events-end post-events from))
+                                         (cursor/bump-guide-group))]
+              [(into events post-events) cursor'])
+            (let [[item e'] (enum/next-item e)
+                  dur       (item-duration item)
+                  to        (t/add-duration from dur)
+                  content   {:playout-id    playout-id
+                             :media-item-id (:media-items/id item)
+                             :kind          (sql-util/->pg-enum "event_kind" "content")
+                             :start-at      from
+                             :finish-at     to
+                             :guide-group   guide
+                             :slot-id       (:schedule-slots/id slot)
+                             :is-manual     false}
+                  ;; mid-roll filler sits between items, never after the last.
+                  [mid-events curm] (if (< (inc i) n)
+                                      (apply-filler db cur slot channel
+                                                    :mid to nil playout-id opts)
+                                      [[] cur])]
+              (recur (inc i) (events-end mid-events to) curm e'
+                     (into events (into [content] mid-events))))))))))
 
 (defn emit-block
-  "Fill a fixed-duration block.  Pads the tail with filler if configured.
-   Returns [events cursor]."
+  "Fill a fixed-duration block.  Injects pre-roll filler before the first item,
+   mid-roll filler between items, post-roll filler after the last item, and
+   pads any remaining time with tail filler.  Returns [events cursor]."
   [db cursor slot channel playout-id opts]
   (let [items      (load-items db slot)
         ckey       (collection-key slot)
@@ -219,30 +275,40 @@
         block-dur  (:schedule-slots/block-duration slot)
         from       (:next-start cursor)
         block-end  (t/add-duration from block-dur)
-        guide      (:next-guide-group cursor)]
-    (loop [cursor-time from
-           e           (cursor/get-enumerator cursor ckey items order enum-opts)
-           events      []]
+        guide      (:next-guide-group cursor)
+        ;; Pre-roll filler fires once, before the first content item, bounded
+        ;; by the block end so it can't consume the whole block.
+        [pre-events cur0] (apply-filler db cursor slot channel
+                                        :pre from block-end playout-id opts)]
+    (loop [cursor-time (events-end pre-events from)
+           cur         cur0
+           e           (cursor/get-enumerator cur0 ckey items order enum-opts)
+           events      (vec pre-events)]
       (let [remaining (t/duration-between cursor-time block-end)]
         (cond
           ;; Block finished
           (or (.isNegative remaining) (.isZero remaining))
-          (let [c' (-> cursor
+          (let [c' (-> cur
                        (assoc :next-start block-end)
                        (cursor/save-enumerator ckey e)
                        (cursor/bump-guide-group))]
             [events c'])
 
-          ;; No more items; pad the rest with tail filler
+          ;; No more content; inject post-roll filler, then pad the rest with
+          ;; tail filler.
           (empty? (:items e))
-          (let [base-cursor (cursor/save-enumerator cursor ckey e)
-                [fill-events cursor'] (apply-filler db base-cursor slot channel
-                                                    :tail cursor-time block-end
-                                                    playout-id opts)
-                c' (-> cursor'
+          (let [base-cursor (cursor/save-enumerator cur ckey e)
+                [post-events cur1] (apply-filler db base-cursor slot channel
+                                                 :post cursor-time block-end
+                                                 playout-id opts)
+                post-end (events-end post-events cursor-time)
+                [tail-events cur2] (apply-filler db cur1 slot channel
+                                                 :tail post-end block-end
+                                                 playout-id opts)
+                c' (-> cur2
                        (assoc :next-start block-end)
                        (cursor/bump-guide-group))]
-            [(into events fill-events) c'])
+            [(into events (into (vec post-events) tail-events)) c'])
 
           :else
           (let [[item e'] (enum/next-item e)
@@ -250,7 +316,7 @@
                 to        (t/add-duration cursor-time dur)]
             (if (.isAfter to block-end)
               ;; Item overflows the block — respect tail_mode
-              (let [cursor-with-enum (cursor/save-enumerator cursor ckey e)
+              (let [cursor-with-enum (cursor/save-enumerator cur ckey e)
                     [tail-events cursor-after-tail]
                     (case (:schedule-slots/tail-mode slot "none")
                       "filler"
@@ -272,16 +338,23 @@
                     c' (-> cursor-after-tail
                            (assoc :next-start block-end)
                            (cursor/bump-guide-group))]
-                [(into events tail-events) c']))
-              (recur to e'
-                     (conj events {:playout-id    playout-id
-                                   :media-item-id (:media-items/id item)
-                                   :kind          (sql-util/->pg-enum "event_kind" "content")
-                                   :start-at      cursor-time
-                                   :finish-at     to
-                                   :guide-group   guide
-                                   :slot-id       (:schedule-slots/id slot)
-                                   :is-manual     false}))))))))
+                [(into events tail-events) c'])
+              ;; Item fits — emit it, then inject mid-roll filler before the
+              ;; next item (only when more content remains).
+              (let [content {:playout-id    playout-id
+                             :media-item-id (:media-items/id item)
+                             :kind          (sql-util/->pg-enum "event_kind" "content")
+                             :start-at      cursor-time
+                             :finish-at     to
+                             :guide-group   guide
+                             :slot-id       (:schedule-slots/id slot)
+                             :is-manual     false}
+                    [mid-events curm] (if (seq (:items e'))
+                                        (apply-filler db cur slot channel
+                                                      :mid to block-end playout-id opts)
+                                        [[] cur])]
+                (recur (events-end mid-events to) curm e'
+                       (into events (into [content] mid-events)))))))))))
 
 (defn emit-flood
   "Fill from now until the next fixed-anchor slot.
@@ -376,7 +449,7 @@
       (let [fill (keyword (or (:schedule-slots/fill-mode slot) "once"))]
         (case fill
           :once  (emit-once  db cursor slot playout-id opts)
-          :count (emit-count db cursor slot playout-id opts)
+          :count (emit-count db cursor slot channel playout-id opts)
           :block (emit-block db cursor slot channel playout-id opts)
           :flood (let [flood-end (next-slot-start
                                   slots

@@ -6,6 +6,7 @@
             [pseudovision.scheduling.core :as core]
             [pseudovision.db.filler :as filler-db]
             [pseudovision.db.media :as media-db]
+            [pseudovision.db.collections :as col-db]
             [pseudovision.util.time :as t])
   (:import [java.time Instant Duration]))
 
@@ -78,7 +79,7 @@
   (testing "returns empty events and unchanged cursor when collection is empty"
     (let [slot {:schedule-slots/id 1 :schedule-slots/item-count 5}
           cur  (make-cursor t0)
-          [events cursor'] (core/emit-count nil cur slot 1 {})]
+          [events cursor'] (core/emit-count nil cur slot {} 1 {})]
       (is (= [] events) "no events emitted")
       (is (= t0 (:next-start cursor')) "cursor time must not advance"))))
 
@@ -216,3 +217,129 @@
           tod    (Duration/ofMinutes (+ (* 23 60) 30))
           result (t/time-of-day-on-same-day tod inst "UTC")]
       (is (= (Instant/parse "2026-04-27T23:30:00Z") result)))))
+
+;; ---------------------------------------------------------------------------
+;; emit-block / emit-count — pre / mid / post-roll filler injection
+;; ---------------------------------------------------------------------------
+
+(def ^:private pre-count-preset
+  {:filler-presets/id 50 :filler-presets/mode "count"
+   :filler-presets/count 2 :filler-presets/role "pre"})
+
+(def ^:private mid-count-preset
+  {:filler-presets/id 51 :filler-presets/mode "count"
+   :filler-presets/count 1 :filler-presets/role "mid"})
+
+(def ^:private post-count-preset
+  {:filler-presets/id 52 :filler-presets/mode "count"
+   :filler-presets/count 2 :filler-presets/role "post"})
+
+(defn- pre-slot [extra]
+  (merge {:schedule-slots/id             1
+          :schedule-slots/media-item-id  1
+          :schedule-slots/block-duration dur-1h
+          :schedule-slots/tail-mode      "none"
+          :schedule-slots/playback-order "chronological"}
+         extra))
+
+(deftest emit-block-injects-pre-roll-before-first-item
+  (testing "count-mode pre filler is emitted before the first content item"
+    (let [slot (pre-slot {:schedule-slots/pre-filler-id 50})
+          cur  (make-cursor t0)]
+      (with-redefs [media-db/get-media-item     (fn [_ _] content-item)
+                    filler-db/get-filler-preset (fn [_ _] pre-count-preset)
+                    filler-db/load-filler-items (fn [_ _] (filler-items 10))]
+        (let [[events _] (core/emit-block nil cur slot {} 1 {})
+              content    (filter #(= 1  (:media-item-id %)) events)
+              filler     (filter #(= 99 (:media-item-id %)) events)]
+          (is (= 2 (count filler))  "two count-mode pre-roll items")
+          (is (= 1 (count content)) "one content item")
+          (is (every? #(.isBefore ^Instant (:start-at %)
+                                  ^Instant (:start-at (first content))) filler)
+              "every filler starts before the content item")
+          (is (= (:finish-at (last filler)) (:start-at (first content)))
+              "content begins exactly when pre-roll ends"))))))
+
+(deftest emit-block-pre-roll-duration-mode-respects-preset-duration
+  (testing "duration-mode pre filler fills only its preset duration, not the block"
+    (let [preset {:filler-presets/id 50 :filler-presets/mode "duration"
+                  :filler-presets/duration (Duration/ofMinutes 10)
+                  :filler-presets/role "pre"}
+          slot   (pre-slot {:schedule-slots/pre-filler-id 50})
+          cur    (make-cursor t0)]
+      (with-redefs [media-db/get-media-item     (fn [_ _] content-item)
+                    filler-db/get-filler-preset (fn [_ _] preset)
+                    filler-db/load-filler-items (fn [_ _] (filler-items 20))]
+        (let [[events _] (core/emit-block nil cur slot {} 1 {})
+              content    (filter #(= 1  (:media-item-id %)) events)
+              filler     (filter #(= 99 (:media-item-id %)) events)]
+          ;; 10 minutes of 5-minute filler = exactly two items.
+          (is (= 2 (count filler)) "duration-mode pre fills 10m with two 5-min items")
+          (is (= (Instant/parse "2026-04-27T20:10:00Z") (:start-at (first content)))
+              "content starts after exactly 10 minutes of pre-roll"))))))
+
+(deftest emit-block-injects-mid-roll-between-items
+  (testing "mid filler appears between consecutive content items, not after the last"
+    (let [items [{:media-items/id 1 :media-versions/duration (Duration/ofMinutes 10)}
+                 {:media-items/id 2 :media-versions/duration (Duration/ofMinutes 10)}]
+          slot  {:schedule-slots/id             1
+                 :schedule-slots/collection-id  7
+                 :schedule-slots/block-duration dur-1h
+                 :schedule-slots/tail-mode      "none"
+                 :schedule-slots/mid-filler-id  51
+                 :schedule-slots/playback-order "chronological"}
+          cur   (make-cursor t0)]
+      (with-redefs [media-db/get-collection     (fn [_ _] {:collections/id 7
+                                                           :collections/kind "manual"})
+                    col-db/resolve-collection   (fn [_ _] items)
+                    filler-db/get-filler-preset (fn [_ _] mid-count-preset)
+                    filler-db/load-filler-items (fn [_ _] (filler-items 10))]
+        (let [[events _] (core/emit-block nil cur slot {} 1 {})
+              content    (filter #(#{1 2} (:media-item-id %)) events)
+              filler     (filter #(= 99  (:media-item-id %)) events)]
+          (is (= 2 (count content)) "both content items emitted")
+          (is (= 1 (count filler))  "exactly one mid-roll insert (between the two items)")
+          (is (= (:finish-at (first content)) (:start-at (first filler)))
+              "mid filler starts when the first item ends")
+          (is (= (:finish-at (first filler)) (:start-at (second content)))
+              "second item starts when mid filler ends"))))))
+
+(deftest emit-block-injects-post-roll-after-last-item
+  (testing "post filler follows the last content item"
+    (let [slot (pre-slot {:schedule-slots/post-filler-id 52})
+          cur  (make-cursor t0)]
+      (with-redefs [media-db/get-media-item     (fn [_ _] content-item)
+                    filler-db/get-filler-preset (fn [_ _] post-count-preset)
+                    filler-db/load-filler-items (fn [_ _] (filler-items 10))]
+        (let [[events _] (core/emit-block nil cur slot {} 1 {})
+              content    (filter #(= 1  (:media-item-id %)) events)
+              filler     (filter #(= 99 (:media-item-id %)) events)]
+          (is (= 1 (count content)) "one content item")
+          (is (= 2 (count filler))  "two count-mode post-roll items")
+          (is (every? #(not (.isBefore ^Instant (:start-at %)
+                                       ^Instant (:finish-at (first content)))) filler)
+              "every post-roll item starts at or after the content finishes"))))))
+
+(deftest emit-count-injects-pre-and-post-roll
+  (testing "emit-count wraps its N items with pre- and post-roll filler"
+    (let [slot {:schedule-slots/id             1
+                :schedule-slots/media-item-id  1
+                :schedule-slots/item-count     1
+                :schedule-slots/pre-filler-id  50
+                :schedule-slots/post-filler-id 52
+                :schedule-slots/playback-order "chronological"}
+          cur  (make-cursor t0)]
+      (with-redefs [media-db/get-media-item     (fn [_ _] content-item)
+                    ;; both roles resolve to a count preset (count = 2)
+                    filler-db/get-filler-preset (fn [_ _] pre-count-preset)
+                    filler-db/load-filler-items (fn [_ _] (filler-items 10))]
+        (let [[events _] (core/emit-count nil cur slot {} 1 {})
+              content    (filter #(= 1  (:media-item-id %)) events)
+              filler     (filter #(= 99 (:media-item-id %)) events)]
+          (is (= 1 (count content)) "one content item")
+          (is (= 4 (count filler))  "two pre + two post filler items")
+          (is (.isBefore ^Instant (:start-at (first events))
+                         ^Instant (:start-at (first content)))
+              "timeline opens with pre-roll filler")
+          (is (= 99 (:media-item-id (last events)))
+              "timeline closes with post-roll filler"))))))
