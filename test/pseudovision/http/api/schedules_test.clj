@@ -36,14 +36,16 @@
 
 (deftest list-schedules-returns-unqualified-keys
   (testing "GET /api/schedules strips :schedules/ prefixes"
-    (with-redefs [pseudovision.db.schedules/list-schedules (fn [_] [test-schedule])]
+    (with-redefs [pseudovision.db.schedules/list-schedules (fn [_ _] [test-schedule])
+                  pseudovision.db.schedules/count-schedules (fn [_] 1)]
       (let [resp ((make-test-handler) (mock/request :get "/api/schedules"))
             body (parse-json-body resp)]
         (is (= 200 (:status resp)))
-        (is (vector? body))
-        (is (= 1 (get-in body [0 :id])))
-        (is (= "Weeknight Lineup" (get-in body [0 :name])))
-        (is (nil? (get-in body [0 (keyword "schedules/id")])))))))
+        (let [items (get body :items)]
+          (is (vector? items))
+          (is (= 1 (get-in items [0 :id])))
+          (is (= "Weeknight Lineup" (get-in items [0 :name])))
+          (is (nil? (get-in items [0 (keyword "schedules/id")]))))))))
 
 (deftest get-schedule-coerces-id
   (testing "GET /api/schedules/7 coerces the path id to int"

@@ -130,7 +130,7 @@
 ;; Event emission for each fill mode
 ;; ---------------------------------------------------------------------------
 
-(defn- emit-once
+(defn emit-once
   "Emit one item, return [events cursor]."
   [db cursor slot playout-id opts]
   (let [items   (load-items db slot)
@@ -159,9 +159,9 @@
                           (assoc :next-start to)
                           (cursor/save-enumerator ckey e')
                           (cursor/bump-guide-group))]
-        [[event] cursor'])))
+        [[event] cursor']))))
 
-(defn- emit-count
+(defn emit-count
   "Emit exactly item-count items, return [events cursor]."
   [db cursor slot playout-id opts]
   (let [items  (load-items db slot)
@@ -198,7 +198,7 @@
                                  :slot-id       (:schedule-slots/id slot)
                                  :is-manual     false}))))))))
 
-(defn- emit-block
+(defn emit-block
   "Fill a fixed-duration block.  Pads the tail with filler if configured.
    Returns [events cursor]."
   [db cursor slot channel playout-id opts]
@@ -272,9 +272,9 @@
                                    :finish-at     to
                                    :guide-group   guide
                                    :slot-id       (:schedule-slots/id slot)
-                                   :is-manual     false})))))))))
+                                   :is-manual     false}))))))))
 
-(defn- emit-flood
+(defn emit-flood
   "Fill from now until the next fixed-anchor slot.
    Returns [events cursor]."
   [db cursor slot channel playout-id {:keys [flood-end] :as opts}]

@@ -1,22 +1,13 @@
 (ns pseudovision.scheduling.core-filler-test
   "Tests for filler wiring in the scheduling engine.
-   Private emit-* functions are accessed via #' to keep the tests focused
-   on the specific gap-fill scenarios without requiring a full build! stack."
+   Exercises the emit-* helpers directly without requiring a full build! stack."
   (:require [clojure.test :refer [deftest is testing]]
             [pseudovision.scheduling.cursor :as cursor]
+            [pseudovision.scheduling.core :as core]
             [pseudovision.db.filler :as filler-db]
             [pseudovision.db.media :as media-db]
             [pseudovision.util.time :as t])
   (:import [java.time Instant Duration]))
-
-;; ---------------------------------------------------------------------------
-;; Access private emit functions
-;; ---------------------------------------------------------------------------
-
-(def ^:private emit-once  #'pseudovision.scheduling.core/emit-once)
-(def ^:private emit-count #'pseudovision.scheduling.core/emit-count)
-(def ^:private emit-block #'pseudovision.scheduling.core/emit-block)
-(def ^:private emit-flood #'pseudovision.scheduling.core/emit-flood)
 
 ;; ---------------------------------------------------------------------------
 ;; Shared fixtures
@@ -75,7 +66,7 @@
   (testing "returns empty events and unchanged cursor when collection is empty"
     (let [slot {:schedule-slots/id 1}   ; no media-item-id or collection-id
           cur  (make-cursor t0)
-          [events cursor'] (emit-once nil cur slot 1 {})]
+          [events cursor'] (core/emit-once nil cur slot 1 {})]
       (is (= [] events) "no events emitted")
       (is (= t0 (:next-start cursor')) "cursor time must not advance"))))
 
@@ -87,7 +78,7 @@
   (testing "returns empty events and unchanged cursor when collection is empty"
     (let [slot {:schedule-slots/id 1 :schedule-slots/item-count 5}
           cur  (make-cursor t0)
-          [events cursor'] (emit-count nil cur slot 1 {})]
+          [events cursor'] (core/emit-count nil cur slot 1 {})]
       (is (= [] events) "no events emitted")
       (is (= t0 (:next-start cursor')) "cursor time must not advance"))))
 
@@ -102,7 +93,7 @@
           cur  (make-cursor t0)]
       (with-redefs [filler-db/get-filler-preset (fn [_ _] tail-filler-preset)
                     filler-db/load-filler-items  (fn [_ _] (filler-items 20))]
-        (let [[events cursor'] (emit-block nil cur slot channel 1 {})]
+        (let [[events cursor'] (core/emit-block nil cur slot channel 1 {})]
           (is (pos? (count events))          "filler events should be emitted")
           (is (= t0 (:start-at (first events))) "filler starts at block start")
           (is (every? #(= 99 (:media-item-id %)) events) "all events are filler")
@@ -112,7 +103,7 @@
   (testing "when no tail filler is configured, block ends at boundary with a gap"
     (let [slot (empty-block-slot dur-1h "filler" nil)   ; tail-filler-id = nil
           cur  (make-cursor t0)
-          [events cursor'] (emit-block nil cur slot {} 1 {})]
+          [events cursor'] (core/emit-block nil cur slot {} 1 {})]
       (is (= [] events) "no events when filler not configured")
       (is (= t1 (:next-start cursor')) "cursor still advances to block-end"))))
 
@@ -128,7 +119,7 @@
                     filler-db/get-filler-preset  (fn [_ _]
                                                    (reset! filler-called? true)
                                                    tail-filler-preset)]
-        (let [[events cursor'] (emit-block nil cur slot {} 1 {})]
+        (let [[events cursor'] (core/emit-block nil cur slot {} 1 {})]
           (is (false? @filler-called?) "filler preset should not be consulted")
           (is (= 1 (count events))     "exactly one (trimmed) content event")
           (is (= t0 (:start-at  (first events))))
@@ -149,7 +140,7 @@
       (with-redefs [media-db/get-media-item     (fn [_ _] long-item)
                     filler-db/get-filler-preset  (fn [_ _] tail-filler-preset)
                     filler-db/load-filler-items  (fn [_ _] (filler-items 20))]
-        (let [[events cursor'] (emit-block nil cur slot channel 1 {})]
+        (let [[events cursor'] (core/emit-block nil cur slot channel 1 {})]
           (is (pos? (count events))           "filler events emitted")
           (is (every? #(= 99 (:media-item-id %)) events) "all events are filler")
           (is (= t0 (:start-at (first events))))
@@ -167,7 +158,7 @@
           opts {:flood-end t2 :seed 0}]
       (with-redefs [filler-db/get-filler-preset (fn [_ _] fallback-filler-preset)
                     filler-db/load-filler-items  (fn [_ _] (filler-items 30))]
-        (let [[events cursor'] (emit-flood nil cur slot channel 1 opts)]
+        (let [[events cursor'] (core/emit-flood nil cur slot channel 1 opts)]
           (is (pos? (count events))           "filler events emitted")
           (is (every? #(= 99 (:media-item-id %)) events) "all events are filler")
           (is (= t0 (:start-at  (first events))))
@@ -178,7 +169,7 @@
     (let [slot {:schedule-slots/id 1}
           cur  (make-cursor t0)
           opts {:flood-end t2}]
-      (let [[events cursor'] (emit-flood nil cur slot {} 1 opts)]
+      (let [[events cursor'] (core/emit-flood nil cur slot {} 1 opts)]
         (is (= [] events) "no events when neither content nor filler")
         (is (= t2 (:next-start cursor')) "cursor still advances to flood-end")))))
 
@@ -192,7 +183,7 @@
           cur  (make-cursor t0)]
       (with-redefs [filler-db/get-filler-preset (fn [_ _] tail-filler-preset)
                     filler-db/load-filler-items  (fn [_ _] (filler-items 20))]
-        (let [[_ cur1] (emit-block nil cur slot channel 1 {})]
+        (let [[_ cur1] (core/emit-block nil cur slot channel 1 {})]
           (is (contains? (:enumerator-states cur1) "filler:tail:42")
               "cursor should have saved enumerator state under the filler preset key"))))))
 

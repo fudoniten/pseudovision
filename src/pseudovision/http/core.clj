@@ -52,7 +52,7 @@
                                      [:limit  {:optional true} :int]
                                      [:offset {:optional true} :int]
                                      [:uuid   {:optional true} :uuid]]}
-               :responses   {200 {:body [:or s/Channel [:vector s/Channel]]}
+               :responses   {200 {:body [:or s/Channel s/PaginatedChannels]}
                              404 {:body s/APIError}}
                :handler     (ch/list-channels-handler ctx)}
      :post    {:summary     "Create a channel"
@@ -62,77 +62,88 @@
                :handler     (ch/create-channel-handler ctx)}}]
    ["/api/channels/:id"
     {:tags    ["channels"]
-     :parameters {:path [:map [:id s/ChannelId]]}
      :get     {:summary     "Get a channel by id"
+               :parameters  {:path [:map [:id s/ChannelId]]}
                :responses   {200 {:body s/Channel}
                              404 {:body s/APIError}}
                :handler     (ch/get-channel-handler ctx)}
      :put     {:summary     "Update a channel"
-               :parameters  {:body s/ChannelUpdate}
+               :parameters  {:path [:map [:id s/ChannelId]]
+                             :body s/ChannelUpdate}
                :responses   {200 {:body s/Channel}
                              404 {:body s/APIError}
                              400 {:body s/CoercionError}}
                :handler     (ch/update-channel-handler ctx)}
      :delete  {:summary     "Delete a channel"
+               :parameters  {:path [:map [:id s/ChannelId]]}
                :responses   {204 {}}
                :handler     (ch/delete-channel-handler ctx)}}]
 
    ;; ── Schedules ───────────────────────────────────────────────────────────
    ["/api/schedules"
-     {:tags ["schedules"]
-      :parameters {:query s/PaginationQuery}
-      :get  {:summary    "List schedules (paginated)"
-             :responses  {200 {:body s/PaginatedSchedules}}
-             :handler    (sc/list-schedules-handler ctx)}
-      :post {:summary    "Create a schedule"
-             :parameters {:body s/ScheduleCreate}
-             :responses  {201 {:body s/Schedule}
-                          400 {:body s/CoercionError}}
-             :handler    (sc/create-schedule-handler ctx)}}]
+    {:tags ["schedules"]
+     :get  {:summary    "List schedules (paginated)"
+            :parameters {:query s/PaginationQuery}
+            :responses  {200 {:body s/PaginatedSchedules}}
+            :handler    (sc/list-schedules-handler ctx)}
+     :post {:summary    "Create a schedule"
+            :parameters {:body s/ScheduleCreate}
+            :responses  {201 {:body s/Schedule}
+                         400 {:body s/CoercionError}}
+            :handler    (sc/create-schedule-handler ctx)}}]
    ["/api/schedules/:id"
     {:tags       ["schedules"]
-     :parameters {:path [:map [:id s/ScheduleId]]}
      :get     {:summary   "Get a schedule"
+               :parameters {:path [:map [:id s/ScheduleId]]}
                :responses {200 {:body s/Schedule}
                            404 {:body s/APIError}}
                :handler   (sc/get-schedule-handler ctx)}
      :put     {:summary    "Update a schedule"
-               :parameters {:body s/ScheduleUpdate}
+               :parameters {:path [:map [:id s/ScheduleId]]
+                            :body s/ScheduleUpdate}
                :responses  {200 {:body s/Schedule}
                             404 {:body s/APIError}
                             400 {:body s/CoercionError}}
                :handler    (sc/update-schedule-handler ctx)}
      :delete  {:summary   "Delete a schedule"
+               :parameters {:path [:map [:id s/ScheduleId]]}
                :responses {204 {}}
                :handler   (sc/delete-schedule-handler ctx)}}]
    ["/api/schedules/:schedule-id/slots"
-     {:tags       ["schedules"]
-      :parameters {:path  [:map [:schedule-id s/ScheduleId]]
-                   :query s/PaginationQuery}
-      :get  {:summary   "List slots for a schedule (paginated)"
-             :responses {200 {:body s/PaginatedSlots}}
-             :handler   (sc/list-slots-handler ctx)}
-      :post {:summary    "Create a slot"
-             :parameters {:body s/SlotCreate}
-             :responses  {201 {:body s/Slot}
-                          400 {:body s/CoercionError}}
-             :handler    (sc/create-slot-handler ctx)}}]
+    {:tags       ["schedules"]
+     :get  {:summary   "List slots for a schedule (paginated)"
+            :parameters {:path  [:map [:schedule-id s/ScheduleId]]
+                         :query s/PaginationQuery}
+            :responses {200 {:body s/PaginatedSlots}}
+            :handler   (sc/list-slots-handler ctx)}
+     :post {:summary    "Create a slot"
+            :parameters {:path [:map [:schedule-id s/ScheduleId]]
+                         :body s/SlotCreate}
+            :responses  {201 {:body s/Slot}
+                         400 {:body s/CoercionError}}
+            :handler    (sc/create-slot-handler ctx)}}]
    ["/api/schedules/:schedule-id/slots/:id"
     {:tags       ["schedules"]
-     :parameters {:path [:map
-                         [:schedule-id s/ScheduleId]
-                         [:id          s/SlotId]]}
      :get     {:summary   "Get a slot"
+               :parameters {:path [:map
+                                   [:schedule-id s/ScheduleId]
+                                   [:id          s/SlotId]]}
                :responses {200 {:body s/Slot}
                            404 {:body s/APIError}}
                :handler   (sc/get-slot-handler ctx)}
      :put     {:summary    "Update a slot"
-               :parameters {:body s/SlotUpdate}
+               :parameters {:path [:map
+                                   [:schedule-id s/ScheduleId]
+                                   [:id          s/SlotId]]
+                            :body s/SlotUpdate}
                :responses  {200 {:body s/Slot}
                             404 {:body s/APIError}
                             400 {:body s/CoercionError}}
                :handler    (sc/update-slot-handler ctx)}
      :delete  {:summary   "Delete a slot"
+               :parameters {:path [:map
+                                   [:schedule-id s/ScheduleId]
+                                   [:id          s/SlotId]]}
                :responses {204 {}}
                :handler   (sc/delete-slot-handler ctx)}}]
    ["/api/schedules/:schedule-id/slots/reorder"
@@ -147,57 +158,62 @@
    ;; ── Playouts ────────────────────────────────────────────────────────────
    ["/api/channels/:channel-id/playout"
     {:tags       ["playouts"]
-     :parameters {:path [:map [:channel-id s/ChannelId]]}
      :get  {:summary   "Get the playout for a channel"
+            :parameters {:path [:map [:channel-id s/ChannelId]]}
             :responses {200 {:body s/Playout}
                         404 {:body s/APIError}}
             :handler   (pl/get-playout-handler ctx)}
      :post {:summary    "Rebuild a playout's event timeline"
-            :parameters {:query s/RebuildQuery}
+            :parameters {:path  [:map [:channel-id s/ChannelId]]
+                         :query s/RebuildQuery}
             :responses  {200 {:body s/RebuildResult}
                          404 {:body s/APIError}}
             :handler    (pl/rebuild-playout-handler ctx)}}]
    ["/api/channels/:channel-id/playout/events"
-     {:tags       ["playouts"]
-      :parameters {:path  [:map [:channel-id s/ChannelId]]
-                   :query s/CursorPaginationQuery}
-      :get  {:summary   "List upcoming playout events (cursor-paginated)"
-             :responses {200 {:body s/PaginatedPlayoutEvents}
-                         404 {:body s/APIError}}
-             :handler   (pl/list-events-handler ctx)}
-      :post {:summary    "Inject a manual event into the timeline"
-             :parameters {:body s/ManualEventCreate}
-             :responses  {201 {:body s/PlayoutEvent}
-                          404 {:body s/APIError}
-                          400 {:body s/CoercionError}}
-             :handler    (pl/inject-event-handler ctx)}}]
+    {:tags       ["playouts"]
+     :get  {:summary   "List upcoming playout events (cursor-paginated)"
+            :parameters {:path  [:map [:channel-id s/ChannelId]]
+                         :query s/CursorPaginationQuery}
+            :responses {200 {:body s/PaginatedPlayoutEvents}
+                        404 {:body s/APIError}}
+            :handler   (pl/list-events-handler ctx)}
+     :post {:summary    "Inject a manual event into the timeline"
+            :parameters {:path [:map [:channel-id s/ChannelId]]
+                         :body s/ManualEventCreate}
+            :responses  {201 {:body s/PlayoutEvent}
+                         404 {:body s/APIError}
+                         400 {:body s/CoercionError}}
+            :handler    (pl/inject-event-handler ctx)}}]
    ["/api/channels/:channel-id/playout/events/:id"
     {:tags       ["playouts"]
-     :parameters {:path [:map
-                         [:channel-id s/ChannelId]
-                         [:id         s/EventId]]}
      :put    {:summary    "Update a manual event"
-              :parameters {:body s/ManualEventUpdate}
+              :parameters {:path [:map
+                                  [:channel-id s/ChannelId]
+                                  [:id         s/EventId]]
+                           :body s/ManualEventUpdate}
               :responses  {200 {:body s/PlayoutEvent}
                            404 {:body s/APIError}
                            400 {:body s/CoercionError}}
               :handler    (pl/update-event-handler ctx)}
      :delete {:summary   "Delete a manual event"
+              :parameters {:path [:map
+                                  [:channel-id s/ChannelId]
+                                  [:id         s/EventId]]}
               :responses {204 {}}
               :handler   (pl/delete-event-handler ctx)}}]
 
    ;; ── Media ───────────────────────────────────────────────────────────────
    ["/api/media/sources"
-     {:tags ["media"]
-      :parameters {:query s/PaginationQuery}
-      :get  {:summary   "List media sources (paginated)"
-             :responses {200 {:body s/PaginatedMediaSources}}
-             :handler   (med/list-sources-handler ctx)}
-      :post {:summary    "Create a media source"
-             :parameters {:body s/MediaSourceCreate}
-             :responses  {201 {:body s/MediaSource}
-                          400 {:body s/CoercionError}}
-             :handler    (med/create-source-handler ctx)}}]
+    {:tags ["media"]
+     :get  {:summary   "List media sources (paginated)"
+            :parameters {:query s/PaginationQuery}
+            :responses {200 {:body s/PaginatedMediaSources}}
+            :handler   (med/list-sources-handler ctx)}
+     :post {:summary    "Create a media source"
+            :parameters {:body s/MediaSourceCreate}
+            :responses  {201 {:body s/MediaSource}
+                         400 {:body s/CoercionError}}
+            :handler    (med/create-source-handler ctx)}}]
    ["/api/media/sources/:id"
     {:tags       ["media"]
      :parameters {:path [:map [:id s/MediaSourceId]]}
@@ -208,29 +224,31 @@
                            400 {:body s/CoercionError}}
               :handler    (med/update-source-handler ctx)}
      :delete {:summary   "Delete a media source"
+              :parameters {:path [:map [:id s/MediaSourceId]]}
               :responses {204 {}}
               :handler   (med/delete-source-handler ctx)}}]
    ["/api/media/libraries"
-     {:tags ["media"]
-      :parameters {:query s/PaginationQuery}
-      :get  {:summary   "List all libraries across sources (paginated)"
-             :responses {200 {:body s/PaginatedMediaLibraries}}
-             :handler   (med/list-all-libraries-handler ctx)}}]
+    {:tags ["media"]
+     :get  {:summary   "List all libraries across sources (paginated)"
+            :parameters {:query s/PaginationQuery}
+            :responses {200 {:body s/PaginatedMediaLibraries}}
+            :handler   (med/list-all-libraries-handler ctx)}}]
    ["/api/media/sources/:id/libraries"
     {:tags       ["media"]
-     :parameters {:path [:map [:id s/MediaSourceId]]}
      :get  {:summary   "List libraries for a media source"
+            :parameters {:path [:map [:id s/MediaSourceId]]}
             :responses {200 {:body [:vector s/MediaLibrary]}}
             :handler   (med/list-libraries-handler ctx)}
      :post {:summary    "Create a library under a media source"
-            :parameters {:body s/MediaLibraryCreate}
+            :parameters {:path [:map [:id s/MediaSourceId]]
+                         :body s/MediaLibraryCreate}
             :responses  {201 {:body s/MediaLibrary}
                          400 {:body s/CoercionError}}
             :handler    (med/create-library-handler ctx)}}]
    ["/api/media/sources/:id/libraries/discover"
     {:tags       ["media"]
-     :parameters {:path [:map [:id s/MediaSourceId]]}
      :post {:summary   "Discover libraries from a remote source"
+            :parameters {:path [:map [:id s/MediaSourceId]]}
             :responses {201 {:body s/DiscoveryResult}
                         400 {:body s/APIError}
                         404 {:body s/APIError}}
@@ -245,6 +263,7 @@
                            400 {:body s/CoercionError}}
               :handler    (med/update-library-handler ctx)}
      :delete {:summary   "Delete a library"
+              :parameters {:path [:map [:id s/LibraryId]]}
               :responses {204 {}}
               :handler   (med/delete-library-handler ctx)}}]
    ["/api/media/libraries/:id/paths"
@@ -265,54 +284,55 @@
               :responses {204 {}}
               :handler   (med/delete-library-path-handler ctx)}}]
    ["/api/media/libraries/:id/items"
-     {:tags       ["media"]
-      :parameters {:path  [:map [:id s/LibraryId]]
-                   :query [:merge s/PaginationQuery
-                           [:map
-                            [:attrs     {:optional true} :string]
-                            [:type      {:optional true} :string]
-                            [:parent-id {:optional true} :int]]]}
-      :get {:summary   "List media items in a library (paginated)"
-            :responses {200 {:body s/PaginatedMediaItems}}
-            :handler   (med/list-library-items-handler ctx)}}]
+    {:tags       ["media"]
+     :parameters {:path  [:map [:id s/LibraryId]]
+                  :query [:map
+                          [:limit      {:optional true} [:int {:min 1 :max 1000 :description "Maximum number of items to return (default varies by endpoint)"}]]
+                          [:offset     {:optional true} [:int {:min 0 :description "Number of items to skip (default: 0)"}]]
+                          [:attrs      {:optional true} :string]
+                          [:type       {:optional true} :string]
+                          [:parent-id  {:optional true} :int]]}
+     :get {:summary   "List media items in a library (paginated)"
+           :responses {200 {:body s/PaginatedMediaItems}}
+           :handler   (med/list-library-items-handler ctx)}}]
    ["/api/media/libraries/:id/scan"
     {:tags       ["media"]
-     :parameters {:path [:map [:id s/LibraryId]]}
      :post {:summary   "Trigger an asynchronous library scan"
+            :parameters {:path [:map [:id s/LibraryId]]}
             :responses {202 {:body s/ScanTriggerResult}
                         404 {:body s/APIError}}
             :handler   (med/trigger-scan-handler ctx)}}]
    ["/api/media/items/:id"
     {:tags       ["media"]
-     :parameters {:path [:map [:id s/MediaItemId]]}
      :get {:summary   "Get a media item"
+           :parameters {:path [:map [:id s/MediaItemId]]}
            :responses {200 {:body s/MediaItem}
                        404 {:body s/APIError}}
            :handler   (med/get-media-item-handler ctx)}}]
    ["/api/media/items/:id/playback-url"
     {:tags       ["media"]
-     :parameters {:path [:map [:id s/MediaItemId]]}
      :get {:summary   "Resolve a direct playback URL for a media item"
+           :parameters {:path [:map [:id s/MediaItemId]]}
            :responses {200 {:body s/PlaybackUrl}
                        404 {:body s/APIError}
                        422 {:body s/APIError}}
            :handler   (med/get-item-playback-url-handler ctx)}}]
    ["/api/media/items/:id/stream"
     {:tags       ["media"]
-     :parameters {:path [:map [:id s/MediaItemId]]}
      :get {:summary "Proxy a media item's stream from its source"
+           :parameters {:path [:map [:id s/MediaItemId]]}
            :handler (med/redirect-to-stream-handler ctx)}}]
    ["/api/media/collections"
-     {:tags ["media"]
-      :parameters {:query s/PaginationQuery}
-      :get  {:summary   "List collections (paginated)"
-             :responses {200 {:body s/PaginatedCollections}}
-             :handler   (med/list-collections-handler ctx)}
-      :post {:summary    "Create a collection"
-             :parameters {:body s/CollectionCreate}
-             :responses  {201 {:body s/Collection}
-                          400 {:body s/CoercionError}}
-             :handler    (med/create-collection-handler ctx)}}]
+    {:tags ["media"]
+     :get  {:summary   "List collections (paginated)"
+            :parameters {:query s/PaginationQuery}
+            :responses {200 {:body s/PaginatedCollections}}
+            :handler   (med/list-collections-handler ctx)}
+     :post {:summary    "Create a collection"
+            :parameters {:body s/CollectionCreate}
+            :responses  {201 {:body s/Collection}
+                         400 {:body s/CoercionError}}
+            :handler    (med/create-collection-handler ctx)}}]
    ["/api/media/collections/:id"
     {:tags       ["media"]
      :parameters {:path [:map [:id s/CollectionId]]}
@@ -377,29 +397,30 @@
 
    ;; ── Tags ────────────────────────────────────────────────────────────────
    ["/api/tags"
-     {:tags ["tags"]
-      :parameters {:query s/PaginationQuery}
-      :get {:summary   "List all tags with usage counts (paginated)"
-            :responses {200 {:body s/PaginatedTags}}
-            :handler   (tags/list-all-tags-handler ctx)}}]
+    {:tags ["tags"]
+     :get {:summary   "List all tags with usage counts (paginated)"
+           :parameters {:query s/PaginationQuery}
+           :responses {200 {:body s/PaginatedTags}}
+           :handler   (tags/list-all-tags-handler ctx)}}]
    ["/api/media-items/:id/tags"
     {:tags       ["tags"]
-     :parameters {:path [:map [:id s/MediaItemId]]}
      :get  {:summary   "List tags on a media item"
+            :parameters {:path [:map [:id s/MediaItemId]]}
             :responses {200 {:body [:vector s/TagName]}}
             :handler   (tags/get-tags-handler ctx)}
      :post {:summary    "Add tags to a media item"
-            :parameters {:body s/TagCreate}
+            :parameters {:path [:map [:id s/MediaItemId]]
+                         :body s/TagCreate}
             :responses  {200 {:body s/TagAddResult}
                          400 {:body s/APIError}
                          404 {:body s/APIError}}
             :handler    (tags/add-tags-handler ctx)}}]
    ["/api/media-items/:id/tags/:tag"
     {:tags       ["tags"]
-     :parameters {:path [:map
-                         [:id  s/MediaItemId]
-                         [:tag s/TagName]]}
      :delete {:summary   "Remove a tag from a media item"
+              :parameters {:path [:map
+                                  [:id  s/MediaItemId]
+                                  [:tag s/TagName]]}
               :responses {204 {}}
               :handler   (tags/delete-tag-handler ctx)}}]
 
@@ -416,18 +437,20 @@
             :handler    (ffmpeg/create-profile-handler ctx)}}]
    ["/api/ffmpeg/profiles/:id"
     {:tags       ["ffmpeg"]
-     :parameters {:path [:map [:id s/FFmpegProfileId]]}
      :get    {:summary   "Get an FFmpeg profile"
+              :parameters {:path [:map [:id s/FFmpegProfileId]]}
               :responses {200 {:body s/FFmpegProfile}
                           404 {:body s/APIError}}
               :handler   (ffmpeg/get-profile-handler ctx)}
      :put    {:summary    "Update an FFmpeg profile"
-              :parameters {:body s/FFmpegProfileUpdate}
+              :parameters {:path [:map [:id s/FFmpegProfileId]]
+                           :body s/FFmpegProfileUpdate}
               :responses  {200 {:body s/FFmpegProfile}
                            404 {:body s/APIError}
                            400 {:body s/APIError}}
               :handler    (ffmpeg/update-profile-handler ctx)}
      :delete {:summary   "Delete an FFmpeg profile"
+              :parameters {:path [:map [:id s/FFmpegProfileId]]}
               :responses {200 {:body s/FFmpegProfileDeleted}
                           404 {:body s/APIError}
                           400 {:body s/APIError}}
@@ -465,13 +488,13 @@
             :handler    (test/create-test-channel-handler ctx)}}]
    ["/api/test/channels/:identifier"
     {:tags       ["test"]
-     :parameters {:path [:map [:identifier :string]]}
      :delete {:summary "Delete a test channel"
+              :parameters {:path [:map [:identifier :string]]}
               :handler (test/delete-test-channel-handler ctx)}}]
    ["/api/test/channels/:identifier/artwork"
     {:tags       ["test"]
-     :parameters {:path [:map [:identifier :string]]}
      :post {:summary "Attach a generated test logo to a channel"
+            :parameters {:path [:map [:identifier :string]]}
             :handler (test/add-test-artwork-handler ctx)}}]
 
    ;; ── Output formats ──────────────────────────────────────────────────────
@@ -503,38 +526,39 @@
    ;; ── Streaming ───────────────────────────────────────────────────────────
    ["/stream/:uuid"
     {:tags       ["streaming"]
-     :parameters {:path [:map [:uuid :uuid]]}
      :get        {:summary "HLS playlist for a channel (starts FFmpeg if needed)"
+                  :parameters {:path [:map [:uuid :uuid]]}
                   :handler (streaming/stream-handler ctx)}}]
    ["/stream/:uuid/:segment"
     {:tags       ["streaming"]
-     :parameters {:path [:map [:uuid :uuid] [:segment :string]]}
      :get        {:summary "HLS transport-stream segment"
+                  :parameters {:path [:map [:uuid :uuid] [:segment :string]]}
                   :handler (streaming/segment-handler ctx)}}]
 
    ;; ── Artwork ─────────────────────────────────────────────────────────────
    ["/logos/:uuid"
     {:tags       ["artwork"]
-     :parameters {:path [:map [:uuid :uuid]]}
      :get        {:summary "Channel logo/artwork by channel UUID"
+                  :parameters {:path [:map [:uuid :uuid]]}
                   :handler (logos/logos-handler ctx)}}]
 
    ;; ── Debug ───────────────────────────────────────────────────────────────
    ["/api/debug/stream/:uuid"
     {:tags       ["debug"]
-     :parameters {:path [:map [:uuid :uuid]]}
      :get        {:summary  "Diagnostic information for a running HLS stream"
+                  :parameters {:path [:map [:uuid :uuid]]}
                   :handler  (streaming/stream-debug-handler ctx)}}]
 
    ;; ── Metrics ─────────────────────────────────────────────────────────────
    ["/api/metrics/channels"
     {:tags ["metrics"]
      :get  {:summary    "List channel view events (cursor-paginated)"
-            :parameters {:query [:merge s/CursorPaginationQuery
-                                  [:map
-                                   [:channel-id {:optional true} :string]
-                                   [:from       {:optional true} :string]
-                                   [:to         {:optional true} :string]]]}
+            :parameters {:query [:map
+                                 [:limit       {:optional true} [:int {:min 1 :max 1000 :description "Maximum number of items to return"}]]
+                                 [:cursor      {:optional true} [:string {:description "Opaque cursor for fetching next page"}]]
+                                 [:channel-id  {:optional true} :string]
+                                 [:from        {:optional true} :string]
+                                 [:to          {:optional true} :string]]}
             :responses  {200 {:body [:map
                                      [:items [:vector :any]]
                                      [:pagination s/CursorPaginationMeta]]}}
@@ -542,12 +566,13 @@
    ["/api/metrics/media-items"
     {:tags ["metrics"]
      :get  {:summary    "List media item view events with percent_watched (cursor-paginated)"
-            :parameters {:query [:merge s/CursorPaginationQuery
-                                  [:map
-                                   [:channel-id    {:optional true} :string]
-                                   [:media-item-id {:optional true} :string]
-                                   [:from          {:optional true} :string]
-                                   [:to            {:optional true} :string]]]}
+            :parameters {:query [:map
+                                 [:limit          {:optional true} [:int {:min 1 :max 1000 :description "Maximum number of items to return"}]]
+                                 [:cursor         {:optional true} [:string {:description "Opaque cursor for fetching next page"}]]
+                                 [:channel-id     {:optional true} :string]
+                                 [:media-item-id  {:optional true} :string]
+                                 [:from           {:optional true} :string]
+                                 [:to             {:optional true} :string]]}
             :responses  {200 {:body [:map
                                      [:items [:vector :any]]
                                      [:pagination s/CursorPaginationMeta]]}}

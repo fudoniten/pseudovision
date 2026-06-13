@@ -16,7 +16,13 @@
    :channels/uuid      #uuid "00000000-0000-0000-0000-000000000001"
    :channels/number    "2"
    :channels/name      "Test Channel"
-   :channels/sort-number 2.0})
+   :channels/sort-number 2.0
+   :channels/streaming-mode 'ts
+   :channels/ffmpeg-profile-id 1
+   :channels/subtitle-mode "disabled"
+   :channels/stream-selector-mode "auto"
+   :channels/is-enabled true
+   :channels/show-in-epg true})
 
 (defn- make-test-handler []
   (let [stub {:db nil :ffmpeg {} :media {} :scheduling {}}]
@@ -35,7 +41,8 @@
 
 (deftest list-channels-returns-200
   (testing "GET /api/channels returns 200"
-    (with-redefs [chan/list-channels (fn [_] [test-channel])]
+    (with-redefs [pseudovision.db.channels/list-channels (fn [_ _] [test-channel])
+                  pseudovision.db.channels/count-channels (fn [_] 1)]
       (let [handler (make-test-handler)
             resp    (handler (mock/request :get "/api/channels"))]
         (is (= 200 (:status resp)))))))
@@ -46,14 +53,16 @@
 
 (deftest list-channels-unqualifies-response-keys
   (testing "GET /api/channels strips :channels/ namespace from response body"
-    (with-redefs [chan/list-channels (fn [_] [test-channel])]
+    (with-redefs [chan/list-channels (fn [_ _] [test-channel])
+                  chan/count-channels (fn [_] 1)]
       (let [handler (make-test-handler)
             resp    (handler (mock/request :get "/api/channels"))
-            body    (pthru (parse-json-body resp))]
-        (is (vector? body))
-        (is (= 1 (get-in body [0 :id])))
-        (is (= "Test Channel" (get-in body [0 :name])))
-        (is (nil? (get-in body [0 (keyword "channels/id")])))))))
+            body    (pthru (parse-json-body resp))
+            items   (get body :items)]
+        (is (vector? items))
+        (is (= 1 (get-in items [0 :id])))
+        (is (= "Test Channel" (get-in items [0 :name])))
+        (is (nil? (get-in items [0 (keyword "channels/id")])))))))
 
 (deftest get-channel-not-found
   (testing "GET /api/channels/999 returns 404 when channel is missing"
