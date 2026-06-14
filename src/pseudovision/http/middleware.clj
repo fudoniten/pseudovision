@@ -71,10 +71,18 @@
          :body    (json/generate-string {:error "Internal server error"})}))))
 
 (defn- coercion-error-response
-  "Translates a reitit coercion failure into a structured 400 response."
+  "Translates a reitit coercion failure into a structured 400 or 500 response.
+   For response coercion failures (500), logs the full details to aid debugging."
   [status]
   (fn [exception _request]
     (let [data (ex-data exception)]
+      (when (= status 500)
+        ;; Log response coercion failures in detail
+        (log/error exception "Response coercion failed"
+                   {:in        (:in data)
+                    :humanized (:humanized data)
+                    :schema    (:schema data)
+                    :value     (:value data)}))
       {:status status
        :body   {:error     "Request coercion failed"
                 :in        (:in data)
