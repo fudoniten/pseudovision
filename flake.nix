@@ -31,9 +31,49 @@
         integrationTests =
           import ./integration-tests.nix { inherit pkgs pseudovision; };
 
+        # `nix run .#integration-test` — brings up an ephemeral PostgreSQL,
+        # runs migrations and the filler integration test against it, then
+        # tears the database down.  Run from the repository root.
+        integrationTestRunner = pkgs.writeShellApplication {
+          name = "pseudovision-integration-test";
+          runtimeInputs = with pkgs; [ postgresql_16 clojure jdk21 coreutils ];
+          text = ''
+            if [ ! -f deps.edn ]; then
+              echo "error: run from the repository root (deps.edn not found)" >&2
+              exit 1
+            fi
+
+            workdir="$(mktemp -d)"
+            export PGDATA="$workdir/data"
+
+            cleanup() {
+              if [ -d "$PGDATA" ]; then
+                pg_ctl -D "$PGDATA" -m immediate stop >/dev/null 2>&1 || true
+              fi
+              rm -rf "$workdir"
+            }
+            trap cleanup EXIT
+
+            port="$(( (RANDOM % 2000) + 55000 ))"
+            echo "Starting ephemeral PostgreSQL in $workdir (port $port)..."
+            initdb -U postgres -A trust "$PGDATA" >/dev/null
+            pg_ctl -D "$PGDATA" -w \
+              -o "-p $port -k $workdir -c listen_addresses=localhost" \
+              start >/dev/null
+            createdb -h localhost -p "$port" -U postgres pseudovision
+
+            export PSEUDOVISION_TEST_DB_URL="jdbc:postgresql://localhost:$port/pseudovision"
+            export PSEUDOVISION_TEST_DB_USER="postgres"
+            export PSEUDOVISION_TEST_DB_PASS=""
+
+            echo "Running filler integration test..."
+            clojure -M:test --focus pseudovision.scheduling.filler-integration-test
+          '';
+        };
+
       in {
         packages = {
-          inherit pseudovision migratusRunner;
+          inherit pseudovision migratusRunner integrationTestRunner;
           default = pseudovision;
 
           deployContainer = let
@@ -92,6 +132,11 @@
           migrate = {
             type = "app";
             program = "${migratusRunner}/bin/migratus-runner";
+          };
+          integration-test = {
+            type = "app";
+            program =
+              "${integrationTestRunner}/bin/pseudovision-integration-test";
           };
           deployContainer = {
             type = "app";
