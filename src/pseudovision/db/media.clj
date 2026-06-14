@@ -238,7 +238,7 @@
                               :where  [:= :ch.parent-id :mi.id]}
                              :child-count]))
         base        (-> (build-media-items-base-query library-id opts)
-                        (h/select select-cols))
+                        (as-> q (apply h/select q select-cols)))
         with-meta   (cond-> base
                       need-meta?
                       (h/left-join [:metadata :m] [:= :m.media-item-id :mi.id]))
