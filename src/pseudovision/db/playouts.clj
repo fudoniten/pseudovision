@@ -173,6 +173,30 @@
                                [:= :is-manual  false]])
                      sql/format)))
 
+(def filler-event-kinds
+  "event_kind values that represent filler rather than primary content."
+  ["pre" "mid" "post" "pad" "tail" "fallback"])
+
+(defn recent-filler-airings
+  "Returns, across ALL playouts (every channel), the finish times of filler
+   events that finish within [since, until].  Used to compute global filler
+   recency so the same bumper is not aired too close together on any channel.
+
+   Result: media_item_id -> vector of finish Instants."
+  [ds since until]
+  (let [rows (db/query ds (-> (h/select :media-item-id :finish-at)
+                              (h/from :playout-events)
+                              (h/where [:and
+                                        [:in :kind (mapv #(sql-util/->pg-enum "event_kind" %)
+                                                         filler-event-kinds)]
+                                        [:>= :finish-at since]
+                                        [:<= :finish-at until]])
+                              sql/format))]
+    (reduce (fn [acc r]
+              (update acc (:playout-events/media-item-id r)
+                      (fnil conj []) (:playout-events/finish-at r)))
+            {} rows)))
+
 ;; ---------------------------------------------------------------------------
 ;; Playout history
 ;; ---------------------------------------------------------------------------
