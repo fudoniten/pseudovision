@@ -75,13 +75,13 @@
            channel (db-channels/create-channel! 
                     ds
                     {:number number
-                     :sort_number (parse-double number)
+                     :sort-number (parse-double number)
                      :name name
-                     :group_name "Testing"
-                     :streaming_mode (sql-util/->pg-enum "streaming_mode" "hls_segmenter")
-                     :ffmpeg_profile_id ffmpeg-profile-id
-                     :is_enabled true
-                     :show_in_epg true})
+                     :group-name "Testing"
+                     :streaming-mode (sql-util/->pg-enum "streaming_mode" "hls_segmenter")
+                     :ffmpeg-profile-id ffmpeg-profile-id
+                     :is-enabled true
+                     :show-in-epg true})
            
            channel-id (or (:channels/id channel) (:id channel))
            uuid (or (:channels/uuid channel) (:uuid channel))]
