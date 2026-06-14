@@ -86,7 +86,6 @@
    [:name                           :string]
    [:group-name                     {:optional true} [:maybe :string]]
    [:categories                     {:optional true} [:maybe :string]]
-   [:description                    {:optional true} [:maybe :string]]
    [:streaming-mode                 StreamingMode]
    [:ffmpeg-profile-id              :int]
    [:watermark-id                   {:optional true} [:maybe :int]]
