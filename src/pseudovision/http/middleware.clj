@@ -80,15 +80,44 @@
                 :in        (:in data)
                 :humanized (:humanized data)}})))
 
+(defn- sql-state
+  "Returns the SQLState string for `e` (or any cause in its chain) if it is a
+   java.sql.SQLException, else nil."
+  [^Throwable e]
+  (loop [^Throwable t e]
+    (cond
+      (nil? t)                      nil
+      (instance? java.sql.SQLException t) (.getSQLState ^java.sql.SQLException t)
+      :else                         (recur (.getCause t)))))
+
+(defn- unhandled-exception-response
+  "Logs the full exception — including message and (for SQL errors) SQLState —
+   and returns a structured 500. The reitit default handler only reports the
+   exception class, which hides the actual cause (e.g. the Postgres error
+   message), so we override it here."
+  [^Throwable e _request]
+  (log/error e "Unhandled exception in handler"
+             {:class    (.getName (.getClass e))
+              :message  (ex-message e)
+              :sqlstate (sql-state e)})
+  {:status 500
+   :body   (cond-> {:error   "Internal server error"
+                    :class   (.getName (.getClass e))
+                    :message (ex-message e)}
+             (sql-state e) (assoc :sqlstate (sql-state e)))})
+
 (def exception-middleware
   "Reitit exception middleware that converts coercion failures into the
-   application-standard {:error :in :humanized} envelope. Non-coercion
-   exceptions re-raise to the outer wrap-error-handler."
+   application-standard {:error :in :humanized} envelope. Any other exception
+   is logged in full (message + SQLState) and rendered as a structured 500 by
+   `unhandled-exception-response`, overriding reitit's default handler which
+   would otherwise report only the exception class."
   (reitit-exception/create-exception-middleware
    (merge
     reitit-exception/default-handlers
     {:reitit.coercion/request-coercion  (coercion-error-response 400)
-     :reitit.coercion/response-coercion (coercion-error-response 500)})))
+     :reitit.coercion/response-coercion (coercion-error-response 500)
+     ::reitit-exception/default         unhandled-exception-response})))
 
 ;; ---------------------------------------------------------------------------
 ;; Logging
