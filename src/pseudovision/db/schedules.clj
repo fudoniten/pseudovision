@@ -12,7 +12,7 @@
 (defn count-schedules
   "Counts total schedules."
   [ds]
-  (let [result (db/query-one ds (-> (h/select [[:%count.* :count]])
+  (let [result (db/query-one ds (-> (h/select [:%count.*])
                                     (h/from :schedules)
                                     sql/format))]
     (or (:count result) 0)))
@@ -64,7 +64,7 @@
 (defn count-slots
   "Counts total slots in a schedule."
   [ds schedule-id]
-  (let [result (db/query-one ds (-> (h/select [[:%count.* :count]])
+  (let [result (db/query-one ds (-> (h/select [:%count.*])
                                     (h/from :schedule-slots)
                                     (h/where [:= :schedule-id schedule-id])
                                     sql/format))]

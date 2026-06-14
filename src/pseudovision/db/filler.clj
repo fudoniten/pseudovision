@@ -42,7 +42,7 @@
 ;; ---------------------------------------------------------------------------
 
 (defn count-filler-presets [ds]
-  (let [result (db/query-one ds (-> (h/select [[:%count.* :count]])
+  (let [result (db/query-one ds (-> (h/select [:%count.*])
                                     (h/from :filler-presets)
                                     sql/format))]
     (or (:count result) 0)))

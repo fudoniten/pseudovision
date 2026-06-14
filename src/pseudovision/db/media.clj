@@ -12,7 +12,7 @@
 (defn count-media-sources
   "Counts total media sources."
   [ds]
-  (let [result (db/query-one ds (-> (h/select [[:%count.* :count]])
+  (let [result (db/query-one ds (-> (h/select [:%count.*])
                                     (h/from :media-sources)
                                     sql/format))]
     (or (:count result) 0)))
@@ -77,7 +77,7 @@
 (defn count-libraries
   "Counts total libraries."
   [ds]
-  (let [result (db/query-one ds (-> (h/select [[:%count.* :count]])
+  (let [result (db/query-one ds (-> (h/select [:%count.*])
                                     (h/from :libraries)
                                     sql/format))]
     (or (:count result) 0)))
@@ -209,7 +209,7 @@
    - :parent-id - when present in opts (even if nil), filters by parent_id"
   [ds library-id opts]
   (let [query (-> (build-media-items-base-query library-id opts)
-                  (h/select [[:%count.* :count]])
+                  (h/select [:%count.*])
                   sql/format)
         result (db/query-one ds query)]
     (or (:count result) 0)))
@@ -233,7 +233,7 @@
         col-attrs   (remove #{:child-count} attrs)
         select-cols (cond-> (mapv item-attr->col (filter item-attr->col col-attrs))
                       need-count?
-                      (conj [{:select [[:%count.*]]
+                      (conj [{:select [:%count.*]
                               :from   [[:media-items :ch]]
                               :where  [:= :ch.parent-id :mi.id]}
                              :child-count]))
@@ -348,7 +348,7 @@
 (defn count-collections
   "Counts total collections."
   [ds]
-  (let [result (db/query-one ds (-> (h/select [[:%count.* :count]])
+  (let [result (db/query-one ds (-> (h/select [:%count.*])
                                     (h/from :collections)
                                     sql/format))]
     (or (:count result) 0)))

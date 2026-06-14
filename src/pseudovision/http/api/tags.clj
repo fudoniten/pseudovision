@@ -103,12 +103,12 @@
           limit  (or (:limit qp) 100)
           offset (or (:offset qp) 0)
           ;; Count total unique tags
-          total-result (db-core/query-one db (-> (h/select [[:%count.distinct.name :count]])
+          total-result (db-core/query-one db (-> (h/select [:%count.distinct.name])
                                                  (h/from :metadata-tags)
                                                  sql/format))
           total  (or (:count total-result) 0)
           ;; Fetch paginated tags
-          tags   (db-core/query db (-> (h/select :name [:%count.* :count])
+          tags   (db-core/query db (-> (h/select :name [:%count.*])
                                        (h/from :metadata-tags)
                                        (h/group-by :name)
                                        (h/order-by [:count :desc] :name)

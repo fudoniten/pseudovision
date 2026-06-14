@@ -6,7 +6,7 @@
 (defn count-channels
   "Counts total channels."
   [ds]
-  (let [result (db/query-one ds (-> (h/select [[:%count.* :count]])
+  (let [result (db/query-one ds (-> (h/select [:%count.*])
                                     (h/from :channels)
                                     sql/format))]
     (or (:count result) 0)))
