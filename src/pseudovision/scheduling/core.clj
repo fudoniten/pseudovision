@@ -73,9 +73,25 @@
     ;; If no tag filters, item matches
     true))
 
+(defn- playable?
+  "True when an item has a known, positive duration.
+
+   Media that has not been probed yet carries a zero duration
+   (media_versions.duration defaults to INTERVAL '0'), and a slot whose item
+   has no media_versions row at all resolves to a nil duration. Either way the
+   item has no playable length: emitting it would not advance the build's
+   wall-clock cursor, and because the collection enumerators loop forever the
+   block/flood fill loops would never terminate (a silent infinite loop). Such
+   items are therefore excluded from scheduling — mirroring the filler
+   bin-packer, which already skips non-positive-duration items."
+  [item]
+  (when-let [^Duration d (:media-versions/duration item)]
+    (pos? (.getSeconds d))))
+
 (defn- load-items
   "Returns the ordered seq of playable media items for a slot.
-   Filters by required/excluded tags if specified."
+   Filters by required/excluded tags if specified, and drops items with no
+   usable (positive) duration so they can't stall the build."
   [db slot]
   (let [required-tags (or (:schedule-slots/required-tags slot) [])
         excluded-tags (or (:schedule-slots/excluded-tags slot) [])
@@ -87,13 +103,19 @@
                 (:schedule-slots/media-item-id slot)
                 [(media-db/get-media-item db (:schedule-slots/media-item-id slot))]
 
-                :else [])]
-    ;; Apply tag filters if specified
-    (if (or (seq required-tags) (seq excluded-tags))
-      (do
-        (log/debug "Filtering items by tags" {:required required-tags :excluded excluded-tags})
-        (filter #(matches-tag-filters? db % required-tags excluded-tags) items))
-      items)))
+                :else [])
+        ;; Apply tag filters if specified
+        tagged (if (or (seq required-tags) (seq excluded-tags))
+                 (do
+                   (log/debug "Filtering items by tags" {:required required-tags :excluded excluded-tags})
+                   (filterv #(matches-tag-filters? db % required-tags excluded-tags) items))
+                 (vec items))
+        playable (filterv playable? tagged)]
+    (when (< (count playable) (count tagged))
+      (log/warn "Skipping unplayable items with zero/unknown duration"
+                {:slot-id (:schedule-slots/id slot)
+                 :dropped (- (count tagged) (count playable))}))
+    playable))
 
 (defn- item-duration
   "Returns the item's playback duration, or zero if the item has not been probed."
@@ -200,7 +222,10 @@
   [db cursor slot channel role from to playout-id opts]
   (if-let [preset-ref (filler/resolve-filler-preset role slot channel)]
     (if-let [preset (filler-db/get-filler-preset db (:id preset-ref))]
-      (let [items (filler-db/load-filler-items db preset)
+      ;; Drop unplayable (zero/unknown duration) filler items up front so the
+      ;; enumerator and fill-gap below share the same item vector and the
+      ;; duration-mode fill loop can't spin on a zero-length item.
+      (let [items (filterv playable? (filler-db/load-filler-items db preset))
             until (if (#{:pre :mid :post} role)
                     (point-filler-window preset from to)
                     to)]
@@ -560,12 +585,14 @@
                 opts'   (assoc opts' :pack-filler? (get opts :pack-filler? true)
                                      :recency-window window
                                      :filler-airings-atom (atom airings))]
-          (loop [cursor   initial-cur
-                 slot-idx 0
-                 events   []]
+          (loop [cursor       initial-cur
+                 slot-idx     0
+                 cycle-anchor nil
+                 events       []]
             (let [slot  (nth slots slot-idx nil)
                   start (:next-start cursor)]
-              (if (or (nil? slot) (.isAfter start horizon))
+              (cond
+                (or (nil? slot) (.isAfter start horizon))
                 ;; Done; flush events and save cursor
                 (do
                   (playout-db/bulk-insert-events! tx events)
@@ -577,7 +604,29 @@
                   (log/info "Build complete" {:playout-id playout-id
                                               :events     (count events)})
                   (count events))
+
+                ;; Safety net: if a full pass over every slot left the cursor
+                ;; exactly where it started, the schedule can't make forward
+                ;; progress (e.g. every slot resolves to no schedulable
+                ;; content). Without this, build! would loop forever and the
+                ;; HTTP request would hang with no response. Abort and record
+                ;; the failure instead.
+                (and (zero? slot-idx)
+                     (some? cycle-anchor)
+                     (not (.isAfter start cycle-anchor)))
+                (do
+                  (log/warn "Build stalled: timeline did not advance over a full slot cycle; aborting"
+                            {:playout-id playout-id :at (str start) :slots (count slots)})
+                  (playout-db/bulk-insert-events! tx events)
+                  (playout-db/update-playout! tx playout-id
+                                              {:cursor         (cursor/->json cursor)
+                                               :last-built-at  now
+                                               :build-success  false
+                                               :build-message  "Build stalled: no schedulable content advanced the timeline"})
+                  (count events))
+
                 ;; Process this slot
+                :else
                 (let [[new-events cursor'] (process-slot
                                             tx cursor slot channel
                                             playout-id slots opts')
@@ -601,6 +650,10 @@
                         [[] cursor'])
                       cursor''' (cursor/advance-slot cursor'' (count slots))]
                   (recur cursor''' (mod (inc slot-idx) (count slots))
+                         ;; Remember where the cursor stood at the start of this
+                         ;; cycle so the stall guard above can detect a full,
+                         ;; zero-progress revolution through the slot list.
+                         (if (zero? slot-idx) start cycle-anchor)
                          (into events (into new-events gap-events)))))))))))))
 
 (defn rebuild-from-now!
