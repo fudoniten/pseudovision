@@ -29,6 +29,11 @@
   java.sql.Timestamp
   (read-column-by-label [v _] (.toInstant v))
   (read-column-by-index [v _ _] (.toInstant v))
+  java.sql.Array
+  ;; SQL arrays (e.g. TEXT[] columns) arrive as PgArray, which is not seqable.
+  ;; Decode to a Clojure vector so callers can treat them as ordinary seqs.
+  (read-column-by-label [v _] (vec (.getArray v)))
+  (read-column-by-index [v _ _] (vec (.getArray v)))
   PGobject
   (read-column-by-label [v _]
     (if (= "jsonb" (.getType v))
