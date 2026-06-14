@@ -67,7 +67,7 @@
                                          (h/values [prepared])
                                          (h/returning :*)
                                          sql/format))]
-    (log/info "Created filler preset" {:id (:filler-presets/id result) :name (:name attrs)})
+    (log/info "Created filler preset" {:id (:id result) :name (:name attrs)})
     result))
 
 (defn update-filler-preset! [ds id attrs]
