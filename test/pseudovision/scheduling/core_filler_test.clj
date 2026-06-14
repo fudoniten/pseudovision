@@ -189,6 +189,61 @@
               "cursor should have saved enumerator state under the filler preset key"))))))
 
 ;; ---------------------------------------------------------------------------
+;; Unplayable (zero / unknown duration) content — must not stall the build
+;;
+;; Media that has not been probed yet has a zero duration, and a slot whose
+;; item has no media_versions row resolves to a nil duration. The collection
+;; enumerators loop forever, so before these items were filtered out the
+;; block/flood fill loops would spin without ever advancing the wall clock —
+;; a silent infinite loop that hung the rebuild request.
+;; ---------------------------------------------------------------------------
+
+(defn- run-with-timeout
+  "Runs thunk on a separate thread so that a regression which reintroduces the
+   infinite fill loop fails the test (via timeout) instead of hanging the whole
+   suite. Returns the thunk's value, or ::timeout."
+  [ms thunk]
+  (let [f (future (thunk))
+        v (deref f ms ::timeout)]
+    (when (= v ::timeout) (future-cancel f))
+    v))
+
+(deftest emit-block-drops-zero-duration-content
+  (testing "a zero-duration (unprobed) content item is unplayable: the block fills with tail filler instead of looping forever"
+    (let [zero-item {:media-items/id 1 :media-versions/duration (Duration/ofSeconds 0)}
+          slot      (block-slot-with-item 1 dur-1h "filler")
+          cur       (make-cursor t0)]
+      (with-redefs [media-db/get-media-item     (fn [_ _] zero-item)
+                    filler-db/get-filler-preset  (fn [_ _] tail-filler-preset)
+                    filler-db/load-filler-items  (fn [_ _] (filler-items 20))]
+        (let [result (run-with-timeout 5000 #(core/emit-block nil cur slot channel 1 {}))]
+          (is (not= ::timeout result) "emit-block must terminate, not hang")
+          (when (vector? result)
+            (let [[events cursor'] result]
+              (is (every? #(= 99 (:media-item-id %)) events)
+                  "zero-duration content is dropped; only filler is emitted")
+              (is (= t1 (:next-start cursor')) "cursor advances to block-end"))))))))
+
+(deftest emit-flood-drops-nil-duration-content
+  (testing "a content item with no duration is unplayable: the flood window fills with fallback filler instead of looping forever"
+    (let [nil-item {:media-items/id 1}            ; no :media-versions/duration at all
+          slot     {:schedule-slots/id 1
+                    :schedule-slots/media-item-id 1
+                    :schedule-slots/playback-order "chronological"}
+          cur      (make-cursor t0)
+          opts     {:flood-end t2 :seed 0}]
+      (with-redefs [media-db/get-media-item     (fn [_ _] nil-item)
+                    filler-db/get-filler-preset  (fn [_ _] fallback-filler-preset)
+                    filler-db/load-filler-items  (fn [_ _] (filler-items 30))]
+        (let [result (run-with-timeout 5000 #(core/emit-flood nil cur slot channel 1 opts))]
+          (is (not= ::timeout result) "emit-flood must terminate, not hang")
+          (when (vector? result)
+            (let [[events cursor'] result]
+              (is (every? #(= 99 (:media-item-id %)) events)
+                  "nil-duration content is dropped; only filler is emitted")
+              (is (= t2 (:next-start cursor')) "cursor advances to flood-end"))))))))
+
+;; ---------------------------------------------------------------------------
 ;; time-of-day-on-same-day
 ;; ---------------------------------------------------------------------------
 
