@@ -19,7 +19,7 @@
   [:double {:description "Numeric sort order; derived from :number if omitted on create"}])
 
 (def StreamingMode
-  [:enum {:description "Output stream format"} "ts" "hls"])
+  [:enum {:description "Output stream format"} "ts" "ts_hybrid" "hls_direct" "hls_segmenter"])
 
 (def Interval
   [:string {:description "PostgreSQL interval (e.g. \"02:00:00\" or \"1 hour 30 minutes\")"}])
@@ -84,6 +84,7 @@
    [:number                         ChannelNumber]
    [:sort-number                    SortNumber]
    [:name                           :string]
+   [:description                    {:optional true} [:maybe :string]]
    [:group-name                     {:optional true} [:maybe :string]]
    [:categories                     {:optional true} [:maybe :string]]
    [:streaming-mode                 StreamingMode]
