@@ -236,15 +236,18 @@
 (defn add-collection-item-handler [{:keys [db]}]
   (fn [req]
     (let [id      (get-in req [:parameters :path :id])
-          item-id (get-in req [:parameters :body :media-item-id])]
-      (db/add-item-to-collection! db id item-id)
-      {:status 204 :body nil})))
+          item-ref (get-in req [:parameters :body :media-item-id])]
+      (if-let [item-id (db/resolve-media-item-id db item-ref)]
+        (do (db/add-item-to-collection! db id item-id)
+            {:status 204 :body nil})
+        {:status 404 :body {:error "Media item not found"}}))))
 
 (defn remove-collection-item-handler [{:keys [db]}]
   (fn [req]
-    (let [id      (get-in req [:parameters :path :id])
-          item-id (get-in req [:parameters :path :item-id])]
-      (db/remove-item-from-collection! db id item-id)
+    (let [id       (get-in req [:parameters :path :id])
+          item-ref (get-in req [:parameters :path :item-id])]
+      (when-let [item-id (db/resolve-media-item-id db item-ref)]
+        (db/remove-item-from-collection! db id item-id))
       {:status 204 :body nil})))
 
 ;; ---------------------------------------------------------------------------

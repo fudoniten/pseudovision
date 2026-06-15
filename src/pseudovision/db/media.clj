@@ -164,6 +164,42 @@
 ;; Media items
 ;; ---------------------------------------------------------------------------
 
+(defn- item-ref->int
+  "If `ref` denotes an internal integer media-item id (an integer, or a string
+   of digits that fits the SERIAL `id` column), returns it as a long. Otherwise
+   returns nil, meaning the ref should be matched against `remote_key` (e.g. a
+   Jellyfin item id)."
+  [ref]
+  (cond
+    (integer? ref) ref
+    (and (string? ref) (re-matches #"\d+" ref))
+    (let [n (try (Long/parseLong ref) (catch Exception _ nil))]
+      (when (and n (<= 1 n Integer/MAX_VALUE)) n))
+    :else nil))
+
+(defn- item-ref-match
+  "HoneySQL predicate selecting a media item by either its internal integer id
+   (`id-col`) or its `remote_key` (`remote-col`, e.g. a Jellyfin item id).
+
+   Numeric refs are matched against both columns so an all-numeric remote_key
+   still resolves; non-numeric refs match remote_key only."
+  [id-col remote-col ref]
+  (if-let [n (item-ref->int ref)]
+    [:or [:= id-col n] [:= remote-col (str ref)]]
+    [:= remote-col (str ref)]))
+
+(defn resolve-media-item-id
+  "Resolves a media-item reference — an internal integer id or a remote_key
+   (e.g. a Jellyfin item id) — to its internal integer id, or nil if no such
+   item exists. Use this before writing the integer id into a foreign key."
+  [ds ref]
+  (let [row (db/query-one ds (-> (h/select :mi.id)
+                                 (h/from [:media-items :mi])
+                                 (h/where (item-ref-match :mi.id :mi.remote-key ref))
+                                 sql/format))]
+    (when row
+      (some row [:id :media-items/id :mi/id]))))
+
 (def ^:private item-attr->col
   "Maps attribute keyword → HoneySQL select expression."
   {:id              :mi.id
@@ -248,7 +284,10 @@
                           (:offset opts) (h/offset (:offset opts)))]
     (db/query ds (sql/format with-pagination))))
 
-(defn get-media-item [ds id]
+(defn get-media-item
+  "Fetches a media item by reference. `id` may be the internal integer id or a
+   remote_key (e.g. a Jellyfin item id)."
+  [ds id]
   (db/query-one ds (-> (h/select :mi.id :mi.kind :mi.state :mi.parent-id :mi.position
                                  [:mi.remote_key :remote-key]
                                  [:mi.remote_etag :remote-etag]
@@ -259,12 +298,13 @@
                                  [:m.content-rating :content-rating])
                        (h/from [:media-items :mi])
                        (h/left-join [:metadata :m] [:= :m.media-item-id :mi.id])
-                       (h/where [:= :mi.id id])
+                       (h/where (item-ref-match :mi.id :mi.remote-key id))
                        sql/format)))
 
 (defn get-media-item-with-source
   "Returns a media item joined to its media source, including the source kind
-   and connection_config needed to construct a playback URL."
+   and connection_config needed to construct a playback URL. `id` may be the
+   internal integer id or a remote_key (e.g. a Jellyfin item id)."
   [ds id]
   (db/query-one ds (-> (h/select :mi.id :mi.kind :mi.state :mi.remote-key
                                  :m.title
@@ -275,7 +315,7 @@
                        (h/join [:libraries :l]      [:= :l.id :lp.library-id])
                        (h/join [:media-sources :ms]  [:= :ms.id :l.media-source-id])
                        (h/left-join [:metadata :m]   [:= :m.media-item-id :mi.id])
-                       (h/where [:= :mi.id id])
+                       (h/where (item-ref-match :mi.id :mi.remote-key id))
                        sql/format)))
 
 (defn list-items-for-library-path [ds library-path-id]
