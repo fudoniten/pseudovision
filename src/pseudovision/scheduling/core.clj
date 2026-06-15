@@ -700,54 +700,50 @@
 
                 ;; Process this slot
                 :else
-                (try
-                  (let [[new-events cursor'] (process-slot
-                                              tx cursor slot channel
-                                              playout-id slots opts')
-                        ;; Fill any dead air between this slot's end and the next
-                        ;; fixed-anchor slot — but only on the same calendar day.
-                        ;; Flood slots already fill to their endpoint, so skip them.
-                        fill-mode   (keyword (or (:schedule-slots/fill-mode slot) "once"))
-                        zone-id     (get opts' :zone-id "UTC")
-                        next-slot   (nth slots (mod (inc slot-idx) (count slots)) nil)
-                        gap-end     (when (and (not= fill-mode :flood)
-                                               (= "fixed" (:schedule-slots/anchor next-slot)))
-                                      (t/time-of-day-on-same-day
-                                       (:schedule-slots/start-time next-slot)
-                                       (:next-start cursor')
-                                       zone-id))
-                        [gap-events cursor'']
-                        (if gap-end
-                          (apply-filler tx cursor' {} channel
-                                        :fallback (:next-start cursor') gap-end
-                                        playout-id opts')
-                          [[] cursor'])
-                        cursor''' (cursor/advance-slot cursor'' (count slots))]
-                    (recur cursor''' (mod (inc slot-idx) (count slots))
-                           ;; Remember where the cursor stood at the start of this
-                           ;; cycle so the stall guard above can detect a full,
-                           ;; zero-progress revolution through the slot list.
+                (let [[cursor''' next-slot-idx next-cycle-anchor next-events]
+                      (try
+                        (let [[new-events cursor'] (process-slot
+                                                     tx cursor slot channel
+                                                     playout-id slots opts')
+                              fill-mode   (keyword (or (:schedule-slots/fill-mode slot) "once"))
+                              zone-id     (get opts' :zone-id "UTC")
+                              next-slot   (nth slots (mod (inc slot-idx) (count slots)) nil)
+                              gap-end     (when (and (not= fill-mode :flood)
+                                                     (= "fixed" (:schedule-slots/anchor next-slot)))
+                                            (t/time-of-day-on-same-day
+                                             (:schedule-slots/start-time next-slot)
+                                             (:next-start cursor')
+                                             zone-id))
+                              [gap-events cursor'']
+                              (if gap-end
+                                (apply-filler tx cursor' {} channel
+                                              :fallback (:next-start cursor') gap-end
+                                              playout-id opts')
+                                [[] cursor'])
+                              cursor''' (cursor/advance-slot cursor'' (count slots))]
+                          [cursor''' (mod (inc slot-idx) (count slots))
                            (if (zero? slot-idx) start cycle-anchor)
-                           (into events (into new-events gap-events))))
-                  (catch Exception e
-                    (log/error "Error processing slot; build failed"
-                              {:playout-id playout-id
-                               :slot-idx slot-idx
-                               :slot-id (:schedule-slots/id slot)
-                               :error (str e)
-                               :error-type (class e)})
-                    (let [error-msg (str "Build failed at slot " slot-idx ": " (ex-message e))]
-                      (playout-db/bulk-insert-events! tx events)
-                      (playout-db/update-playout! tx playout-id
-                                                  {:cursor         (cursor/->json cursor)
-                                                   :last-built-at  now
-                                                   :build-success  false
-                                                   :build-message  error-msg})
-                      (throw (ex-info error-msg
-                                     {:slot-idx slot-idx
-                                      :slot-id (:schedule-slots/id slot)
-                                      :playout-id playout-id
-                                      :cause e}))))))))))))))
+                           (into events (into new-events gap-events))])
+                        (catch Exception e
+                          (log/error "Error processing slot; build failed"
+                                    {:playout-id playout-id
+                                     :slot-idx slot-idx
+                                     :slot-id (:schedule-slots/id slot)
+                                     :error (str e)
+                                     :error-type (class e)})
+                          (let [error-msg (str "Build failed at slot " slot-idx ": " (ex-message e))]
+                            (playout-db/bulk-insert-events! tx events)
+                            (playout-db/update-playout! tx playout-id
+                                                        {:cursor         (cursor/->json cursor)
+                                                         :last-built-at  now
+                                                         :build-success  false
+                                                         :build-message  error-msg})
+                            (throw (ex-info error-msg
+                                           {:slot-idx slot-idx
+                                            :slot-id (:schedule-slots/id slot)
+                                            :playout-id playout-id
+                                            :cause e})))))]
+                  (recur cursor''' next-slot-idx next-cycle-anchor next-events))))))))))))
 
 (defn rebuild-from-now!
   "Delete all future events and regenerate from NOW.
