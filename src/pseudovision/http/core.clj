@@ -306,15 +306,15 @@
             :handler   (med/trigger-scan-handler ctx)}}]
    ["/api/media/items/:id"
     {:tags       ["media"]
-     :get {:summary   "Get a media item"
-           :parameters {:path [:map [:id s/MediaItemId]]}
+     :get {:summary   "Get a media item (by Jellyfin/remote id or internal id)"
+           :parameters {:path [:map [:id s/MediaItemRef]]}
            :responses {200 {:body s/MediaItem}
                        404 {:body s/APIError}}
            :handler   (med/get-media-item-handler ctx)}}]
    ["/api/media/items/:id/playback-url"
     {:tags       ["media"]
      :get {:summary   "Resolve a direct playback URL for a media item"
-           :parameters {:path [:map [:id s/MediaItemId]]}
+           :parameters {:path [:map [:id s/MediaItemRef]]}
            :responses {200 {:body s/PlaybackUrl}
                        404 {:body s/APIError}
                        422 {:body s/APIError}}
@@ -322,7 +322,7 @@
    ["/api/media/items/:id/stream"
     {:tags       ["media"]
      :get {:summary "Proxy a media item's stream from its source"
-           :parameters {:path [:map [:id s/MediaItemId]]}
+           :parameters {:path [:map [:id s/MediaItemRef]]}
            :handler (med/redirect-to-stream-handler ctx)}}]
    ["/api/media/collections"
     {:tags ["media"]
@@ -363,7 +363,7 @@
             :handler    (med/add-collection-item-handler ctx)}}]
    ["/api/media/collections/:id/items/:item-id"
     {:tags       ["media"]
-     :parameters {:path [:map [:id s/CollectionId] [:item-id s/MediaItemId]]}
+     :parameters {:path [:map [:id s/CollectionId] [:item-id s/MediaItemRef]]}
      :delete {:summary   "Remove a media item from a collection"
               :responses {204 {}}
               :handler   (med/remove-collection-item-handler ctx)}}]

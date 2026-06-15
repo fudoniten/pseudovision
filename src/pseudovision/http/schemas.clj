@@ -496,6 +496,13 @@
 (def MediaItemId   [:int {:min 1}])
 (def CollectionId  [:int {:min 1}])
 
+(def MediaItemRef
+  "A media-item reference accepted by the item endpoints. Either the remote
+   item id (e.g. the Jellyfin item id) — the preferred, public identifier — or
+   the internal integer id, which is mostly an implementation detail. Numeric
+   refs are treated as internal ids; everything else as a remote_key."
+  [:or MediaItemId [:string {:min 1}]])
+
 (def MediaSourceKind
   [:enum {:description "Media source backend"} "local" "plex" "jellyfin" "emby"])
 
@@ -645,7 +652,7 @@
 
 (def CollectionItemAdd
   [:map
-   [:media-item-id :int]])
+   [:media-item-id MediaItemRef]])
 
 (def ScanTriggerResult
   [:map [:message :string]])
