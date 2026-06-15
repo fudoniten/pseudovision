@@ -412,7 +412,7 @@
    [:allow-watermarks      {:optional true} :boolean]
    [:use-chapters-as-items {:optional true} :boolean]
    [:collection-id         {:optional true} :int]
-   [:media-item-id         {:optional true} :int]])
+   [:media-item-id         {:optional true} MediaItemRef]])
 
 (def FillerPresetUpdate
   [:map
@@ -426,7 +426,7 @@
    [:allow-watermarks      {:optional true} :boolean]
    [:use-chapters-as-items {:optional true} :boolean]
    [:collection-id         {:optional true} [:maybe :int]]
-   [:media-item-id         {:optional true} [:maybe :int]]])
+   [:media-item-id         {:optional true} [:maybe MediaItemRef]]])
 
 ;; ---------------------------------------------------------------------------
 ;; Slot reorder
