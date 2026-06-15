@@ -373,7 +373,7 @@
                                                     :mid to nil playout-id opts)
                                       [[] cur])]
               (recur (inc i) (events-end mid-events to) curm e'
-                     (into events (into [content] mid-events)))))))))))
+                     (into events (into [content] mid-events))))))))))
 (defn emit-block
   "Fill a fixed-duration block.  Injects pre-roll filler before the first item,
    mid-roll filler between items, post-roll filler after the last item, and
@@ -606,7 +606,7 @@
                   :fill-mode fill
                   :events-generated (count events)
                   :new-cursor-time (str (:next-start cursor'))})
-        [events cursor'])))
+        [events cursor']))))
 
 ;; ---------------------------------------------------------------------------
 ;; Public API
