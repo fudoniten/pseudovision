@@ -95,26 +95,51 @@
   [db slot]
   (let [required-tags (or (:schedule-slots/required-tags slot) [])
         excluded-tags (or (:schedule-slots/excluded-tags slot) [])
+        slot-id       (:schedule-slots/id slot)
         items (cond
                 (:schedule-slots/collection-id slot)
-                (let [coll (media-db/get-collection db (:schedule-slots/collection-id slot))]
+                (let [collection-id (:schedule-slots/collection-id slot)
+                      coll (media-db/get-collection db collection-id)]
+                  (log/info "Loading collection for slot"
+                           {:slot-id slot-id
+                            :collection-id collection-id
+                            :collection-name (:collections/name coll)
+                            :collection-kind (:collections/kind coll)})
                   (col-db/resolve-collection db coll))
 
                 (:schedule-slots/media-item-id slot)
-                [(media-db/get-media-item db (:schedule-slots/media-item-id slot))]
+                (let [media-id (:schedule-slots/media-item-id slot)
+                      item (media-db/get-media-item db media-id)]
+                  (log/info "Loading single media item for slot"
+                           {:slot-id slot-id
+                            :media-id media-id
+                            :media-name (when item (:media-items/name item))})
+                  [item])
 
                 :else [])
         ;; Apply tag filters if specified
         tagged (if (or (seq required-tags) (seq excluded-tags))
                  (do
-                   (log/debug "Filtering items by tags" {:required required-tags :excluded excluded-tags})
-                   (filterv #(matches-tag-filters? db % required-tags excluded-tags) items))
+                   (log/info "Filtering items by tags"
+                            {:slot-id slot-id
+                             :required required-tags
+                             :excluded excluded-tags
+                             :before-count (count items)})
+                   (let [filtered (filterv #(matches-tag-filters? db % required-tags excluded-tags) items)]
+                     (log/info "Items after tag filtering"
+                              {:slot-id slot-id
+                               :after-count (count filtered)
+                               :filtered-out (- (count items) (count filtered))})
+                     filtered))
                  (vec items))
         playable (filterv playable? tagged)]
     (when (< (count playable) (count tagged))
       (log/warn "Skipping unplayable items with zero/unknown duration"
-                {:slot-id (:schedule-slots/id slot)
+                {:slot-id slot-id
                  :dropped (- (count tagged) (count playable))}))
+    (log/info "Loaded items for slot (final)"
+             {:slot-id slot-id
+              :count (count playable)})
     playable))
 
 (defn- item-duration
@@ -289,6 +314,12 @@
                           (assoc :next-start to)
                           (cursor/save-enumerator ckey e')
                           (cursor/bump-guide-group))]
+        (log/info "emit-once: emitted item"
+                 {:slot-id (:schedule-slots/id slot)
+                  :media-name (:media-items/name item)
+                  :duration (str dur)
+                  :start-at (str from)
+                  :finish-at (str to)})
         [[event] cursor']))))
 
 (defn emit-count
@@ -342,7 +373,15 @@
                                                     :mid to nil playout-id opts)
                                       [[] cur])]
               (recur (inc i) (events-end mid-events to) curm e'
-                     (into events (into [content] mid-events))))))))))
+                     (into events (into [content] mid-events))))
+            (let [total-duration (when (seq events)
+                                   (t/duration-between (:start-at (first events))
+                                                      (:finish-at (last events))))]
+              (log/info "emit-count: completed emitting items"
+                       {:slot-id (:schedule-slots/id slot)
+                        :item-count n
+                        :total-events (count events)
+                        :total-duration (str total-duration)})))))))))))
 
 (defn emit-block
   "Fill a fixed-duration block.  Injects pre-roll filler before the first item,
@@ -374,6 +413,11 @@
                        (assoc :next-start block-end)
                        (cursor/save-enumerator ckey e)
                        (cursor/bump-guide-group))]
+            (log/info "emit-block: block filled"
+                     {:slot-id (:schedule-slots/id slot)
+                      :block-duration (str block-dur)
+                      :total-events (count events)
+                      :fill-mode "completed"})
             [events c'])
 
           ;; No more content; inject post-roll filler, then pad the rest with
@@ -461,6 +505,11 @@
                        (assoc :next-start end)
                        (cursor/save-enumerator ckey e)
                        (cursor/bump-guide-group))]
+            (log/info "emit-flood: horizon reached"
+                     {:slot-id (:schedule-slots/id slot)
+                      :total-events (count events)
+                      :fill-reason "time-exhausted"
+                      :flood-duration (str (t/duration-between (:next-start cursor) end))})
             [events c'])
 
           ;; Content exhausted before flood-end — fill the tail with fallback filler
@@ -472,6 +521,11 @@
                 c' (-> cursor'
                        (assoc :next-start end)
                        (cursor/bump-guide-group))]
+            (log/info "emit-flood: items exhausted"
+                     {:slot-id (:schedule-slots/id slot)
+                      :total-events (count (into events fill-events))
+                      :fill-reason "items-exhausted"
+                      :filler-events (count fill-events)})
             [(into events fill-events) c'])
 
           :else
@@ -483,6 +537,11 @@
                            (assoc :next-start end)
                            (cursor/save-enumerator ckey e)
                            (cursor/bump-guide-group))]
+                (log/info "emit-flood: item overflow"
+                         {:slot-id (:schedule-slots/id slot)
+                          :total-events (count events)
+                          :fill-reason "overflow"
+                          :overflow-item (:media-items/name item)})
                 [events c'])
               (recur to e'
                      (conj events {:playout-id    playout-id
@@ -520,28 +579,43 @@
   (let [zone-id  (get opts :zone-id "UTC")
         dow-mask (:schedule-slots/days-of-week slot)
         now      (:next-start cursor)]
+    (log/info "Processing slot"
+             {:slot-index (:schedule-slots/slot-index slot)
+              :slot-id (:schedule-slots/id slot)
+              :fill-mode (:schedule-slots/fill-mode slot)
+              :anchor (:schedule-slots/anchor slot)
+              :cursor-time (str now)})
     (if (and (= "fixed" (:schedule-slots/anchor slot))
              (not (t/fires-on-day? dow-mask now zone-id)))
       ;; This slot doesn't air today -- advance to its next valid fire time.
       (let [next-fire (next-fixed-start slot now zone-id)]
-        (log/debug "Slot skipped (days_of_week)" {:slot-index (:schedule-slots/slot-index slot)
-                                                  :next-fire  (str next-fire)})
+        (log/info "Slot skipped (days_of_week)"
+                 {:slot-index (:schedule-slots/slot-index slot)
+                  :slot-id (:schedule-slots/id slot)
+                  :next-fire (str next-fire)})
         [[] (assoc cursor :next-start next-fire)])
       ;; Normal path -- slot fires today (or is sequential).
-      (let [fill (keyword (or (:schedule-slots/fill-mode slot) "once"))]
-        (case fill
-          :once  (emit-once  db cursor slot playout-id opts)
-          :count (emit-count db cursor slot channel playout-id opts)
-          :block (emit-block db cursor slot channel playout-id opts)
-          :flood (let [flood-end (next-slot-start
-                                  slots
-                                  (:schedule-slots/slot-index slot)
-                                  now
-                                  zone-id)]
-                   (emit-flood db cursor slot channel playout-id
-                               (assoc opts :flood-end flood-end)))
-          (do (log/warn "Unknown fill mode, skipping slot" {:fill fill})
-              [[] cursor]))))))
+      (let [fill (keyword (or (:schedule-slots/fill-mode slot) "once"))
+            [events cursor'] (case fill
+                               :once  (emit-once  db cursor slot playout-id opts)
+                               :count (emit-count db cursor slot channel playout-id opts)
+                               :block (emit-block db cursor slot channel playout-id opts)
+                               :flood (let [flood-end (next-slot-start
+                                                       slots
+                                                       (:schedule-slots/slot-index slot)
+                                                       now
+                                                       zone-id)]
+                                        (emit-flood db cursor slot channel playout-id
+                                                    (assoc opts :flood-end flood-end)))
+                               (do (log/warn "Unknown fill mode, skipping slot" {:fill fill})
+                                   [[] cursor]))]
+        (log/info "Slot processed"
+                 {:slot-index (:schedule-slots/slot-index slot)
+                  :slot-id (:schedule-slots/id slot)
+                  :fill-mode fill
+                  :events-generated (count events)
+                  :new-cursor-time (str (:next-start cursor'))})
+        [events cursor'])))
 
 ;; ---------------------------------------------------------------------------
 ;; Public API
@@ -565,6 +639,14 @@
         horizon     (t/add-duration now (t/hours->duration
                                          (get opts :lookahead-hours 72)))
         opts'       (assoc opts :seed seed)]
+    (log/info "Build starting"
+             {:playout-id playout-id
+              :channel-id channel-id
+              :schedule-id schedule-id
+              :schedule-name (:schedules/name schedule)
+              :slot-count (count slots)
+              :lookahead-hours (get opts :lookahead-hours 72)
+              :horizon (str horizon)})
     (if (or (nil? schedule) (empty? slots))
       (do (log/warn "No schedule or slots; nothing to build"
                     {:playout-id playout-id})
@@ -627,34 +709,54 @@
 
                 ;; Process this slot
                 :else
-                (let [[new-events cursor'] (process-slot
-                                            tx cursor slot channel
-                                            playout-id slots opts')
-                      ;; Fill any dead air between this slot's end and the next
-                      ;; fixed-anchor slot — but only on the same calendar day.
-                      ;; Flood slots already fill to their endpoint, so skip them.
-                      fill-mode   (keyword (or (:schedule-slots/fill-mode slot) "once"))
-                      zone-id     (get opts' :zone-id "UTC")
-                      next-slot   (nth slots (mod (inc slot-idx) (count slots)) nil)
-                      gap-end     (when (and (not= fill-mode :flood)
-                                             (= "fixed" (:schedule-slots/anchor next-slot)))
-                                    (t/time-of-day-on-same-day
-                                     (:schedule-slots/start-time next-slot)
-                                     (:next-start cursor')
-                                     zone-id))
-                      [gap-events cursor'']
-                      (if gap-end
-                        (apply-filler tx cursor' {} channel
-                                      :fallback (:next-start cursor') gap-end
-                                      playout-id opts')
-                        [[] cursor'])
-                      cursor''' (cursor/advance-slot cursor'' (count slots))]
-                  (recur cursor''' (mod (inc slot-idx) (count slots))
-                         ;; Remember where the cursor stood at the start of this
-                         ;; cycle so the stall guard above can detect a full,
-                         ;; zero-progress revolution through the slot list.
-                         (if (zero? slot-idx) start cycle-anchor)
-                         (into events (into new-events gap-events)))))))))))))
+                (try
+                  (let [[new-events cursor'] (process-slot
+                                              tx cursor slot channel
+                                              playout-id slots opts')
+                        ;; Fill any dead air between this slot's end and the next
+                        ;; fixed-anchor slot — but only on the same calendar day.
+                        ;; Flood slots already fill to their endpoint, so skip them.
+                        fill-mode   (keyword (or (:schedule-slots/fill-mode slot) "once"))
+                        zone-id     (get opts' :zone-id "UTC")
+                        next-slot   (nth slots (mod (inc slot-idx) (count slots)) nil)
+                        gap-end     (when (and (not= fill-mode :flood)
+                                               (= "fixed" (:schedule-slots/anchor next-slot)))
+                                      (t/time-of-day-on-same-day
+                                       (:schedule-slots/start-time next-slot)
+                                       (:next-start cursor')
+                                       zone-id))
+                        [gap-events cursor'']
+                        (if gap-end
+                          (apply-filler tx cursor' {} channel
+                                        :fallback (:next-start cursor') gap-end
+                                        playout-id opts')
+                          [[] cursor'])
+                        cursor''' (cursor/advance-slot cursor'' (count slots))]
+                    (recur cursor''' (mod (inc slot-idx) (count slots))
+                           ;; Remember where the cursor stood at the start of this
+                           ;; cycle so the stall guard above can detect a full,
+                           ;; zero-progress revolution through the slot list.
+                           (if (zero? slot-idx) start cycle-anchor)
+                           (into events (into new-events gap-events))))
+                  (catch Exception e
+                    (log/error "Error processing slot; build failed"
+                              {:playout-id playout-id
+                               :slot-idx slot-idx
+                               :slot-id (:schedule-slots/id slot)
+                               :error (str e)
+                               :error-type (class e)})
+                    (let [error-msg (str "Build failed at slot " slot-idx ": " (ex-message e))]
+                      (playout-db/bulk-insert-events! tx events)
+                      (playout-db/update-playout! tx playout-id
+                                                  {:cursor         (cursor/->json cursor)
+                                                   :last-built-at  now
+                                                   :build-success  false
+                                                   :build-message  error-msg})
+                      (throw (ex-info error-msg
+                                     {:slot-idx slot-idx
+                                      :slot-id (:schedule-slots/id slot)
+                                      :playout-id playout-id
+                                      :cause e}))))))))))))))
 
 (defn rebuild-from-now!
   "Delete all future events and regenerate from NOW.
