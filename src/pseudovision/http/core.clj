@@ -603,7 +603,11 @@
                                         muuntaja-mw/format-request-middleware
                                         mw/exception-middleware
                                         rrc/coerce-request-middleware
-                                        rrc/coerce-response-middleware]}})
+                                        rrc/coerce-response-middleware
+                                        ;; Innermost: render java.time values to
+                                        ;; wire strings before response coercion
+                                        ;; validates the body against the schema.
+                                        mw/normalize-temporals-middleware]}})
                   (ring/routes
                    (swagger-ui/create-swagger-ui-handler
                     {:path "/swagger-ui"

@@ -2,10 +2,13 @@
   (:require [cheshire.core     :as json]
             [cheshire.generate :as json-gen]
             [camel-snake-kebab.core :as csk]
+            [clojure.walk      :as walk]
             [muuntaja.core     :as m]
+            [pseudovision.util.sql :as sql-util]
             [reitit.ring.middleware.exception :as reitit-exception]
             [taoensso.timbre   :as log])
-  (:import [java.time Instant]
+  (:import [java.time Duration Instant]
+           [java.time.temporal Temporal]
            [com.fasterxml.jackson.core JsonGenerator]))
 
 (json-gen/add-encoder Instant
@@ -51,6 +54,46 @@
             (update :body #(json/generate-string % {:key-fn csk/->kebab-case-string}))
             (assoc-in [:headers "Content-Type"] "application/json; charset=utf-8"))
         resp))))
+
+;; ---------------------------------------------------------------------------
+;; Temporal → wire-string normalisation
+;;
+;; Response coercion (reitit/malli) runs *before* the JSON encoders below, and
+;; the response schemas declare timestamp/interval fields as plain strings (the
+;; wire shape). DB rows, however, carry java.time.Instant / java.time.Duration
+;; values, so coercion would reject them as non-strings. This middleware walks
+;; the response body and renders those temporal values to the exact strings the
+;; JSON encoders would produce, satisfying coercion and keeping the wire format
+;; identical.
+;; ---------------------------------------------------------------------------
+
+(defn- ->wire-value
+  "Renders java.time temporal values to their wire-string representation,
+   passing everything else through unchanged."
+  [x]
+  (cond
+    (instance? Duration x) (sql-util/duration->hms x)
+    (instance? Instant x)  (.toString ^Instant x)
+    (instance? Temporal x) (.toString ^Temporal x)
+    :else                  x))
+
+(defn- normalize-temporals
+  "Deep-walks `body`, converting any java.time temporal values to strings."
+  [body]
+  (if (coll? body)
+    (walk/postwalk ->wire-value body)
+    body))
+
+(def normalize-temporals-middleware
+  "Reitit middleware that normalises temporal values in the response body to
+   their wire-string form. Must sit *inside* coerce-response-middleware so the
+   coercer sees strings rather than raw java.time objects."
+  {:name ::normalize-temporals
+   :wrap (fn [handler]
+           (fn [req]
+             (let [resp (handler req)]
+               (cond-> resp
+                 (:body resp) (update :body normalize-temporals)))))})
 
 ;; ---------------------------------------------------------------------------
 ;; Error handling
