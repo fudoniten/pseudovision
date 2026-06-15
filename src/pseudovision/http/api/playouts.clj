@@ -40,6 +40,19 @@
     (try (java.time.Instant/parse s)
          (catch Exception _ nil))))
 
+(defn- enrich-event
+  "Adds display-friendly fields: resolves title from metadata and adds a
+   relative API link to the media item."
+  [event]
+  (let [base         (unqualify-keys event)
+        media-id     (:media-item-id base)
+        title        (:title base)
+        display-name (or (:custom-title base) title)]
+    (assoc base
+           :title          display-name
+           :media-item-link (when media-id
+                              (str "/api/media/items/" media-id)))))
+
 (defn list-events-handler [{:keys [db]}]
   (fn [req]
     (let [channel-id (get-in req [:parameters :path :channel-id])
@@ -49,13 +62,14 @@
           playout    (db/get-playout-for-channel db channel-id)]
       (if playout
         (let [now    (t/now)
-              events (db/get-upcoming-events db (:playouts/id playout) now limit 
-                                            :cursor cursor)
-              items  (mapv unqualify-keys events)]
+              events (db/get-upcoming-events-with-metadata
+                       db (:playouts/id playout) now limit
+                       :cursor cursor)
+              items  (mapv enrich-event events)]
           {:status 200
-           :body (pagination/cursor-pagination-response 
-                   items 
-                   limit 
+           :body (pagination/cursor-pagination-response
+                   items
+                   limit
                    (fn [last-item]
                      (when-let [start-at (:start-at last-item)]
                        (str start-at))))})

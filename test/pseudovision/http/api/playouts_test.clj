@@ -21,7 +21,10 @@
    :playout-events/kind          "content"
    :playout-events/start-at      (Instant/parse "2026-06-14T23:06:36.915898Z")
    :playout-events/finish-at     (Instant/parse "2026-06-14T23:12:54.915898Z")
-   :playout-events/in-point      (Duration/ofSeconds 0)})
+   :playout-events/in-point      (Duration/ofSeconds 0)
+   :metadata/title               "Test Movie"
+   :metadata/plot                "A test plot"
+   :metadata/release-date        "2025-01-01"})
 
 (defn- make-test-handler []
   (http/make-handler {:db nil :ffmpeg {} :media {} :scheduling {}}))
@@ -36,8 +39,8 @@
 (deftest list-events-coerces-temporal-values-to-strings
   (testing "GET /api/channels/:id/playout/events does not 500 when events carry
             java.time.Instant / java.time.Duration values (response coercion)"
-    (with-redefs [pl/get-playout-for-channel (fn [_ _] test-playout)
-                  pl/get-upcoming-events     (fn [_ _ _ _ & _] [test-event])]
+    (with-redefs [pl/get-playout-for-channel        (fn [_ _] test-playout)
+                  pl/get-upcoming-events-with-metadata (fn [_ _ _ _ & _] [test-event])]
       (let [handler (make-test-handler)
             resp    (handler (mock/request :get "/api/channels/91/playout/events"))
             body    (parse-json-body resp)
@@ -47,7 +50,11 @@
         (is (= "2026-06-14T23:06:36.915898Z" (:start-at item)))
         (is (string? (:finish-at item)))
         (is (= "00:00:00" (:in-point item))
-            "Duration interval renders as HH:MM:SS string")))))
+            "Duration interval renders as HH:MM:SS string")
+        (is (= "Test Movie" (:title item))
+            "Title is resolved from metadata")
+        (is (= "/api/media/items/94275" (:media-item-link item))
+            "Media item link is included")))))
 
 (deftest list-events-returns-404-without-playout
   (testing "GET /api/channels/:id/playout/events returns 404 when no playout"
