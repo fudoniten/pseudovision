@@ -373,16 +373,7 @@
                                                     :mid to nil playout-id opts)
                                       [[] cur])]
               (recur (inc i) (events-end mid-events to) curm e'
-                     (into events (into [content] mid-events))))
-            (let [total-duration (when (seq events)
-                                   (t/duration-between (:start-at (first events))
-                                                      (:finish-at (last events))))]
-              (log/info "emit-count: completed emitting items"
-                       {:slot-id (:schedule-slots/id slot)
-                        :item-count n
-                        :total-events (count events)
-                        :total-duration (str total-duration)})))))))))))
-
+                     (into events (into [content] mid-events)))))))))))
 (defn emit-block
   "Fill a fixed-duration block.  Injects pre-roll filler before the first item,
    mid-roll filler between items, post-roll filler after the last item, and
