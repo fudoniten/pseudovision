@@ -180,6 +180,17 @@
 (def ScheduleId [:int {:min 1}])
 (def SlotId     [:int {:min 1}])
 
+;; Media-item ids are shared across the schedule, collection, and media APIs,
+;; so they are defined here, ahead of their first use.
+(def MediaItemId [:int {:min 1}])
+
+(def MediaItemRef
+  "A media-item reference accepted by the item endpoints. Either the remote
+   item id (e.g. the Jellyfin item id) — the preferred, public identifier — or
+   the internal integer id, which is mostly an implementation detail. Numeric
+   refs are treated as internal ids; everything else as a remote_key."
+  [:or MediaItemId [:string {:min 1}]])
+
 (def FixedStartTimeBehavior
   [:enum {:description "How to handle a fixed-start slot whose start time has passed"}
    "skip" "play"])
@@ -291,7 +302,7 @@
    [:tail-mode                  {:optional true} TailMode]
    [:discard-to-fill-attempts   {:optional true} :int]
    [:collection-id              {:optional true} [:maybe :int]]
-   [:media-item-id              {:optional true} [:maybe :int]]
+   [:media-item-id              {:optional true} [:maybe MediaItemRef]]
    [:playback-order             {:optional true} PlaybackOrder]
    [:marathon-group-by          {:optional true} [:maybe :string]]
    [:marathon-shuffle-groups    {:optional true} :boolean]
@@ -326,7 +337,7 @@
    [:tail-mode                  {:optional true} TailMode]
    [:discard-to-fill-attempts   {:optional true} :int]
    [:collection-id              {:optional true} [:maybe :int]]
-   [:media-item-id              {:optional true} [:maybe :int]]
+   [:media-item-id              {:optional true} [:maybe MediaItemRef]]
    [:playback-order             {:optional true} PlaybackOrder]
    [:marathon-group-by          {:optional true} [:maybe :string]]
    [:marathon-shuffle-groups    {:optional true} :boolean]
@@ -493,15 +504,7 @@
 
 (def MediaSourceId [:int {:min 1}])
 (def LibraryId     [:int {:min 1}])
-(def MediaItemId   [:int {:min 1}])
 (def CollectionId  [:int {:min 1}])
-
-(def MediaItemRef
-  "A media-item reference accepted by the item endpoints. Either the remote
-   item id (e.g. the Jellyfin item id) — the preferred, public identifier — or
-   the internal integer id, which is mostly an implementation detail. Numeric
-   refs are treated as internal ids; everything else as a remote_key."
-  [:or MediaItemId [:string {:min 1}]])
 
 (def MediaSourceKind
   [:enum {:description "Media source backend"} "local" "plex" "jellyfin" "emby"])

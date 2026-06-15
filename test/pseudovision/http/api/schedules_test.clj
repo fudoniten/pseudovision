@@ -138,6 +138,31 @@
           (is (= 4 (:schedule-id @captured)))
           (is (= "sequential" (:anchor @captured))))))))
 
+(deftest create-slot-resolves-media-item-ref
+  (testing "POST resolves a Jellyfin/remote media-item-id to the internal id"
+    (let [captured (atom nil)]
+      (with-redefs [pseudovision.db.media/resolve-media-item-id
+                    (fn [_ ref] (is (= "jf-abc123" ref)) 77)
+                    pseudovision.db.schedules/create-slot!
+                    (fn [_ attrs] (reset! captured attrs) (assoc attrs :id 1))]
+        (let [resp ((make-test-handler)
+                    (post-json "/api/schedules/4/slots"
+                               {:slot-index 0
+                                :anchor "fixed"
+                                :media-item-id "jf-abc123"}))]
+          (is (= 201 (:status resp)))
+          (is (= 77 (:media-item-id @captured))))))))
+
+(deftest create-slot-unknown-media-item-ref-404
+  (testing "POST with a media-item-id that resolves to nothing returns 404"
+    (with-redefs [pseudovision.db.media/resolve-media-item-id (fn [_ _] nil)]
+      (let [resp ((make-test-handler)
+                  (post-json "/api/schedules/4/slots"
+                             {:slot-index 0
+                              :anchor "fixed"
+                              :media-item-id "does-not-exist"}))]
+        (is (= 404 (:status resp)))))))
+
 (deftest update-slot-via-coerced-path
   (testing "PUT /api/schedules/1/slots/5 passes int ids to db"
     (let [captured (atom nil)]
