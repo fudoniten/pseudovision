@@ -1,5 +1,6 @@
 (ns pseudovision.http.api.playouts
   (:require [pseudovision.db.playouts      :as db]
+            [pseudovision.db.channels      :as db-channels]
             [pseudovision.scheduling.core  :as sched]
             [pseudovision.util.time         :as t]
             [pseudovision.util.sql          :as sql-util]
@@ -9,17 +10,29 @@
   (when m
     (reduce-kv (fn [acc k v] (assoc acc (keyword (name k)) v)) {} m)))
 
+(defn- resolve-channel-id
+  "Resolves a path parameter to the internal channel ID. The value is always an
+   integer (enforced by the Malli schema), but it may refer to a channel number
+   rather than the internal primary key. Try the primary key first; if no
+   channel matches, fall back to a channel-number lookup."
+  [ds id]
+  (if (db-channels/get-channel ds id)
+    id
+    (when-let [ch (db-channels/get-channel-by-number ds id)]
+      (:channels/id ch))))
+
 (defn get-playout-handler [{:keys [db]}]
   (fn [req]
-    (let [channel-id (get-in req [:parameters :path :channel-id])]
-      (if-let [p (db/get-playout-for-channel db channel-id)]
+    (let [raw-id    (get-in req [:parameters :path :channel-id])
+          channel-id (resolve-channel-id db raw-id)]
+      (if-let [p (and channel-id (db/get-playout-for-channel db channel-id))]
         {:status 200 :body (unqualify-keys p)}
         {:status 404 :body {:error "No playout for this channel"}}))))
 
 (defn rebuild-playout-handler [{:keys [db]}]
   (fn [req]
-    (let [channel-id   (get-in req [:parameters :path :channel-id])
-          playout      (db/get-playout-for-channel db channel-id)
+    (let [channel-id   (resolve-channel-id db (get-in req [:parameters :path :channel-id]))
+          playout      (and channel-id (db/get-playout-for-channel db channel-id))
           qp           (get-in req [:parameters :query])
           from         (or (:from qp) "now")
           horizon-days (or (:horizon qp) 14)]
@@ -55,11 +68,11 @@
 
 (defn list-events-handler [{:keys [db]}]
   (fn [req]
-    (let [channel-id (get-in req [:parameters :path :channel-id])
+    (let [channel-id (resolve-channel-id db (get-in req [:parameters :path :channel-id]))
           qp         (get-in req [:parameters :query])
           limit      (or (:limit qp) 100)
           cursor     (parse-instant (:cursor qp))
-          playout    (db/get-playout-for-channel db channel-id)]
+          playout    (and channel-id (db/get-playout-for-channel db channel-id))]
       (if playout
         (let [now    (t/now)
               events (db/get-upcoming-events-with-metadata
@@ -86,8 +99,8 @@
    The event is inserted with is_manual=true so rebuilds preserve it."
   [{:keys [db]}]
   (fn [req]
-    (let [channel-id (get-in req [:parameters :path :channel-id])
-          playout    (db/get-playout-for-channel db channel-id)]
+    (let [channel-id (resolve-channel-id db (get-in req [:parameters :path :channel-id]))
+          playout    (and channel-id (db/get-playout-for-channel db channel-id))]
       (if playout
         (let [body  (get-in req [:parameters :body])
               kind  (or (:kind body) "content")
