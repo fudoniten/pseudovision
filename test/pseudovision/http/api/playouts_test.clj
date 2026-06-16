@@ -3,7 +3,8 @@
             [ring.mock.request :as mock]
             [cheshire.core     :as json]
             [pseudovision.http.core    :as http]
-            [pseudovision.db.playouts  :as pl])
+            [pseudovision.db.playouts  :as pl]
+            [pseudovision.db.channels  :as ch])
   (:import [java.time Duration Instant]))
 
 ;; ---------------------------------------------------------------------------
@@ -39,8 +40,10 @@
 (deftest list-events-coerces-temporal-values-to-strings
   (testing "GET /api/channels/:id/playout/events does not 500 when events carry
             java.time.Instant / java.time.Duration values (response coercion)"
-    (with-redefs [pl/get-playout-for-channel        (fn [_ _] test-playout)
-                  pl/get-upcoming-events-with-metadata (fn [_ _ _ _ & _] [test-event])]
+    (with-redefs [ch/get-channel                      (fn [_ id] (when (= id 91) {:channels/id 91}))
+                  ch/get-channel-by-number             (fn [_ _] nil)
+                  pl/get-playout-for-channel            (fn [_ _] test-playout)
+                  pl/get-upcoming-events-with-metadata  (fn [_ _ _ _ & _] [test-event])]
       (let [handler (make-test-handler)
             resp    (handler (mock/request :get "/api/channels/91/playout/events"))
             body    (parse-json-body resp)
@@ -56,9 +59,23 @@
         (is (= "/api/media/items/94275" (:media-item-link item))
             "Media item link is included")))))
 
+(deftest list-events-resolves-channel-by-number
+  (testing "GET /api/channels/:number/playout/events falls back to channel number lookup"
+    (with-redefs [ch/get-channel                      (fn [_ _] nil)
+                  ch/get-channel-by-number             (fn [_ n] (when (= n 41) {:channels/id 7}))
+                  pl/get-playout-for-channel            (fn [_ id] (when (= id 7) test-playout))
+                  pl/get-upcoming-events-with-metadata  (fn [_ _ _ _ & _] [test-event])]
+      (let [handler (make-test-handler)
+            resp    (handler (mock/request :get "/api/channels/41/playout/events"))
+            body    (parse-json-body resp)]
+        (is (= 200 (:status resp)))
+        (is (= "Test Movie" (get-in body [:items 0 :title])))))))
+
 (deftest list-events-returns-404-without-playout
   (testing "GET /api/channels/:id/playout/events returns 404 when no playout"
-    (with-redefs [pl/get-playout-for-channel (fn [_ _] nil)]
+    (with-redefs [ch/get-channel             (fn [_ _] nil)
+                  ch/get-channel-by-number  (fn [_ _] nil)
+                  pl/get-playout-for-channel (fn [_ _] nil)]
       (let [handler (make-test-handler)
             resp    (handler (mock/request :get "/api/channels/91/playout/events"))]
         (is (= 404 (:status resp)))))))
