@@ -17,10 +17,15 @@
   {:source-info {:type :current-event
                  :event {:playout-events/id event-id}}})
 
-(def ^:private slate-stream
-  "A running stream whose source-info is a generated fallback slate."
-  {:source-info {:type :generated-slate
-                 :upcoming-events []}})
+(def ^:private slate-refresh-secs @#'streaming/slate-refresh-secs)
+
+(defn- slate-stream
+  "A running stream whose source-info is a generated fallback slate, started
+   age-secs ago (default just now, so it has not hit its refresh TTL)."
+  ([] (slate-stream 0))
+  ([age-secs]
+   {:source-info        {:type :generated-slate :upcoming-events []}
+    :stream-started-at  (- (System/currentTimeMillis) (* age-secs 1000))}))
 
 ;; ---------------------------------------------------------------------------
 ;; stream-source-identity
@@ -30,7 +35,7 @@
   (testing "content event yields [:event id]"
     (is (= [:event 42] (stream-source-identity (content-stream 42)))))
   (testing "a slate (no :event) yields :fallback"
-    (is (= :fallback (stream-source-identity slate-stream)))))
+    (is (= :fallback (stream-source-identity (slate-stream))))))
 
 ;; ---------------------------------------------------------------------------
 ;; needs-transition?
@@ -49,7 +54,7 @@
 (deftest needs-transition-leaves-slate-when-event-goes-live
   (testing "slate playing but an event is now live -> transition"
     (with-current-event 42
-      #(is (true? (needs-transition? nil test-channel slate-stream))))))
+      #(is (true? (needs-transition? nil test-channel (slate-stream)))))))
 
 (deftest needs-transition-switches-between-events
   (testing "playing event A while event B is now live -> transition"
@@ -65,12 +70,18 @@
       #(is (true? (needs-transition? nil test-channel (content-stream 42)))))))
 
 (deftest needs-transition-stays-on-slate-during-gap
-  (testing "slate playing and still no live event -> no churn"
+  (testing "fresh slate playing and still no live event -> no churn"
     (with-current-event nil
-      #(is (false? (needs-transition? nil test-channel slate-stream))))))
+      #(is (false? (needs-transition? nil test-channel (slate-stream)))))))
+
+(deftest needs-transition-refreshes-stale-slate
+  (testing "slate older than its TTL refreshes even with no live event"
+    (with-current-event nil
+      #(is (true? (needs-transition? nil test-channel
+                                     (slate-stream (inc slate-refresh-secs))))))))
 
 (deftest needs-transition-handles-missing-playout
-  (testing "no playout configured -> fallback identity, slate stays put"
+  (testing "no playout configured -> fallback identity, fresh slate stays put"
     (with-redefs [db-playouts/get-playout-for-channel (fn [_ _] nil)]
-      (is (false? (needs-transition? nil test-channel slate-stream)))
+      (is (false? (needs-transition? nil test-channel (slate-stream))))
       (is (true?  (needs-transition? nil test-channel (content-stream 42)))))))

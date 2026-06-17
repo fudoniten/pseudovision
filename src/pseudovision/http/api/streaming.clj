@@ -219,6 +219,19 @@
    so a new FFmpeg process has time to start before the boundary arrives."
   5)
 
+(def ^:private slate-refresh-secs
+  "Rebuild a running fallback slate at least this often so its baked-in
+   'coming up next' list does not go stale during a long timeline gap."
+  (* 5 60))
+
+(defn- slate-expired?
+  "True when a fallback slate has been running long enough that its upcoming
+   events snapshot should be refreshed by restarting it."
+  [stream]
+  (when-let [started (:stream-started-at stream)]
+    (>= (- (System/currentTimeMillis) started)
+        (* slate-refresh-secs 1000))))
+
 (defn- stream-source-identity
   "Stable identity of what a running stream is actually playing right now:
    [:event <id>] for a real content event, or :fallback for any slate/filler
@@ -250,10 +263,14 @@
    running stream is actually playing — covering slate→live, live→slate, and
    live event A→B. This keeps a reused stream in sync with the playout timeline
    instead of pinning it to whatever was chosen when FFmpeg first started (which
-   left fallback slates running forever, since they carry no :event)."
+   left fallback slates running forever, since they carry no :event).
+
+   Also rebuilds a long-running fallback slate (see slate-expired?) so its
+   'coming up next' snapshot stays current through a long timeline gap."
   [db channel stream]
-  (not= (stream-source-identity stream)
-        (desired-source-identity db channel)))
+  (let [actual (stream-source-identity stream)]
+    (or (not= actual (desired-source-identity db channel))
+        (and (= actual :fallback) (slate-expired? stream)))))
 
 (defn- stop-and-remove-stream
   "Stops FFmpeg process, closes metrics view records, and removes stream from active-streams."
