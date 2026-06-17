@@ -693,6 +693,22 @@
    [:from    {:optional true} [:enum "now" "horizon"]]
    [:horizon {:optional true} [:int {:min 1 :max 365}]]])
 
+(def ClearPlayoutQuery
+  [:map
+   [:manual {:optional true} :boolean]])
+
+(def ClearEventsQuery
+  [:map
+   [:from   {:optional true} Instant]
+   [:to     {:optional true} Instant]
+   [:manual {:optional true} :boolean]])
+
+(def ClearResult
+  [:map
+   [:message               :string]
+   [:events-deleted        :int]
+   [:manual-events-removed :boolean]])
+
 (def PlayoutEvent
   [:map
    [:id                          EventId]

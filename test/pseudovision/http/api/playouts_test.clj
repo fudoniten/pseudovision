@@ -79,3 +79,93 @@
       (let [handler (make-test-handler)
             resp    (handler (mock/request :get "/api/channels/91/playout/events"))]
         (is (= 404 (:status resp)))))))
+
+;; ---------------------------------------------------------------------------
+;; Clearing the playout
+;; ---------------------------------------------------------------------------
+
+(deftest clear-playout-resets-cursor
+  (testing "DELETE /api/channels/:id/playout clears all events and resets cursor"
+    (let [captured (atom nil)]
+      (with-redefs [ch/get-channel             (fn [_ id] (when (= id 91) {:channels/id 91}))
+                    ch/get-channel-by-number  (fn [_ _] nil)
+                    pl/get-playout-for-channel (fn [_ _] test-playout)
+                    pl/reset-playout!          (fn [_ pid keep-manual?]
+                                                 (reset! captured {:pid pid :keep-manual? keep-manual?})
+                                                 7)]
+        (let [handler (make-test-handler)
+              resp    (handler (mock/request :delete "/api/channels/91/playout"))
+              body    (parse-json-body resp)]
+          (is (= 200 (:status resp)))
+          (is (= 7 (:events-deleted body)))
+          (is (false? (:manual-events-removed body)))
+          (is (= {:pid 23 :keep-manual? true} @captured)
+              "Manual events preserved by default"))))))
+
+(deftest clear-playout-can-wipe-manual-events
+  (testing "DELETE /api/channels/:id/playout?manual=true also removes manual events"
+    (let [captured (atom nil)]
+      (with-redefs [ch/get-channel             (fn [_ id] (when (= id 91) {:channels/id 91}))
+                    ch/get-channel-by-number  (fn [_ _] nil)
+                    pl/get-playout-for-channel (fn [_ _] test-playout)
+                    pl/reset-playout!          (fn [_ _ keep-manual?]
+                                                 (reset! captured keep-manual?)
+                                                 3)]
+        (let [handler (make-test-handler)
+              resp    (handler (mock/request :delete "/api/channels/91/playout?manual=true"))
+              body    (parse-json-body resp)]
+          (is (= 200 (:status resp)))
+          (is (true? (:manual-events-removed body)))
+          (is (false? @captured) "keep-manual? is false when ?manual=true"))))))
+
+(deftest clear-playout-returns-404-without-playout
+  (testing "DELETE /api/channels/:id/playout returns 404 when no playout"
+    (with-redefs [ch/get-channel             (fn [_ _] nil)
+                  ch/get-channel-by-number  (fn [_ _] nil)
+                  pl/get-playout-for-channel (fn [_ _] nil)]
+      (let [handler (make-test-handler)
+            resp    (handler (mock/request :delete "/api/channels/91/playout"))]
+        (is (= 404 (:status resp)))))))
+
+(deftest clear-events-passes-window-bounds
+  (testing "DELETE /api/channels/:id/playout/events?from&to deletes the overlapping window"
+    (let [captured (atom nil)]
+      (with-redefs [ch/get-channel             (fn [_ id] (when (= id 91) {:channels/id 91}))
+                    ch/get-channel-by-number  (fn [_ _] nil)
+                    pl/get-playout-for-channel (fn [_ _] test-playout)
+                    pl/delete-events!          (fn [_ pid opts]
+                                                 (reset! captured {:pid pid :opts opts})
+                                                 4)]
+        (let [handler (make-test-handler)
+              resp    (handler (mock/request :delete
+                                 "/api/channels/91/playout/events?from=2026-06-14T00:00:00Z&to=2026-06-15T00:00:00Z"))
+              body    (parse-json-body resp)
+              opts    (:opts @captured)]
+          (is (= 200 (:status resp)))
+          (is (= 4 (:events-deleted body)))
+          (is (= (Instant/parse "2026-06-14T00:00:00Z") (:from opts)))
+          (is (= (Instant/parse "2026-06-15T00:00:00Z") (:to opts)))
+          (is (true? (:keep-manual? opts)) "Manual events preserved by default"))))))
+
+(deftest clear-events-without-bounds-clears-all
+  (testing "DELETE /api/channels/:id/playout/events with no window passes nil bounds"
+    (let [captured (atom nil)]
+      (with-redefs [ch/get-channel             (fn [_ id] (when (= id 91) {:channels/id 91}))
+                    ch/get-channel-by-number  (fn [_ _] nil)
+                    pl/get-playout-for-channel (fn [_ _] test-playout)
+                    pl/delete-events!          (fn [_ _ opts] (reset! captured opts) 9)]
+        (let [handler (make-test-handler)
+              resp    (handler (mock/request :delete "/api/channels/91/playout/events"))]
+          (is (= 200 (:status resp)))
+          (is (nil? (:from @captured)))
+          (is (nil? (:to @captured))))))))
+
+(deftest clear-events-rejects-bad-timestamp
+  (testing "DELETE /api/channels/:id/playout/events returns 400 on unparseable bound"
+    (with-redefs [ch/get-channel             (fn [_ id] (when (= id 91) {:channels/id 91}))
+                  ch/get-channel-by-number  (fn [_ _] nil)
+                  pl/get-playout-for-channel (fn [_ _] test-playout)
+                  pl/delete-events!          (fn [_ _ _] (throw (ex-info "should not be called" {})))]
+      (let [handler (make-test-handler)
+            resp    (handler (mock/request :delete "/api/channels/91/playout/events?to=not-a-date"))]
+        (is (= 400 (:status resp)))))))
