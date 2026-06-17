@@ -140,9 +140,11 @@ pre-coercion behaviour until they're migrated.
 |--------|------|-------------|
 | GET | `/api/channels/:id/playout` | Get the playout for a channel |
 | POST | `/api/channels/:id/playout` | Trigger a rebuild |
+| DELETE | `/api/channels/:id/playout` | **Clear the whole timeline** & reset the cursor (`?manual=true` also wipes injected events) |
 | GET | `/api/channels/:id/playout/events` | List upcoming events |
 | POST | `/api/channels/:id/playout/events` | **Inject a manual event** (bumper etc.) |
-| PUT/DELETE | `/api/channels/:id/playout/events/:event-id` | Edit/remove a manual event |
+| DELETE | `/api/channels/:id/playout/events` | **Bulk-delete events**, optionally within `?from=&to=` (deletes anything overlapping the window; `?manual=true` includes injected events) |
+| PUT/DELETE | `/api/channels/:id/playout/events/:event-id` | Edit/remove a single event |
 
 ### Output
 | Path | Description |

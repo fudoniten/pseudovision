@@ -170,7 +170,13 @@
                          :query s/RebuildQuery}
             :responses  {200 {:body s/RebuildResult}
                          404 {:body s/APIError}}
-            :handler    (pl/rebuild-playout-handler ctx)}}]
+            :handler    (pl/rebuild-playout-handler ctx)}
+     :delete {:summary    "Clear the whole playout timeline and reset its cursor"
+              :parameters {:path  [:map [:channel-id s/ChannelId]]
+                           :query s/ClearPlayoutQuery}
+              :responses  {200 {:body s/ClearResult}
+                           404 {:body s/APIError}}
+              :handler    (pl/clear-playout-handler ctx)}}]
    ["/api/channels/:channel-id/playout/events"
     {:tags       ["playouts"]
      :get  {:summary   "List upcoming playout events (cursor-paginated)"
@@ -185,7 +191,14 @@
             :responses  {201 {:body s/PlayoutEvent}
                          404 {:body s/APIError}
                          400 {:body s/CoercionError}}
-            :handler    (pl/inject-event-handler ctx)}}]
+            :handler    (pl/inject-event-handler ctx)}
+     :delete {:summary    "Bulk-delete events, optionally within a [from,to) window"
+              :parameters {:path  [:map [:channel-id s/ChannelId]]
+                           :query s/ClearEventsQuery}
+              :responses  {200 {:body s/ClearResult}
+                           404 {:body s/APIError}
+                           400 {:body s/APIError}}
+              :handler    (pl/clear-events-handler ctx)}}]
    ["/api/channels/:channel-id/playout/events/:id"
     {:tags       ["playouts"]
      :put    {:summary    "Update a manual event"

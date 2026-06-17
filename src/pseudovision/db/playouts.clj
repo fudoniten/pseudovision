@@ -179,6 +179,43 @@
                                [:= :is-manual  false]])
                      sql/format)))
 
+(defn delete-events!
+  "Bulk-deletes events for a playout and returns the number of rows removed.
+
+   Options:
+     :keep-manual? (default true) — preserve is_manual = TRUE events.
+     :from / :to                   — optional Instant bounds. When supplied,
+       only events overlapping the window are removed: an event overlaps when
+       it starts before `to` AND finishes after `from`, so a long item that
+       straddles either edge of the window is included. `from` and `to` may be
+       given independently (open-ended on the missing side); when both are nil
+       every event (subject to :keep-manual?) is removed."
+  [ds playout-id {:keys [keep-manual? from to] :or {keep-manual? true}}]
+  (let [conds (cond-> [[:= :playout-id playout-id]]
+                keep-manual? (conj [:= :is-manual false])
+                to           (conj [:< :start-at  to])
+                from         (conj [:> :finish-at from]))
+        res   (jdbc/execute-one! ds
+                                 (-> (h/delete-from :playout-events)
+                                     (h/where (into [:and] conds))
+                                     sql/format))]
+    (or (:next.jdbc/update-count res) 0)))
+
+(defn reset-playout!
+  "Clears a playout's generated timeline and resets its saved cursor and build
+   status, so the next rebuild starts fresh from now (sidestepping a stale
+   cursor that would otherwise resume mid-timeline). Removes non-manual events
+   by default; pass keep-manual? = false to wipe manual events too. Runs in a
+   transaction and returns the number of events deleted."
+  [ds playout-id keep-manual?]
+  (jdbc/with-transaction [tx ds]
+    (let [deleted (delete-events! tx playout-id {:keep-manual? keep-manual?})]
+      (update-playout! tx playout-id {:cursor         nil
+                                      :last-built-at  nil
+                                      :build-success  nil
+                                      :build-message  nil})
+      deleted)))
+
 (def filler-event-kinds
   "event_kind values that represent filler rather than primary content."
   ["pre" "mid" "post" "pad" "tail" "fallback"])

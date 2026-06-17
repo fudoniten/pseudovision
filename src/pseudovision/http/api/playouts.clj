@@ -53,6 +53,58 @@
     (try (java.time.Instant/parse s)
          (catch Exception _ nil))))
 
+(defn clear-playout-handler
+  "DELETE /api/channels/:channel-id/playout — clears the channel's entire
+   playout timeline and resets the saved cursor so the next rebuild starts
+   fresh from now. Manually-injected events are preserved unless ?manual=true."
+  [{:keys [db]}]
+  (fn [req]
+    (let [channel-id   (resolve-channel-id db (get-in req [:parameters :path :channel-id]))
+          playout      (and channel-id (db/get-playout-for-channel db channel-id))
+          wipe-manual? (boolean (get-in req [:parameters :query :manual]))]
+      (if playout
+        (let [deleted (db/reset-playout! db (:playouts/id playout) (not wipe-manual?))]
+          {:status 200
+           :body {:message               "Playout cleared and cursor reset"
+                  :events-deleted        deleted
+                  :manual-events-removed wipe-manual?}})
+        {:status 404 :body {:error "No playout for this channel"}}))))
+
+(defn clear-events-handler
+  "DELETE /api/channels/:channel-id/playout/events — bulk-deletes events,
+   optionally restricted to a [from, to) window. An event is removed when it
+   overlaps the window (starts before `to` and finishes after `from`), so items
+   straddling either edge are included. `from`/`to` are optional ISO-8601
+   timestamps and may be given independently. Manual events are preserved
+   unless ?manual=true. Returns 400 on an unparseable timestamp."
+  [{:keys [db]}]
+  (fn [req]
+    (let [channel-id   (resolve-channel-id db (get-in req [:parameters :path :channel-id]))
+          playout      (and channel-id (db/get-playout-for-channel db channel-id))
+          qp           (get-in req [:parameters :query])
+          from-raw     (:from qp)
+          to-raw       (:to qp)
+          from         (parse-instant from-raw)
+          to           (parse-instant to-raw)
+          wipe-manual? (boolean (:manual qp))]
+      (cond
+        (nil? playout)
+        {:status 404 :body {:error "No playout for this channel"}}
+
+        ;; Reject malformed bounds rather than silently widening the delete.
+        (or (and from-raw (nil? from))
+            (and to-raw   (nil? to)))
+        {:status 400 :body {:error "Invalid 'from'/'to' timestamp; expected ISO-8601"}}
+
+        :else
+        (let [deleted (db/delete-events! db (:playouts/id playout)
+                                         {:keep-manual? (not wipe-manual?)
+                                          :from from :to to})]
+          {:status 200
+           :body {:message               "Events deleted"
+                  :events-deleted        deleted
+                  :manual-events-removed wipe-manual?}})))))
+
 (defn- enrich-event
   "Adds display-friendly fields: resolves title from metadata and adds a
    relative API link to the media item."
