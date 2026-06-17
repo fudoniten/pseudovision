@@ -214,16 +214,63 @@
                          #"segment-(\d+)\.ts"
                          (str "/stream/" channel-uuid "/segment-$1.ts")))
 
-(defn- needs-transition?
-  "Checks if a stream needs to transition to a new event.
-   Returns true if the current event has ended or will end very soon."
+(def ^:private transition-lookahead-secs
+  "Look this many seconds into the future when deciding what should be playing,
+   so a new FFmpeg process has time to start before the boundary arrives."
+  5)
+
+(def ^:private slate-refresh-secs
+  "Rebuild a running fallback slate at least this often so its baked-in
+   'coming up next' list does not go stale during a long timeline gap."
+  (* 5 60))
+
+(defn- slate-expired?
+  "True when a fallback slate has been running long enough that its upcoming
+   events snapshot should be refreshed by restarting it."
   [stream]
-  (when-let [event (get-in stream [:source-info :event])]
-    (let [finish-at (:playout-events/finish-at event)
-          now (t/now)
-          ;; Transition 5 seconds before event ends to allow FFmpeg startup time
-          transition-threshold (t/sub-duration finish-at (t/seconds->duration 5))]
-      (.isAfter now transition-threshold))))
+  (when-let [started (:stream-started-at stream)]
+    (>= (- (System/currentTimeMillis) started)
+        (* slate-refresh-secs 1000))))
+
+(defn- stream-source-identity
+  "Stable identity of what a running stream is actually playing right now:
+   [:event <id>] for a real content event, or :fallback for any slate/filler
+   (which carry no :event in their :source-info)."
+  [stream]
+  (if-let [event-id (get-in stream [:source-info :event :playout-events/id])]
+    [:event event-id]
+    :fallback))
+
+(defn- desired-source-identity
+  "Stable identity of what SHOULD be playing on the channel right now (looking a
+   few seconds ahead so a transition can start FFmpeg before the boundary).
+   Mirrors the branch logic of get-current-stream-source without resolving any
+   stream URLs, so it is cheap enough to run on every playlist poll."
+  [db channel]
+  (let [playout (db-playouts/get-playout-for-channel db (:channels/id channel))]
+    (if-not playout
+      :fallback
+      (let [at      (t/add-duration (t/now)
+                                    (t/seconds->duration transition-lookahead-secs))
+            current (db-playouts/get-current-event db (:playouts/id playout) at)]
+        (if current
+          [:event (:playout-events/id current)]
+          :fallback)))))
+
+(defn- needs-transition?
+  "Checks if a stream needs to transition to different content.
+   Returns true when what the channel SHOULD be playing differs from what the
+   running stream is actually playing — covering slate→live, live→slate, and
+   live event A→B. This keeps a reused stream in sync with the playout timeline
+   instead of pinning it to whatever was chosen when FFmpeg first started (which
+   left fallback slates running forever, since they carry no :event).
+
+   Also rebuilds a long-running fallback slate (see slate-expired?) so its
+   'coming up next' snapshot stays current through a long timeline gap."
+  [db channel stream]
+  (let [actual (stream-source-identity stream)]
+    (or (not= actual (desired-source-identity db channel))
+        (and (= actual :fallback) (slate-expired? stream)))))
 
 (defn- stop-and-remove-stream
   "Stops FFmpeg process, closes metrics view records, and removes stream from active-streams."
@@ -341,11 +388,12 @@
   (let [uuid (:channels/uuid channel)
         existing-stream (get @active-streams uuid)]
     
-    ;; Check if we need to transition to a new event
-    (when (and existing-stream (needs-transition? existing-stream))
-      (log/info "Event transition required" 
-                {:uuid uuid 
-                 :current-event-id (get-in existing-stream [:source-info :event :playout-events/id])})
+    ;; Check if we need to transition to different content (slate→live, A→B, …)
+    (when (and existing-stream (needs-transition? db channel existing-stream))
+      (log/info "Event transition required"
+                {:uuid uuid
+                 :from (stream-source-identity existing-stream)
+                 :to   (desired-source-identity db channel)})
       (stop-and-remove-stream db uuid existing-stream))
     
     ;; Now either reuse existing stream or start new one
