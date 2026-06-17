@@ -766,7 +766,7 @@
                                             :slot-id (:schedule-slots/id slot)
                                             :playout-id playout-id
                                             :cause e})))))]
-                  (recur cursor''' next-slot-idx next-cycle-anchor next-events))))))))))))
+                  (recur cursor''' next-slot-idx next-cycle-anchor next-events)))))))))))
 
 (defn rebuild-from-now!
   "Wipe the auto-generated timeline from now onward and regenerate it fresh,
