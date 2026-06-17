@@ -66,12 +66,27 @@
 ;; ffprobe
 ;; ---------------------------------------------------------------------------
 
+(defn- resolve-ffprobe-path
+  "Returns a usable ffprobe command.  Prefers the configured path when it
+   points at a real file; otherwise falls back to a bare \"ffprobe\", which
+   sh/sh (via ProcessBuilder) resolves against PATH.  Mirrors
+   pseudovision.ffmpeg.hls/resolve-ffmpeg-path so the scanner keeps working
+   when a baked-in absolute path (e.g. a stale /nix/store path) is no longer
+   present in the running container."
+  [ffprobe-path]
+  (or (when (and ffprobe-path (.exists (File. ^String ffprobe-path)))
+        ffprobe-path)
+      (first (filter #(.exists (File. ^String %))
+                     ["/usr/bin/ffprobe"
+                      "/usr/local/bin/ffprobe"]))
+      "ffprobe"))
+
 (defn- run-ffprobe
   "Runs ffprobe on `path` and returns the parsed JSON map, or nil on failure."
   [path {:keys [ffprobe-path probe-timeout-ms] :or {ffprobe-path "/usr/bin/ffprobe"
                                                     probe-timeout-ms 30000}}]
   (try
-    (let [result (sh/sh ffprobe-path
+    (let [result (sh/sh (resolve-ffprobe-path ffprobe-path)
                         "-v" "quiet"
                         "-print_format" "json"
                         "-show_format"
