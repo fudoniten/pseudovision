@@ -208,3 +208,40 @@
                   (str "expected channel B to steer away from A; "
                        identical "/" (count aligned)
                        " aligned breaks were identical")))))))))
+
+(defn- max-consecutive-gap-secs
+  "Largest dead-air gap (seconds) between consecutive events, sorted by start."
+  [events]
+  (let [sorted (sort-by :playout-events/start-at events)]
+    (->> (map (fn [x y] (.getSeconds (Duration/between (:playout-events/finish-at x)
+                                                       (:playout-events/start-at y))))
+              sorted (rest sorted))
+         (reduce max 0))))
+
+(deftest rebuild-from-now-resets-stale-cursor
+  ;; Regression: rebuild-from-now! must wipe the future timeline AND restart the
+  ;; build at now. Previously it resumed from the saved cursor (left ~8h ahead by
+  ;; the first build), so the regenerated events began at the old horizon and
+  ;; left a multi-hour gap between now and there.
+  (if-not @ds-atom
+    (is true "skipped (no test database configured)")
+    (let [ds @ds-atom]
+      (with-redefs [t/now (constantly (Instant/parse "2026-06-14T00:00:00Z"))]
+        (let [{a :a} (seed! ds)
+              t0      (Instant/parse "2026-06-14T00:00:00Z")
+              ;; First build with an 8h horizon pushes the saved cursor ~8h ahead.
+              _       (sched/build! ds {:lookahead-hours 8} (playout-db/get-playout ds a))
+              max1    (reduce (fn [m e] (if (.isAfter (:playout-events/finish-at e) m)
+                                          (:playout-events/finish-at e) m))
+                              t0 (playout-db/list-events ds a))
+              ;; Rebuild from now (resets the cursor) with a 1-day horizon.
+              _       (sched/rebuild-from-now! ds a 1)
+              ev2     (sort-by :playout-events/start-at (playout-db/list-events ds a))]
+          (is (.isAfter max1 (t/add-duration t0 (t/hours->duration 6)))
+              "first build extends ~8h ahead, advancing the saved cursor")
+          (is (seq ev2))
+          (is (not (.isAfter (:playout-events/start-at (first ev2))
+                             (t/add-duration t0 (t/hours->duration 1))))
+              "rebuilt timeline starts near now, not at the old horizon")
+          (is (< (max-consecutive-gap-secs ev2) (* 2 block-seconds))
+              "rebuild fills from now; no multi-hour gap left by a stale cursor"))))))

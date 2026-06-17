@@ -613,8 +613,16 @@
 ;; ---------------------------------------------------------------------------
 
 (defn build!
-  "Builds the playout from scratch, replacing all non-manual events.
-   Runs inside a transaction; saves the updated cursor on success."
+  "Builds the playout, replacing non-manual events from the rebuild point to the
+   horizon.  Runs inside a transaction; saves the updated cursor on success.
+
+   By default the build resumes from the playout's saved cursor (extending the
+   timeline forward).  When opts carries :reset-cursor? true, the saved cursor
+   is discarded and a fresh timeline is generated from now — the schedule
+   restarts at its first slot and every collection from the top.  To avoid
+   cutting off the program currently on screen, the fresh timeline (and the
+   delete boundary) begins at the finish of the in-progress event rather than
+   exactly now."
   [db opts playout]
   (let [channel-id  (:playouts/channel-id playout)
         schedule-id (:playouts/schedule-id playout)
@@ -627,6 +635,15 @@
         slots       (when schedule-id
                       (schedules-db/list-slots db schedule-id))
         now         (t/now)
+        reset?      (boolean (:reset-cursor? opts))
+        ;; When resetting, start the fresh timeline after any event currently on
+        ;; air so the rebuild doesn't overlap (or interrupt) the program playing
+        ;; right now; fall back to `now` when nothing is in progress.
+        rebuild-from (if reset?
+                       (or (some-> (playout-db/get-current-event db playout-id now)
+                                   :playout-events/finish-at)
+                           now)
+                       now)
         horizon     (t/add-duration now (t/hours->duration
                                          (get opts :lookahead-hours 72)))
         opts'       (assoc opts :seed seed)]
@@ -636,6 +653,8 @@
               :schedule-id schedule-id
               :schedule-name (:schedules/name schedule)
               :slot-count (count slots)
+              :reset-cursor? reset?
+              :rebuild-from (str rebuild-from)
               :lookahead-hours (get opts :lookahead-hours 72)
               :horizon (str horizon)})
     (if (or (nil? schedule) (empty? slots))
@@ -643,11 +662,15 @@
                     {:playout-id playout-id})
           :no-schedule)
       (let [saved-cursor (cursor/<-json (:playouts/cursor playout))
-            initial-cur  (or saved-cursor (cursor/init now))
+            initial-cur  (if reset?
+                           (cursor/init rebuild-from)
+                           (or saved-cursor (cursor/init now)))
             window       (get opts :recency-window (t/hours->duration 4))]
         (jdbc/with-transaction [tx db]
-          ;; Remove all auto-generated events from the future horizon
-          (playout-db/delete-non-manual-events-after! tx playout-id now)
+          ;; Remove auto-generated events from the rebuild point to the horizon.
+          ;; On a reset this is the in-progress event's finish (preserving what's
+          ;; on air); otherwise it's now.
+          (playout-db/delete-non-manual-events-after! tx playout-id rebuild-from)
 
           ;; Seed global filler recency from what is already scheduled on every
           ;; OTHER channel across the build window. This playout's own future
@@ -746,13 +769,21 @@
                   (recur cursor''' next-slot-idx next-cycle-anchor next-events))))))))))))
 
 (defn rebuild-from-now!
-  "Delete all future events and regenerate from NOW.
-   Used when configuration changes.
+  "Wipe the auto-generated timeline from now onward and regenerate it fresh,
+   starting the schedule over from its first slot.  Used when configuration
+   changes (or to recover a playout whose cursor has run ahead).
+
+   Passes :reset-cursor? so build! discards the saved cursor instead of
+   resuming from it — without this the rebuild would silently restart wherever
+   the previous build left off (typically the old horizon), leaving a gap
+   between now and that point.
+
    Returns number of events generated."
   [ds playout-id horizon-days]
   (let [playout (playout-db/get-playout ds playout-id)]
     (if playout
-      (let [result (build! ds {:lookahead-hours (* horizon-days 24)} playout)]
+      (let [result (build! ds {:lookahead-hours (* horizon-days 24)
+                               :reset-cursor?   true} playout)]
         (if (= result :no-schedule) 0 result))
       0)))
 
