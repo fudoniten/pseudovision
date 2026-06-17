@@ -91,7 +91,14 @@
             name = "pseudovision";
             repo = "registry.kube.sea.fudo.link";
             tags = [ "latest" versionTag ];
-            environmentPackages = with pkgs; [ ffmpeg procps ];
+            # NB: use pathEnv (not environmentPackages) so these land on the
+            # container's $PATH, not just in the image filesystem.  The
+            # helper computes PATH = makeBinPath (basePackages ++ pathEnv);
+            # environmentPackages only populates contents.  Keeping ffmpeg on
+            # PATH lets the app resolve a bare "ffmpeg" and survive a stale or
+            # changed absolute FFMPEG_PATH (e.g. after a nixpkgs bump rehashes
+            # ffmpeg) instead of failing with ENOENT.
+            pathEnv = with pkgs; [ ffmpeg procps ];
             env = {
               GIT_COMMIT = self.rev or self.dirtyRev or "unknown";
               GIT_TIMESTAMP = gitTimestamp;
