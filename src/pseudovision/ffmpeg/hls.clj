@@ -1,14 +1,27 @@
 (ns pseudovision.ffmpeg.hls
-  (:require [taoensso.timbre :as log])
+  (:require [clojure.string :as str]
+            [taoensso.timbre :as log])
   (:import [java.lang ProcessBuilder]
            [java.io File]))
 
 (defn- resolve-ffmpeg-path []
-  (or (System/getenv "FFMPEG_PATH")
-      (first (filter #(.exists (File. %))
-                     ["/usr/bin/ffmpeg"
-                      "/usr/local/bin/ffmpeg"]))
-      "ffmpeg"))
+  (let [configured (System/getenv "FFMPEG_PATH")]
+    (or
+     ;; Only trust FFMPEG_PATH if it actually points at a real file.  A
+     ;; baked-in absolute path (e.g. a /nix/store path that isn't present
+     ;; in the running container) would otherwise be handed straight to
+     ;; ProcessBuilder, which execs it verbatim and fails with ENOENT
+     ;; without ever consulting PATH.
+     (when (and (not (str/blank? configured))
+                (.exists (File. ^String configured)))
+       configured)
+     (first (filter #(.exists (File. ^String %))
+                    ["/usr/bin/ffmpeg"
+                     "/usr/local/bin/ffmpeg"]))
+     ;; Bare command name: ProcessBuilder/exec resolves this against PATH,
+     ;; so as long as ffmpeg is on PATH this works regardless of where it
+     ;; lives.
+     "ffmpeg")))
 
 (defn- extract-profile [{:keys [video-codec audio-codec preset video-bitrate audio-bitrate]
                          :or {video-codec "libx264"
@@ -67,7 +80,11 @@
   [command output-dir]
   (let [pb (ProcessBuilder. command)
         env (.environment pb)
-        ffmpeg-path (or (System/getenv "FFMPEG_PATH") "ffmpeg")
+        ;; The command's first element is the resolved ffmpeg binary (see
+        ;; resolve-ffmpeg-path).  Base the Nix library-path setup on what we
+        ;; actually launch, not on the raw env var, which may have been
+        ;; rejected in favour of a PATH lookup.
+        ffmpeg-path (first command)
         ;; Extract /nix/store path and set up library paths for Nix binaries
         _ (when (.startsWith ffmpeg-path "/nix/store/")
             (let [nix-store-path (second (re-find #"(/nix/store/[^/]+)" ffmpeg-path))
@@ -134,16 +151,16 @@
         ;; Also need to escape = when not using quotes
         escape-text (fn [text]
                      (-> text
-                         (clojure.string/replace "\\" "\\\\\\\\")  ; Escape backslash (4 backslashes)
-                         (clojure.string/replace ":" "\\\\:")       ; Escape colon
-                         (clojure.string/replace "'" "\\\\'")       ; Escape single quote
-                         (clojure.string/replace "%" "\\\\%")))     ; Escape percent
+                         (str/replace "\\" "\\\\\\\\")  ; Escape backslash (4 backslashes)
+                         (str/replace ":" "\\\\:")       ; Escape colon
+                         (str/replace "'" "\\\\'")       ; Escape single quote
+                         (str/replace "%" "\\\\%")))     ; Escape percent
         
         channel-text-escaped (escape-text channel-text)
         
         ;; Build upcoming events text  
         upcoming-text-raw (if (seq upcoming-events)
-                            (let [events-str (clojure.string/join "\\n" 
+                            (let [events-str (str/join "\\n" 
                                                (map #(format "%s - %s" 
                                                             (:start-time %)
                                                             (:title %))
