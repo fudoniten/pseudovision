@@ -50,7 +50,7 @@
    Returns: String array for ProcessBuilder"
   [source-url output-dir {:keys [start-position-secs segment-duration playlist-size profile-config]
                           :or {start-position-secs 0
-                               segment-duration 6
+                               segment-duration 2
                                playlist-size 10
                                profile-config {}}}]
    (let [ffmpeg-bin (resolve-ffmpeg-path)
@@ -59,6 +59,13 @@
      (log/debug "Using ffmpeg" {:path ffmpeg-bin :profile profile-config})
      (into-array String
        [ffmpeg-bin
+        ;; Read the input at its native frame rate.  This is a live channel:
+        ;; without -re, FFmpeg transcodes the whole remaining file as fast as
+        ;; the CPU allows, races past the player, deletes segments it just
+        ;; wrote (delete_segments + hls_list_size), and then exits at EOF —
+        ;; which the player sees as 404s on segments followed by the stream
+        ;; dying.  -re paces output to real time so segments stay available.
+        "-re"
         "-ss" (str start-position-secs)           ; Start position
         "-i" source-url                            ; Input URL
         "-c:v" video-codec                         ; Video codec from profile
@@ -134,7 +141,7 @@
    
    Returns: String array for ProcessBuilder"
   [output-dir {:keys [channel-name channel-number upcoming-events segment-duration playlist-size profile-config]
-               :or {segment-duration 6
+               :or {segment-duration 2
                     playlist-size 10
                     profile-config {}
                     upcoming-events []}}]
@@ -195,10 +202,16 @@
     
     (into-array String
       [ffmpeg-bin
+       ;; Pace both synthetic sources to real time.  Without -re the lavfi
+       ;; color/anullsrc generators run flat-out, pinning a CPU and racing
+       ;; segment numbers far ahead of the player (same failure mode as a
+       ;; real input without -re).
        ;; Generate solid color background (dark blue/gray)
+       "-re"
        "-f" "lavfi"
        "-i" "color=c=#1a1a2e:s=1920x1080:r=30"
        ;; Generate silent audio
+       "-re"
        "-f" "lavfi"
        "-i" "anullsrc=channel_layout=stereo:sample_rate=48000"
        ;; Apply text overlays
