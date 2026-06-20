@@ -45,6 +45,20 @@
   (testing "JSONB round-trips :accel as a string; resolve-config keywordises it"
     (is (= :vaapi (:accel (profile/resolve-config {:accel "vaapi"} all-accels))))))
 
+(deftest accel-survives-alongside-legacy-keys
+  (testing "an explicit :accel is NOT clobbered by leftover legacy flat keys"
+    (let [cfg (profile/resolve-config
+               {:accel "vaapi" :video-bitrate "4000k" :audio-bitrate "128k"}
+               all-accels)]
+      (is (= :vaapi (:accel cfg)))
+      (is (= "4000k" (get-in cfg [:video :bitrate])) "legacy bitrate is folded in")
+      (is (= "128k"  (get-in cfg [:audio :bitrate])))))
+  (testing "nested settings win over folded legacy ones"
+    (let [cfg (profile/resolve-config
+               {:accel "nvenc" :video-bitrate "1000k" :video {:bitrate "8000k"}}
+               all-accels)]
+      (is (= "8000k" (get-in cfg [:video :bitrate]))))))
+
 ;; ---------------------------------------------------------------------------
 ;; Argument builders
 ;; ---------------------------------------------------------------------------

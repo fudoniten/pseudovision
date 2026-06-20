@@ -75,23 +75,24 @@
    :normalize nil
    :hls    {:segment-duration 2 :playlist-size 10 :warm-segments 2}})
 
-(defn- legacy?
-  "True when `config` uses the original flat encoder keys."
+(defn- fold-legacy
+  "Folds any legacy flat encoder keys ({:video-codec ...}) into the nested shape
+   WITHOUT overriding nested or :accel settings already present. This makes a
+   config that mixes an explicit :accel with legacy keys safe: the legacy keys no
+   longer force software encoding. A purely-legacy config (no :accel) still
+   resolves to software because :accel simply defaults to :none."
   [config]
-  (boolean (some #(contains? config %)
-                 [:video-codec :audio-codec :video-bitrate :audio-bitrate])))
-
-(defn- from-legacy
-  "Translates a flat legacy config into the nested shape (always software)."
-  [{:keys [video-codec audio-codec preset video-bitrate audio-bitrate]}]
-  (cond-> {:accel :none
-           :video (cond-> {}
-                    video-codec   (assoc :codec video-codec)
-                    video-bitrate (assoc :bitrate video-bitrate)
-                    preset        (assoc :preset preset))
-           :audio (cond-> {}
-                    audio-codec   (assoc :codec audio-codec)
-                    audio-bitrate (assoc :bitrate audio-bitrate))}))
+  (let [lv (cond-> {}
+             (:video-codec config)   (assoc :codec   (:video-codec config))
+             (:video-bitrate config) (assoc :bitrate (:video-bitrate config))
+             (:preset config)        (assoc :preset  (:preset config)))
+        la (cond-> {}
+             (:audio-codec config)   (assoc :codec   (:audio-codec config))
+             (:audio-bitrate config) (assoc :bitrate (:audio-bitrate config)))]
+    (-> config
+        (dissoc :video-codec :audio-codec :preset :video-bitrate :audio-bitrate)
+        (update :video #(merge lv %))
+        (update :audio #(merge la %)))))
 
 (defn resolve-config
   "Normalises a raw `ffmpeg_profiles.config` map (legacy flat or nested) into the
@@ -103,7 +104,7 @@
    takes an explicit `available` set (used by tests)."
   ([config] (resolve-config config (available-accels)))
   ([config available]
-   (let [raw      (if (legacy? (or config {})) (from-legacy config) (or config {}))
+   (let [raw      (fold-legacy (or config {}))
          merged   (-> defaults
                       (merge (dissoc raw :video :audio :normalize :hls))
                       (update :video merge (:video raw))
