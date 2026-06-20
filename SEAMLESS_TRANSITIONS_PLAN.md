@@ -129,6 +129,33 @@ Skip normalization and resolution/codec changes will glitch hardware decoders on
 some STBs. Optimisation: skip the scale filter when the source already matches
 the target to save GPU cycles.
 
+### 4.4 Segment storage — local now, abstracted for later
+Live segments stay on **co-located local disk** (today's
+`/tmp/pseudovision/streams/{uuid}/` model): both encoder slots for a channel run
+on one node writing to one local dir, and the manager stitches locally. This is
+the lowest-latency, lowest-complexity choice and is the right fit for the overlap
+handoff — a channel's two short-lived encoders are naturally co-located, and at
+2–3 channels there is no pressure to split a single channel's live encode across
+nodes.
+
+The thing that would actually tie our hands is not the backend but a hardcoded
+local-filesystem assumption (today `segment-handler` calls `io/file` /
+`io/input-stream` directly). So segment access goes behind a small
+**`SegmentStore` protocol** (`put` / `get` / `list` / `delete`) with a
+local-disk implementation now. Swapping to shared storage (PVC / NFS) later
+becomes one new implementation, not a rewrite. Two supporting habits keep the
+door open:
+
+- Managers stay **channel-keyed and location-independent** (they already key on
+  `uuid`); nothing assumes "this node owns this channel."
+- Deferred batch transcode jobs (§7) may use **shared storage independently** —
+  they are distributable by design and need not share a backend with live
+  segments. `SegmentStore` is the seam that later lets the live path read a
+  batch job's pre-normalized output.
+
+The clean split that avoids lock-in: **co-locate live encoders, distribute batch
+jobs**, with `SegmentStore` between them.
+
 ---
 
 ## 5. Prerequisite: hwaccel-aware FFmpeg profiles
@@ -185,6 +212,8 @@ Each phase is independently shippable and leaves the channel working.
 ### Phase 1 — Channel Stream Manager (own the playlist)
 - Introduce the manager component; move `active-streams` into an Integrant
   component (the file already flags this as "to be refactored into Integrant").
+- Add the `SegmentStore` protocol (§4.4) with a local-disk implementation; route
+  `segment-handler` reads through it instead of `io/file` directly.
 - Encoders write plain segments (no `-f hls`); manager builds `playlist.m3u8`
   with a **monotonic** media-sequence and sliding-window GC.
 - Still one encoder per channel, restarted at boundaries (as today) — but now a
@@ -213,22 +242,36 @@ Each phase is independently shippable and leaves the channel working.
   rather than per-process; see §8).
 - *Deliverable:* a bad file degrades to a brief hitch, never a dead channel.
 
-### Phase 5 — Distributed transcoding *(decoupled; see §7)*
+### Phase 5 — Distributed transcoding *(DEFERRED — see §7)*
+
+Explicitly **out of scope for now.** Phases 0–4 are the seamless-transition
+deliverable and ship with inline real-time transcoding. Phase 5 is architected
+*for* but not *built* yet: the `SegmentStore` seam (§4.4), the location-
+independent managers, and the reuse of the Phase-0 profile model as the job
+`:target` are the hooks that let it drop in later without reworking the live
+path. Revisit once seamless transitions are proven in production (its payoff is
+reduced live GPU load, not seamless transitions themselves).
 
 Rough sizing: Phases 0–4 are the seamless-transition deliverable. 0 and 1 are
 the bulk of the work; 2–4 are smaller increments on the manager.
 
 ---
 
-## 7. Distributed transcoding — recommendation
+## 7. Distributed transcoding — DEFERRED design
 
-**Counter-suggestion: decouple it from the seamless-transition work, and do not
-fold it into the live encoder.** Live streaming is *real-time, low-latency,
-seek-aware* transcoding; a transcode "job" is *batch, throughput-oriented,
-cluster-scheduled*. Those are different latency and failure domains; coupling
-them couples three concerns (real-time muxing, batch transcode, k8s scheduling)
-into one fragile unit. Ship Phases 0–4 first; they stand alone with inline
-real-time transcoding.
+**Decision: deferred. Architect for it now, build it later.** It is decoupled
+from the seamless-transition work and must not be folded into the live encoder.
+Live streaming is *real-time, low-latency, seek-aware* transcoding; a transcode
+"job" is *batch, throughput-oriented, cluster-scheduled*. Those are different
+latency and failure domains; coupling them couples three concerns (real-time
+muxing, batch transcode, scheduling) into one fragile unit. Ship Phases 0–4
+first; they stand alone with inline real-time transcoding.
+
+The hooks that keep this drop-in-able later (build these into Phases 0–4, then
+stop): the `SegmentStore` seam (§4.4) so batch output is readable by the live
+path; location-independent, channel-keyed managers; and the Phase-0 profile
+model reused as the job `:target`. Nothing in Phases 0–4 should assume
+transcoding is always in-process.
 
 When we do build it, the highest-value first form is **ahead-of-time
 normalization**, not a generic converter:
@@ -254,32 +297,51 @@ single transcode code path:
                 :audio :transcode
                 :subtitle :passthrough} ; :passthrough | :burn-in | :drop
  :output       {:kind :hls-segments | :file
-                :uri  "..."}}      ; shared storage (PVC / object store)
- ;; execution: :in-process (local) | :distributed (k8s)
+                :uri  "..."}}      ; SegmentStore / shared storage
+ ;; execution: :in-process (local) | :distributed (worker pool)
 ```
 
-- **Workers** are pods with node affinity to GPU type
-  (`accel=nvenc` / `accel=vaapi` node labels); the job's `:target` accel routes
-  it to a matching host. VAAPI on the Intel iGPUs is the fallback tier when the
-  Quadros are saturated.
-- **Queue/state:** a `transcode_jobs` table (DB-backed, fits the existing
-  `db/` + Integrant style) is simplest and observable; k8s `Job` objects are an
-  alternative if you'd rather the cluster own lifecycle. Recommend DB-backed
-  queue + worker pods polling, for visibility and retry control.
-- **Subtitles:** keep video/audio/subtitle in one job spec (a single ffmpeg run
-  does all three). But note the real decision is **burn-in vs passthrough**:
-  burn-in (hard subs) forces a full video re-encode and breaks `-c copy`;
-  soft-sub passthrough into HLS means WebVTT side-playlists. Recommend defaulting
-  to `:passthrough`/`:drop` and treating burn-in as an explicit per-job option,
-  since it changes the cost profile.
+**Queue architecture (decided): PostgreSQL-backed, `FOR UPDATE SKIP LOCKED`.**
+No k8s Jobs, no external broker — it fits the existing `db/` + Integrant style
+and Postgres is already the backbone.
 
-**On "one big job":** don't merge the seamless-transition and distributed-jobs
-deliverables, but *within* the job service a single job spanning audio + video +
-subtitles (one ffmpeg invocation) is correct and efficient. Keep the
-deliverables separate; keep each job whole.
+- `transcode_jobs` table: `state` (pending/claimed/running/done/failed),
+  `priority`, `required_accel`, `claimed_at`, `lease_expires_at`, `worker_id`,
+  `artifact_uri`, `error`.
+- **Claim:** `SELECT … WHERE state='pending' AND (required_accel IS NULL OR
+  required_accel = ANY(:my-accels)) ORDER BY priority, created_at FOR UPDATE
+  SKIP LOCKED LIMIT 1`. `SKIP LOCKED` lets concurrent workers pull distinct rows
+  with zero double-processing — no broker required.
+- **Crash recovery:** lease + heartbeat; a watchdog re-queues jobs whose
+  `lease_expires_at` has passed.
+- **Wakeup:** poll every few seconds (transcodes are minute-scale); add
+  `LISTEN/NOTIFY` later if instant pickup is wanted.
+- **Why this:** transactional enqueue (queue a transcode in the same transaction
+  as a playout build — exactly-once), fully observable (just rows; inspect /
+  retry / cancel via SQL or the API), and no new infra to run. Outgrown only at
+  thousands-of-jobs/sec, which transcoding never reaches.
 
-If you'd rather, Phase 5 can be deferred entirely — Phases 0–4 deliver seamless
-transitions on their own.
+**GPU routing without a scheduler.** Workers are Integrant components that
+advertise their accel(s) (`my-accels`); the claim predicate filters on
+`required_accel`, so an NVENC job is only pulled by an NVENC-capable worker.
+Node affinity (`accel=nvenc` / `accel=vaapi` labels + `nodeSelector`) is purely a
+deployment concern. Cap GPU sessions with a per-worker concurrency limit matching
+the session budget; VAAPI workers on the Intel iGPUs are the fallback tier when
+the Quadros are saturated.
+
+**Subtitles — optional, channel-dependent burn-in (decided).** Keep
+video/audio/subtitle in one job spec (a single ffmpeg run does all three). Policy
+is a **channel-level default, overridable per item**; default `:passthrough` /
+`:drop`, with `:burn-in` as an explicit opt-in. Two consequences to design in:
+burn-in forces a full video re-encode (it **breaks the `-c copy` fast path**),
+and a burned-in artifact is channel-specific — so the pre-normalized cache key is
+`(media-item, target-profile, subtitle-policy)`, and burn-in channels simply do
+not share normalized cache with passthrough channels.
+
+**On "one big job":** keep the seamless-transition and distributed-jobs
+deliverables separate, but *within* the job service a single job spanning
+audio + video + subtitles (one ffmpeg invocation) is correct and efficient. Keep
+the deliverables separate; keep each job whole.
 
 ---
 
@@ -319,9 +381,14 @@ localized to the manager and far smaller than C's in-stream boundary tracking.
 - `ffmpeg_profiles.config` (JSONB): extend to the §5 shape. Column already
   exists; add malli validation. Provide a migration only to seed/upgrade
   existing rows to the new shape.
-- New table `transcode_jobs` (Phase 5 only): `id, source_ref, target_profile_id,
-  spec jsonb, state, worker, artifact_uri, error, created_at, updated_at`.
-- Move the `active-streams` atom into an Integrant streaming component.
+- Channel-level `subtitle_policy` default (`:passthrough` | `:drop` |
+  `:burn-in`), overridable per item; resolved when a job spec is built (§7).
+- Move the `active-streams` atom into an Integrant streaming component; add the
+  `SegmentStore` protocol (§4.4) with a local-disk implementation.
+- New table `transcode_jobs` (**deferred — Phase 5 only**): `id, source_ref,
+  target_profile_id, spec jsonb, state, priority, required_accel, worker_id,
+  claimed_at, lease_expires_at, artifact_uri, error, created_at, updated_at`
+  (see §7 for the `SKIP LOCKED` claim).
 
 ---
 
@@ -348,20 +415,24 @@ localized to the manager and far smaller than C's in-stream boundary tracking.
 |---|---|
 | discontinuity-sequence bug → client desync | Dedicated unit tests on window eviction (§9.2) |
 | Overlap doubles GPU sessions at splice | Target scale is 2–3 channels; multiple Quadros + VAAPI fallback; optional NVENC patch; session accounting in the manager |
-| Cross-node overlap needs shared segment storage | Keep both encoder slots for a channel **co-located on one node**; only Phase-5 batch jobs are distributed |
-| Pre-transcode (Phase 5) misses airtime deadline | Graceful degrade: live path falls back to inline real-time transcode |
+| Cross-node overlap needs shared segment storage | Keep both encoder slots for a channel **co-located on one node** behind `SegmentStore`; only deferred batch jobs are distributed |
+| Pre-transcode (deferred Phase 5) misses airtime deadline | Graceful degrade: live path falls back to inline real-time transcode |
 | Normalization adds GPU cost on already-matching sources | Skip scale filter when source already matches target |
 
 ---
 
-## 13. Open questions
+## 13. Resolved decisions
 
-1. **Segment overlap across nodes** — confirm co-location is acceptable, or do we
-   want shared storage (PVC/object store) from day one?
-2. **Queue substrate for Phase 5** — DB-backed `transcode_jobs` (recommended) vs
-   native k8s `Job` objects?
-3. **Subtitle policy default** — passthrough/drop with opt-in burn-in
-   (recommended), or burn-in by default for STB simplicity?
-4. **Phase 5 timing** — build ahead-of-time normalization right after Phase 4
-   (it eases live GPU load), or defer until seamless transitions are proven in
-   production?
+1. **Segment storage** — co-located local disk now, behind a `SegmentStore`
+   protocol (§4.4); shared storage stays a later drop-in, not a day-one cost.
+2. **Queue substrate** — PostgreSQL `transcode_jobs` + `FOR UPDATE SKIP LOCKED`
+   (§7). No k8s Jobs, no external broker.
+3. **Subtitle policy** — optional, channel-dependent burn-in; default
+   `:passthrough` / `:drop`, `:burn-in` opt-in per channel (§7, §10).
+4. **Phase 5 (distributed transcoding)** — **deferred.** Architect for it in
+   Phases 0–4 (the `SegmentStore` seam, location-independent managers, reusable
+   profile model), build it after seamless transitions are proven.
+
+## 14. Open questions
+
+- None blocking. Phase 0 can start now.
