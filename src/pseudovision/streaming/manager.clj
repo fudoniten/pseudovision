@@ -31,6 +31,12 @@
 (def ^:private base-backoff-ms 500)
 (def ^:private max-backoff-ms 30000)
 
+;; After this many consecutive immediate failures, assume the configured
+;; hardware acceleration is unusable and degrade the channel to software
+;; encoding so it keeps running. Sticky for the life of the loop — restart the
+;; stream (or the pod) to re-enable hardware once the driver is fixed.
+(def ^:private fallback-after-failures 3)
+
 (defn make-manager
   "Constructs a manager value. `streams-dir` is where served segments live (via
    the SegmentStore); `scratch-dir` is where encoders write before ingest."
@@ -114,12 +120,16 @@
 (defn- start-encoder!
   "Resolves the current source, starts an encoder for it, and records it in the
    state. The first encoder of a channel carries no discontinuity; every
-   subsequent one marks the playlist so its first segment gets the tag."
+   subsequent one marks the playlist so its first segment gets the tag.
+
+   When the channel has been marked `:degraded?` (repeated hardware-accel
+   failures), the encoder is forced to software so the channel keeps running."
   [{:keys [db store scratch-base]} state]
-  (let [{:keys [channel uuid enc-counter playlist] :as s} @state
+  (let [{:keys [channel uuid enc-counter playlist degraded?] :as s} @state
         source-info (source/current-stream-source db channel)
         scratch     (scratch-dir! scratch-base uuid enc-counter)
-        cfg         (profile-config db channel)
+        cfg         (cond-> (profile-config db channel)
+                      degraded? (assoc :accel "none"))
         command     (build-command channel source-info scratch cfg)
         proc        (hls/start-ffmpeg command scratch)
         media-view  (open-media-view! db channel source-info)
@@ -214,6 +224,13 @@
           (log/warn "Encoder died" info))
         (stop-encoder! mgr state)
         (swap! state assoc :fail-count fails)
+        ;; Degrade to software once hardware accel proves unusable, unless we are
+        ;; already running software (in which case the failure is something else).
+        (when (and (>= fails fallback-after-failures)
+                   (not (:degraded? @state)))
+          (log/warn "Repeated encoder failures; degrading channel to software encoding"
+                    {:uuid uuid :failures fails})
+          (swap! state assoc :degraded? true))
         (when (pos? wait) (Thread/sleep wait))
         (start-encoder! mgr state))
 
@@ -291,6 +308,8 @@
       {:uuid uuid
        :enc-counter (:enc-counter s)
        :last-access @(:last-access ref)
+       :fail-count (:fail-count s 0)
+       :degraded? (boolean (:degraded? s))
        :process-alive (boolean (and enc (hls/process-alive? enc)))
        :encoder (some-> enc (dissoc :process))
        :playlist (-> (:playlist s)

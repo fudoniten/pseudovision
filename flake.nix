@@ -98,13 +98,25 @@
             # PATH lets the app resolve a bare "ffmpeg" and survive a stale or
             # changed absolute FFMPEG_PATH (e.g. after a nixpkgs bump rehashes
             # ffmpeg) instead of failing with ENOENT.
-            pathEnv = with pkgs; [ ffmpeg procps ];
+            #
+            # libva-utils provides `vainfo` for debugging VAAPI inside the pod.
+            pathEnv = with pkgs; [ ffmpeg procps libva-utils ];
             env = {
               GIT_COMMIT = self.rev or self.dirtyRev or "unknown";
               GIT_TIMESTAMP = gitTimestamp;
               VERSION_TAG = versionTag;
               FFMPEG_PATH = "${pkgs.ffmpeg}/bin/ffmpeg";
               FFPROBE_PATH = "${pkgs.ffmpeg}/bin/ffprobe";
+              # VAAPI hardware acceleration (Intel).  ffmpeg ships with
+              # --enable-vaapi, but libva still needs a driver to talk to the
+              # GPU.  A bare container has none, so VAAPI init fails with "No VA
+              # display found for device".  Ship the Intel iHD driver and point
+              # libva at it explicitly (NixOS normally does this via
+              # hardware.graphics, which is absent in a plain image).  Referencing
+              # the driver's store path here also pulls it into the image closure.
+              # For pre-Broadwell GPUs use intel-vaapi-driver + LIBVA_DRIVER_NAME=i965.
+              LIBVA_DRIVER_NAME = "iHD";
+              LIBVA_DRIVERS_PATH = "${pkgs.intel-media-driver}/lib/dri";
             };
             entrypoint =
               let pseudovision = self.packages."${system}".pseudovision;
