@@ -41,12 +41,16 @@
    backend (downgrading to software when the requested one is unavailable).
 
    Returns: String array for ProcessBuilder"
-  [source-url output-dir {:keys [start-position-secs segment-duration playlist-size profile-config]
+  [source-url output-dir {:keys [start-position-secs segment-duration playlist-size
+                                 profile-config manager-mode?]
                           :or   {start-position-secs 0}}]
   (let [ffmpeg-bin (resolve-ffmpeg-path)
         cfg        (profile/resolve-config (or profile-config {}))
         seg-dur    (or segment-duration (get-in cfg [:hls :segment-duration]))
-        list-size  (or playlist-size (get-in cfg [:hls :playlist-size]))
+        ;; Manager mode: the Channel Stream Manager owns the served playlist and
+        ;; ingests these segments, so the encoder keeps ALL of them in its scratch
+        ;; playlist (hls_list_size 0) and never deletes them itself.
+        list-size  (if manager-mode? 0 (or playlist-size (get-in cfg [:hls :playlist-size])))
         vf         (profile/video-filter cfg)]
     (log/debug "Using ffmpeg" {:path ffmpeg-bin :accel (:accel cfg)})
     (into-array String
@@ -66,9 +70,12 @@
           (into (profile/audio-encode-args cfg))   ; Audio codec + params
           (into ["-f" "hls"                         ; HLS format
                  "-hls_time" (str seg-dur)          ; Segment duration
-                 "-hls_list_size" (str list-size)   ; Segments in playlist
-                 "-hls_flags" "delete_segments"     ; Auto-cleanup old segments
-                 "-hls_segment_filename" (str output-dir "/segment-%03d.ts")
+                 "-hls_list_size" (str list-size)]) ; Segments in playlist (0 = keep all)
+          ;; In manager mode the manager handles segment GC, so FFmpeg must not
+          ;; delete segments out from under it.
+          (cond-> (not manager-mode?)
+            (into ["-hls_flags" "delete_segments"]))
+          (into ["-hls_segment_filename" (str output-dir "/segment-%03d.ts")
                  (str output-dir "/playlist.m3u8")])))))
 
 (defn start-ffmpeg
@@ -131,7 +138,7 @@
             :profile-config {...}}
    
    Returns: String array for ProcessBuilder"
-  [output-dir {:keys [channel-name channel-number upcoming-events segment-duration playlist-size profile-config]
+  [output-dir {:keys [channel-name channel-number upcoming-events segment-duration playlist-size profile-config manager-mode?]
                :or {segment-duration 2
                     playlist-size 10
                     profile-config {}
@@ -219,7 +226,8 @@
           ;; HLS output settings
           (into ["-f" "hls"
                  "-hls_time" (str segment-duration)
-                 "-hls_list_size" (str playlist-size)
-                 "-hls_flags" "delete_segments"
-                 "-hls_segment_filename" (str output-dir "/segment-%03d.ts")
+                 "-hls_list_size" (str (if manager-mode? 0 playlist-size))])
+          (cond-> (not manager-mode?)
+            (into ["-hls_flags" "delete_segments"]))
+          (into ["-hls_segment_filename" (str output-dir "/segment-%03d.ts")
                  (str output-dir "/playlist.m3u8")])))))

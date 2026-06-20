@@ -212,18 +212,28 @@ Each phase is independently shippable and leaves the channel working.
 - *Deliverable:* existing per-event streaming runs on CPU/NVENC/VAAPI by config.
   No transition change yet. Covered by `test/pseudovision/ffmpeg/profile_test.clj`.
 
-### Phase 1 — Channel Stream Manager (own the playlist)
-- Introduce the manager component; move `active-streams` into an Integrant
-  component (the file already flags this as "to be refactored into Integrant").
-- Add the `SegmentStore` protocol (§4.4) with a local-disk implementation; route
-  `segment-handler` reads through it instead of `io/file` directly.
-- Encoders write plain segments (no `-f hls`); manager builds `playlist.m3u8`
-  with a **monotonic** media-sequence and sliding-window GC.
-- Still one encoder per channel, restarted at boundaries (as today) — but now a
-  restart no longer resets the client-visible sequence, and a
-  `#EXT-X-DISCONTINUITY` is emitted at the boundary.
+### Phase 1 — Channel Stream Manager (own the playlist) ✅ DONE
+- [x] Introduce the manager component (`pseudovision.streaming.manager`), an
+  Integrant `:pseudovision/streaming` key replacing the old `active-streams`
+  atom; one single-owner background loop per channel.
+- [x] Add the `SegmentStore` protocol (§4.4,
+  `pseudovision.streaming.segment-store`) with a local-disk implementation;
+  `segment-handler` reads through it, never `io/file` directly.
+- [x] Encoders write plain segments into a per-encoder scratch dir
+  (`build-hls-command`/`build-slate-command` gain `:manager-mode?`); the manager
+  ingests them into a manager-owned `playlist.m3u8`
+  (`pseudovision.streaming.playlist`) with a **monotonic** media-sequence,
+  correct discontinuity-sequence bookkeeping (§9), and sliding-window GC.
+- [x] One encoder per channel, restarted at boundaries; a restart no longer
+  resets the client-visible sequence and emits a single `#EXT-X-DISCONTINUITY`
+  at the boundary. Source-resolution/metrics moved to
+  `pseudovision.streaming.source` (shared, no dependency cycle).
 - *Deliverable:* transitions no longer reset the playlist; clients stop
-  reloading at boundaries. (Dead-air gap may still exist — fixed in Phase 2.)
+  reloading at boundaries. (Dead-air gap still exists — fixed in Phase 2.)
+- *Tested:* `playlist_test` (media-seq monotonicity, discontinuity-sequence
+  eviction §9), `segment_store_test`, `manager_test` (simulated-encoder ingest +
+  single-discontinuity transition), `source_test`. **Needs a hardware smoke test
+  on the real FFmpeg path** (no GPU/FFmpeg in CI).
 
 ### Phase 2 — Pre-roll + overlap handoff
 - Add the second encoder slot; warm B before stopping A; splice on a segment
