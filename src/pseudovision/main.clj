@@ -3,6 +3,7 @@
             [clojure.java.io    :as io]
             [clojure.tools.cli  :as cli]
             [integrant.core     :as ig]
+            [pseudovision.ffmpeg.profile :as ffmpeg-profile]
             [pseudovision.system :as system]
             [taoensso.timbre    :as log])
   (:gen-class))
@@ -54,6 +55,8 @@
                          (assoc :log-level (:log-level options)))
             sys-config (system/->system-config config)
             system     (ig/init sys-config)]
+        (log/info "FFmpeg hardware acceleration available:"
+                  (sort (map name (ffmpeg-profile/available-accels))))
         (log/info "Pseudovision started on port" (get-in config [:server :port]))
         (.addShutdownHook (Runtime/getRuntime)
                           (Thread. ^Runnable #(do (log/info "Shutting down…")

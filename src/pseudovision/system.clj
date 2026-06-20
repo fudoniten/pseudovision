@@ -3,7 +3,9 @@
             [pseudovision.db.core        :as db]
             [pseudovision.http.core      :as http]
             [pseudovision.cleanup        :as cleanup]
-            [taoensso.timbre             :as log]))
+            [pseudovision.streaming.manager :as stream-mgr]
+            [taoensso.timbre             :as log])
+  (:import [java.util.concurrent Executors TimeUnit]))
 
 ;; ---------------------------------------------------------------------------
 ;; Config → Integrant keys
@@ -30,12 +32,14 @@
      :pseudovision/scheduling (merge {:lookahead-hours 72
                                       :rebuild-interval-minutes 60}
                                      scheduling)
+      :pseudovision/streaming {:db (ig/ref :pseudovision/db)}
       :pseudovision/cleanup   {:db (ig/ref :pseudovision/db)}
       :pseudovision/http      {:port        (or (some-> server :port (parse-int)) 8080)
                                :db          (ig/ref :pseudovision/db)
                                :ffmpeg      (ig/ref :pseudovision/ffmpeg)
                                :media       (ig/ref :pseudovision/media)
-                               :scheduling  (ig/ref :pseudovision/scheduling)}}))
+                               :scheduling  (ig/ref :pseudovision/scheduling)
+                               :streams     (ig/ref :pseudovision/streaming)}}))
 
 ;; ---------------------------------------------------------------------------
 ;; Logger
@@ -83,6 +87,27 @@
 (defmethod ig/init-key :pseudovision/scheduling [_ opts] opts)
 
 (defmethod ig/halt-key! :pseudovision/scheduling [_ _] nil)
+
+;; ---------------------------------------------------------------------------
+;; Streaming (Channel Stream Manager + idle reaper)
+;; ---------------------------------------------------------------------------
+
+(def ^:private stream-idle-ms (* 60 60 1000))   ; reap channels idle > 1h
+
+(defmethod ig/init-key :pseudovision/streaming [_ {:keys [db]}]
+  (let [manager  (stream-mgr/make-manager {:db db})
+        reaper   (Executors/newSingleThreadScheduledExecutor)]
+    (.scheduleAtFixedRate reaper
+                          #(try (stream-mgr/reap-idle! manager stream-idle-ms)
+                                (catch Exception e (log/error e "stream reaper failed")))
+                          60 60 TimeUnit/SECONDS)
+    (log/info "Channel Stream Manager ready")
+    (assoc manager :reaper reaper)))
+
+(defmethod ig/halt-key! :pseudovision/streaming [_ {:keys [reaper] :as manager}]
+  (when reaper (.shutdownNow ^java.util.concurrent.ScheduledExecutorService reaper))
+  (stream-mgr/shutdown-all! manager)
+  (log/info "Channel Stream Manager stopped"))
 
 ;; ---------------------------------------------------------------------------
 ;; Cleanup daemon

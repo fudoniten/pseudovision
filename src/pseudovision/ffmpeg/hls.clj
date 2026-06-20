@@ -1,5 +1,6 @@
 (ns pseudovision.ffmpeg.hls
   (:require [clojure.string :as str]
+            [pseudovision.ffmpeg.profile :as profile]
             [taoensso.timbre :as log])
   (:import [java.lang ProcessBuilder]
            [java.io File]))
@@ -23,62 +24,59 @@
      ;; lives.
      "ffmpeg")))
 
-(defn- extract-profile [{:keys [video-codec audio-codec preset video-bitrate audio-bitrate]
-                         :or {video-codec "libx264"
-                              audio-codec "aac"
-                              preset "veryfast"
-                              video-bitrate "2000k"
-                              audio-bitrate "128k"}}]
-  {:video-codec video-codec :audio-codec audio-codec :preset preset
-   :video-bitrate video-bitrate :audio-bitrate audio-bitrate})
-
 (defn build-hls-command
   "Builds an FFmpeg command array for HLS streaming.
-   
+
    Args:
    - source-url: Input media URL (e.g., Jellyfin stream)
    - output-dir: Directory for HLS segments
    - opts: {:start-position-secs 0
-            :segment-duration 6
-            :playlist-size 10
-            :profile-config {:video-codec \"libx264\"
-                            :audio-codec \"aac\"
-                            :preset \"veryfast\"
-                            :video-bitrate \"2000k\"
-                            :audio-bitrate \"128k\"}}
-   
+            :segment-duration <override, else profile :hls>
+            :playlist-size     <override, else profile :hls>
+            :profile-config <raw ffmpeg_profiles.config — legacy flat or nested;
+                             see pseudovision.ffmpeg.profile>}
+
+   The encoder/decoder/filter flags are derived from the profile via
+   `pseudovision.ffmpeg.profile`, which selects the software / NVENC / VAAPI
+   backend (downgrading to software when the requested one is unavailable).
+
    Returns: String array for ProcessBuilder"
-  [source-url output-dir {:keys [start-position-secs segment-duration playlist-size profile-config]
-                          :or {start-position-secs 0
-                               segment-duration 2
-                               playlist-size 10
-                               profile-config {}}}]
-   (let [ffmpeg-bin (resolve-ffmpeg-path)
-         {:keys [video-codec audio-codec preset video-bitrate audio-bitrate]}
-         (extract-profile profile-config)]
-     (log/debug "Using ffmpeg" {:path ffmpeg-bin :profile profile-config})
-     (into-array String
-       [ffmpeg-bin
-        ;; Read the input at its native frame rate.  This is a live channel:
-        ;; without -re, FFmpeg transcodes the whole remaining file as fast as
-        ;; the CPU allows, races past the player, deletes segments it just
-        ;; wrote (delete_segments + hls_list_size), and then exits at EOF —
-        ;; which the player sees as 404s on segments followed by the stream
-        ;; dying.  -re paces output to real time so segments stay available.
-        "-re"
-        "-ss" (str start-position-secs)           ; Start position
-        "-i" source-url                            ; Input URL
-        "-c:v" video-codec                         ; Video codec from profile
-        "-preset" preset                           ; Encoding preset from profile
-        "-b:v" video-bitrate                       ; Video bitrate from profile
-        "-c:a" audio-codec                         ; Audio codec from profile
-        "-b:a" audio-bitrate                       ; Audio bitrate from profile
-        "-f" "hls"                                 ; HLS format
-        "-hls_time" (str segment-duration)        ; Segment duration
-        "-hls_list_size" (str playlist-size)      ; Segments in playlist
-        "-hls_flags" "delete_segments"            ; Auto-cleanup old segments
-        "-hls_segment_filename" (str output-dir "/segment-%03d.ts")
-        (str output-dir "/playlist.m3u8")])))
+  [source-url output-dir {:keys [start-position-secs segment-duration playlist-size
+                                 profile-config manager-mode?]
+                          :or   {start-position-secs 0}}]
+  (let [ffmpeg-bin (resolve-ffmpeg-path)
+        cfg        (profile/resolve-config (or profile-config {}))
+        seg-dur    (or segment-duration (get-in cfg [:hls :segment-duration]))
+        ;; Manager mode: the Channel Stream Manager owns the served playlist and
+        ;; ingests these segments, so the encoder keeps ALL of them in its scratch
+        ;; playlist (hls_list_size 0) and never deletes them itself.
+        list-size  (if manager-mode? 0 (or playlist-size (get-in cfg [:hls :playlist-size])))
+        vf         (profile/video-filter cfg)]
+    (log/debug "Using ffmpeg" {:path ffmpeg-bin :accel (:accel cfg)})
+    (into-array String
+      (-> [ffmpeg-bin
+           ;; Read the input at its native frame rate.  This is a live channel:
+           ;; without -re, FFmpeg transcodes the whole remaining file as fast as
+           ;; the CPU allows, races past the player, deletes segments it just
+           ;; wrote (delete_segments + hls_list_size), and then exits at EOF —
+           ;; which the player sees as 404s on segments followed by the stream
+           ;; dying.  -re paces output to real time so segments stay available.
+           "-re"]
+          (into (profile/input-args cfg))          ; -hwaccel … (before -i)
+          (into ["-ss" (str start-position-secs)   ; Start position
+                 "-i" source-url])                 ; Input URL
+          (cond-> vf (into ["-vf" vf]))            ; Normalisation filter chain
+          (into (profile/video-encode-args cfg))   ; Video codec + rate control
+          (into (profile/audio-encode-args cfg))   ; Audio codec + params
+          (into ["-f" "hls"                         ; HLS format
+                 "-hls_time" (str seg-dur)          ; Segment duration
+                 "-hls_list_size" (str list-size)]) ; Segments in playlist (0 = keep all)
+          ;; In manager mode the manager handles segment GC, so FFmpeg must not
+          ;; delete segments out from under it.
+          (cond-> (not manager-mode?)
+            (into ["-hls_flags" "delete_segments"]))
+          (into ["-hls_segment_filename" (str output-dir "/segment-%03d.ts")
+                 (str output-dir "/playlist.m3u8")])))))
 
 (defn start-ffmpeg
   "Starts an FFmpeg process using ProcessBuilder.
@@ -140,14 +138,18 @@
             :profile-config {...}}
    
    Returns: String array for ProcessBuilder"
-  [output-dir {:keys [channel-name channel-number upcoming-events segment-duration playlist-size profile-config]
+  [output-dir {:keys [channel-name channel-number upcoming-events segment-duration playlist-size profile-config manager-mode?]
                :or {segment-duration 2
                     playlist-size 10
                     profile-config {}
                     upcoming-events []}}]
   (let [ffmpeg-bin (resolve-ffmpeg-path)
-        {:keys [video-codec audio-codec preset video-bitrate audio-bitrate]}
-        (extract-profile profile-config)
+        ;; The slate is a synthetic lavfi source rendered with -filter_complex
+        ;; drawtext, so it cannot share the input -vf normalisation path.  A
+        ;; static 1080p30 screen is trivial to encode, so we always render it in
+        ;; software (forcing :accel :none) and reuse only the codec/bitrate
+        ;; selection from the profile.  Hardware slate encoding can come later.
+        cfg (assoc (profile/resolve-config (or profile-config {})) :accel :none)
 
         channel-text (if channel-number
                       (format "Channel %s: %s" channel-number channel-name)
@@ -201,33 +203,31 @@
                                           :upcoming-count (count upcoming-events)})
     
     (into-array String
-      [ffmpeg-bin
-       ;; Pace both synthetic sources to real time.  Without -re the lavfi
-       ;; color/anullsrc generators run flat-out, pinning a CPU and racing
-       ;; segment numbers far ahead of the player (same failure mode as a
-       ;; real input without -re).
-       ;; Generate solid color background (dark blue/gray)
-       "-re"
-       "-f" "lavfi"
-       "-i" "color=c=#1a1a2e:s=1920x1080:r=30"
-       ;; Generate silent audio
-       "-re"
-       "-f" "lavfi"
-       "-i" "anullsrc=channel_layout=stereo:sample_rate=48000"
-       ;; Apply text overlays
-       "-filter_complex" filter-str
-       ;; Video encoding
-       "-c:v" video-codec
-       "-preset" preset
-       "-b:v" video-bitrate
-       "-pix_fmt" "yuv420p"  ; Ensure compatibility
-       ;; Audio encoding
-       "-c:a" audio-codec
-       "-b:a" audio-bitrate
-       ;; HLS output settings
-       "-f" "hls"
-       "-hls_time" (str segment-duration)
-       "-hls_list_size" (str playlist-size)
-       "-hls_flags" "delete_segments"
-       "-hls_segment_filename" (str output-dir "/segment-%03d.ts")
-       (str output-dir "/playlist.m3u8")])))
+      (-> [ffmpeg-bin
+           ;; Pace both synthetic sources to real time.  Without -re the lavfi
+           ;; color/anullsrc generators run flat-out, pinning a CPU and racing
+           ;; segment numbers far ahead of the player (same failure mode as a
+           ;; real input without -re).
+           ;; Generate solid color background (dark blue/gray)
+           "-re"
+           "-f" "lavfi"
+           "-i" "color=c=#1a1a2e:s=1920x1080:r=30"
+           ;; Generate silent audio
+           "-re"
+           "-f" "lavfi"
+           "-i" "anullsrc=channel_layout=stereo:sample_rate=48000"
+           ;; Apply text overlays
+           "-filter_complex" filter-str]
+          ;; Video encoding (software; codec/bitrate/preset from the profile)
+          (into (profile/video-encode-args cfg))
+          (into ["-pix_fmt" "yuv420p"])           ; Ensure compatibility
+          ;; Audio encoding
+          (into (profile/audio-encode-args cfg))
+          ;; HLS output settings
+          (into ["-f" "hls"
+                 "-hls_time" (str segment-duration)
+                 "-hls_list_size" (str (if manager-mode? 0 playlist-size))])
+          (cond-> (not manager-mode?)
+            (into ["-hls_flags" "delete_segments"]))
+          (into ["-hls_segment_filename" (str output-dir "/segment-%03d.ts")
+                 (str output-dir "/playlist.m3u8")])))))

@@ -1,7 +1,10 @@
 (ns pseudovision.cleanup
-  "Background cleanup tasks for stream resources."
-  (:require [pseudovision.http.api.streaming :as streaming]
-            [taoensso.timbre :as log]
+  "Background cleanup tasks for leftover stream scratch directories.
+
+   Live stream lifecycle (dead/idle channels, segment GC) is owned by the
+   Channel Stream Manager; this daemon only sweeps stale on-disk directories
+   that may be left behind."
+  (:require [taoensso.timbre :as log]
             [clojure.java.io :as io])
   (:import [java.util.concurrent Executors TimeUnit]
            [java.io File]))
@@ -47,20 +50,17 @@
       0)))
 
 (defn run-cleanup-cycle
-  "Runs a single cleanup cycle: removes dead streams and cleans up temp directories.
+  "Runs a single cleanup cycle: sweeps stale stream scratch directories.
    Returns map with cleanup statistics."
-  [db]
+  [_db]
   (try
-    (let [dead-streams (streaming/cleanup-dead-streams db)
-          empty-dirs   (cleanup-empty-stream-directories)
-          old-dirs     (cleanup-old-stream-directories)]
-      (when (or (pos? dead-streams) (pos? empty-dirs) (pos? old-dirs))
+    (let [empty-dirs (cleanup-empty-stream-directories)
+          old-dirs   (cleanup-old-stream-directories)]
+      (when (or (pos? empty-dirs) (pos? old-dirs))
         (log/info "Cleanup cycle completed"
-                 {:dead-streams      dead-streams
-                  :empty-directories empty-dirs
+                 {:empty-directories empty-dirs
                   :old-directories   old-dirs}))
-      {:dead-streams      dead-streams
-       :empty-directories empty-dirs
+      {:empty-directories empty-dirs
        :old-directories   old-dirs})
     (catch Exception e
       (log/error e "Error during cleanup cycle")

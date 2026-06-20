@@ -447,8 +447,37 @@
 (def FFmpegProfileId [:int {:min 1}])
 
 (def FFmpegProfileConfig
-  "Encoding parameters. Keys evolve with FFmpeg; left open."
-  [:map {:description "Encoder configuration (see migration comments for keys)"}])
+  "Encoding parameters. Keys evolve with FFmpeg, so the map is left open: the
+   legacy flat shape ({:video-codec …}) and the nested hwaccel-aware shape both
+   validate. The optional keys below document the nested shape used by
+   `pseudovision.ffmpeg.profile`."
+  [:map {:description "Encoder configuration (legacy flat or nested hwaccel-aware)"}
+   [:accel {:optional true} [:enum "none" "nvenc" "vaapi"]]
+   [:device {:optional true} :string]
+   [:video {:optional true}
+    [:map
+     [:codec {:optional true} :string]
+     [:bitrate {:optional true} :string]
+     [:rate-control {:optional true} :string]
+     [:preset {:optional true} :string]]]
+   [:audio {:optional true}
+    [:map
+     [:codec {:optional true} :string]
+     [:bitrate {:optional true} :string]
+     [:sample-rate {:optional true} :int]
+     [:channels {:optional true} :int]]]
+   [:normalize {:optional true}
+    [:map
+     [:width {:optional true} :int]
+     [:height {:optional true} :int]
+     [:fps {:optional true} :int]
+     [:pixfmt {:optional true} :string]
+     [:sar {:optional true} :string]]]
+   [:hls {:optional true}
+    [:map
+     [:segment-duration {:optional true} :int]
+     [:playlist-size {:optional true} :int]
+     [:warm-segments {:optional true} :int]]]])
 
 (def FFmpegProfile
   [:map

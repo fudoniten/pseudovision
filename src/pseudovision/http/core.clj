@@ -635,8 +635,8 @@
 
 (defn start-server!
   "Assembles the handler context from opts and starts a non-blocking Jetty server."
-  [{:keys [port db ffmpeg media scheduling] :as _opts}]
-  (let [ctx     {:db db :ffmpeg ffmpeg :media media :scheduling scheduling}
+  [{:keys [port db ffmpeg media scheduling streams] :as _opts}]
+  (let [ctx     {:db db :ffmpeg ffmpeg :media media :scheduling scheduling :streams streams}
         handler (make-handler ctx)]
     (jetty/run-jetty handler {:port port :join? false})))
 
