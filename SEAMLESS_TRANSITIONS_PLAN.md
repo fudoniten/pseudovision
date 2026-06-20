@@ -199,15 +199,18 @@ decode + `hwupload` into the GPU encoder.
 
 Each phase is independently shippable and leaves the channel working.
 
-### Phase 0 — hwaccel-aware profiles *(prerequisite)*
-- Add `pseudovision.ffmpeg.profile` (logical config → per-accel flags + the
-  normalization filter chain).
-- Refactor `hls.clj/build-hls-command` and `build-slate-command` to consume it.
-- Validate `config` shape (malli) in the profile API.
-- Auto-detect available accel at startup (probe `/dev/dri`, `nvidia-smi`); pick
-  a safe default, allow per-channel override.
+### Phase 0 — hwaccel-aware profiles *(prerequisite)* ✅ DONE
+- [x] Add `pseudovision.ffmpeg.profile` (logical config → per-accel flags + the
+  normalization filter chain; software / NVENC / VAAPI; accepts legacy flat and
+  nested config shapes; auto-downgrades to software when a backend is missing).
+- [x] Refactor `hls.clj/build-hls-command` and `build-slate-command` to consume
+  it (slate stays software for now — synthetic lavfi source).
+- [x] Extend the `FFmpegProfileConfig` malli schema for the nested shape (kept
+  open so legacy configs still validate).
+- [x] Auto-detect available accel (probe `/dev/nvidia0`, `/dev/dri/renderD*`);
+  log at startup; per-channel override falls out of the per-profile config.
 - *Deliverable:* existing per-event streaming runs on CPU/NVENC/VAAPI by config.
-  No transition change yet.
+  No transition change yet. Covered by `test/pseudovision/ffmpeg/profile_test.clj`.
 
 ### Phase 1 — Channel Stream Manager (own the playlist)
 - Introduce the manager component; move `active-streams` into an Integrant
