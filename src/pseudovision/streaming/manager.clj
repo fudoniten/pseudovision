@@ -23,6 +23,14 @@
 
 (def ^:private tick-ms 500)
 
+;; Encoder restart backoff: an encoder that dies before running this long is
+;; treated as an immediate failure (bad command, VAAPI init error, unreadable
+;; source, …); consecutive immediate failures back off exponentially so a
+;; broken config does not hot-loop and churn processes/metrics.
+(def ^:private healthy-runtime-ms 5000)
+(def ^:private base-backoff-ms 500)
+(def ^:private max-backoff-ms 30000)
+
 (defn make-manager
   "Constructs a manager value. `streams-dir` is where served segments live (via
    the SegmentStore); `scratch-dir` is where encoders write before ingest."
@@ -48,6 +56,27 @@
     (when (.exists d)
       (doseq [^File f (.listFiles d)] (.delete f))
       (.delete d))))
+
+(defn- read-log-tail
+  "Reads the tail of an encoder's ffmpeg.log (its redirected stderr), so a
+   failed launch surfaces the real reason. Must be called BEFORE the scratch dir
+   is deleted."
+  [scratch]
+  (let [f (io/file scratch "ffmpeg.log")]
+    (when (.exists f)
+      (let [s (slurp f)
+            n 4000]
+        (if (> (count s) n) (str "…" (subs s (- (count s) n))) s)))))
+
+(defn- exit-code [encoder]
+  (try (.exitValue ^Process (:process encoder)) (catch Exception _ nil)))
+
+(defn- backoff-ms
+  "Exponential backoff for `n` consecutive immediate failures, capped."
+  [n]
+  (if (pos? n)
+    (min max-backoff-ms (* base-backoff-ms (bit-shift-left 1 (min 6 (dec n)))))
+    0))
 
 (defn- profile-config [db channel]
   (let [profile-id (:channels/ffmpeg-profile-id channel)]
@@ -171,15 +200,29 @@
       (start-encoder! mgr state)
 
       (not (hls/process-alive? encoder))
-      (do (log/warn "Encoder died; restarting" {:uuid uuid})
-          (stop-encoder! mgr state)
-          (start-encoder! mgr state))
+      ;; Read the ffmpeg log BEFORE stop-encoder! deletes the scratch dir, so the
+      ;; real failure (VAAPI init, unreadable source, bad command) is visible.
+      (let [lifetime (- (System/currentTimeMillis) (:started-ms encoder))
+            tail     (read-log-tail (:scratch-dir encoder))
+            fails    (if (< lifetime healthy-runtime-ms) (inc (:fail-count @state 0)) 0)
+            wait     (backoff-ms fails)
+            info     {:uuid uuid :pid (:pid encoder) :exit-code (exit-code encoder)
+                      :lifetime-ms lifetime :consecutive-failures fails :backoff-ms wait
+                      :ffmpeg-log (or tail "<no ffmpeg.log>")}]
+        (if (pos? fails)
+          (log/error "Encoder died" info)
+          (log/warn "Encoder died" info))
+        (stop-encoder! mgr state)
+        (swap! state assoc :fail-count fails)
+        (when (pos? wait) (Thread/sleep wait))
+        (start-encoder! mgr state))
 
       (source/needs-transition? db channel (:source-info encoder) (:started-ms encoder))
       (do (log/info "Event transition"
                     {:uuid uuid
                      :from (source/source-identity (:source-info encoder))
                      :to   (source/desired-source-identity db channel)})
+          (swap! state assoc :fail-count 0)
           (stop-encoder! mgr state)
           (start-encoder! mgr state)))))
 
