@@ -21,7 +21,8 @@
             [pseudovision.http.api.ffmpeg     :as ffmpeg]
             [pseudovision.http.api.filler     :as filler]
             [pseudovision.http.api.logos      :as logos]
-            [pseudovision.http.api.metrics    :as metrics]))
+            [pseudovision.http.api.metrics    :as metrics]
+            [pseudovision.http.api.jobs       :as jobs]))
 
 (defn- routes [ctx]
   [""
@@ -165,10 +166,13 @@
             :responses {200 {:body s/Playout}
                         404 {:body s/APIError}}
             :handler   (pl/get-playout-handler ctx)}
-     :post {:summary    "Rebuild a playout's event timeline"
+     :post {:summary    "Rebuild a playout's event timeline (async job)"
+            :description "Starts an asynchronous rebuild job and returns 202 with
+                          the job record. Poll GET /api/jobs/:job-id for progress
+                          and the final result."
             :parameters {:path  [:map [:channel-id s/ChannelId]]
                          :query s/RebuildQuery}
-            :responses  {200 {:body s/RebuildResult}
+            :responses  {202 {:body s/JobSubmitResponse}
                          404 {:body s/APIError}}
             :handler    (pl/rebuild-playout-handler ctx)}
      :delete {:summary    "Clear the whole playout timeline and reset its cursor"
@@ -216,6 +220,20 @@
                                   [:id         s/EventId]]}
               :responses {204 {}}
               :handler   (pl/delete-event-handler ctx)}}]
+
+   ;; ── Jobs ────────────────────────────────────────────────────────────────
+   ["/api/jobs"
+    {:tags ["jobs"]
+     :get  {:summary   "List async jobs (newest-first)"
+            :responses {200 {:body s/JobListResponse}}
+            :handler   (jobs/list-jobs-handler ctx)}}]
+   ["/api/jobs/:job-id"
+    {:tags       ["jobs"]
+     :get  {:summary   "Get an async job's status, progress, and result"
+            :parameters {:path [:map [:job-id s/JobId]]}
+            :responses {200 {:body s/JobInfoResponse}
+                        404 {:body s/APIError}}
+            :handler   (jobs/get-job-handler ctx)}}]
 
    ;; ── Media ───────────────────────────────────────────────────────────────
    ["/api/media/sources"
@@ -635,8 +653,9 @@
 
 (defn start-server!
   "Assembles the handler context from opts and starts a non-blocking Jetty server."
-  [{:keys [port db ffmpeg media scheduling streams] :as _opts}]
-  (let [ctx     {:db db :ffmpeg ffmpeg :media media :scheduling scheduling :streams streams}
+  [{:keys [port db ffmpeg media scheduling streams jobs] :as _opts}]
+  (let [ctx     {:db db :ffmpeg ffmpeg :media media :scheduling scheduling
+                 :streams streams :jobs jobs}
         handler (make-handler ctx)]
     (jetty/run-jetty handler {:port port :join? false})))
 

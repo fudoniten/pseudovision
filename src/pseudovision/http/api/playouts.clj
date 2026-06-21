@@ -2,6 +2,7 @@
   (:require [pseudovision.db.playouts      :as db]
             [pseudovision.db.channels      :as db-channels]
             [pseudovision.scheduling.core  :as sched]
+            [pseudovision.jobs.runner       :as runner]
             [pseudovision.util.time         :as t]
             [pseudovision.util.sql          :as sql-util]
             [pseudovision.util.pagination   :as pagination]))
@@ -29,7 +30,12 @@
         {:status 200 :body (unqualify-keys p)}
         {:status 404 :body {:error "No playout for this channel"}}))))
 
-(defn rebuild-playout-handler [{:keys [db]}]
+(defn rebuild-playout-handler
+  "Rebuilding a playout's timeline can take minutes, so it runs as an
+   asynchronous job rather than blocking the request. Returns 202 with the
+   initial job record; poll `GET /api/jobs/:job-id` for progress and the final
+   `:result` ({:events-generated N :horizon-days D :from \"now\"|\"horizon\"})."
+  [{:keys [db jobs]}]
   (fn [req]
     (let [channel-id   (resolve-channel-id db (get-in req [:parameters :path :channel-id]))
           playout      (and channel-id (db/get-playout-for-channel db channel-id))
@@ -38,14 +44,22 @@
           horizon-days (or (:horizon qp) 14)]
       (if playout
         (let [playout-id (:playouts/id playout)
-              count (case from
-                      "now"     (sched/rebuild-from-now! db playout-id horizon-days)
-                      "horizon" (sched/rebuild-horizon! db playout-id 7 horizon-days)
-                      (sched/rebuild-from-now! db playout-id horizon-days))]
-          {:status 200
-           :body {:message "Rebuild complete"
-                  :events-generated count
-                  :horizon-days horizon-days}})
+              job (runner/submit!
+                    jobs
+                    {:type     :playout/rebuild
+                     :metadata {:channel-id   channel-id
+                                :from         from
+                                :horizon-days horizon-days}}
+                    (fn [_report-progress]
+                      (let [count (case from
+                                    "now"     (sched/rebuild-from-now! db playout-id horizon-days)
+                                    "horizon" (sched/rebuild-horizon! db playout-id 7 horizon-days)
+                                    (sched/rebuild-from-now! db playout-id horizon-days))]
+                        {:message          "Rebuild complete"
+                         :events-generated count
+                         :horizon-days     horizon-days
+                         :from             from})))]
+          {:status 202 :body {:job job}})
         {:status 404 :body {:error "No playout for this channel"}}))))
 
 (defn- parse-instant [s]
