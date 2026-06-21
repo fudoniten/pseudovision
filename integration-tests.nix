@@ -353,18 +353,31 @@
               f"VALUES ({ch_id}, {s_id}, 42);\""
           )
 
-      # Trigger rebuilds via the API
+      # Trigger async rebuild jobs via the API. Rebuilds now run as background
+      # jobs (HTTP 202 with a job record); the request returns immediately.
+      job_ids = []
       for ch_id in [ch1_id, ch2_id, ch3_id]:
           result = server.succeed(
               f"curl -sf -X POST {base}/api/channels/{ch_id}/playout"
           )
           resp = json.loads(result)
-          assert "message" in resp or "error" not in resp, (
-              f"Rebuild failed for channel {ch_id}: {resp}"
+          assert "job" in resp, (
+              f"Rebuild did not return a job for channel {ch_id}: {resp}"
           )
+          job_ids.append(resp["job"]["id"])
 
-      # Brief pause to let builds complete
-      time.sleep(3)
+      # Poll each rebuild job until it reaches a terminal status.
+      for job_id in job_ids:
+          status = None
+          for _ in range(60):
+              job = api_get(f"/api/jobs/{job_id}")["job"]
+              status = job["status"]
+              if status in ("succeeded", "failed"):
+                  break
+              time.sleep(1)
+          assert status == "succeeded", (
+              f"Rebuild job {job_id} did not succeed: {job}"
+          )
 
 
       # ================================================================

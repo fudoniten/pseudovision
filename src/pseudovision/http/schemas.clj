@@ -815,6 +815,66 @@
    [:subtitle-mode               {:optional true} SubtitleModeEnum]])
 
 ;; ---------------------------------------------------------------------------
+;; Jobs
+;;
+;; Async background tasks tracked by pseudovision.jobs.runner. The wire shape is
+;; kept compatible with the Tunarr Scheduler service so a single UI can render
+;; jobs from either backend. `:type` and `:status` are namespaced/plain keywords
+;; that serialise to strings (e.g. "playout/rebuild", "running").
+;; ---------------------------------------------------------------------------
+
+(def JobId
+  [:string {:min 1 :description "Job identifier UUID"}])
+
+(def JobType
+  ;; Closed enum of the job types pseudovision can submit. Keep in sync with the
+  ;; configs passed to pseudovision.jobs.runner/submit!.
+  [:enum {:description "Type of async job"}
+   :playout/rebuild])
+
+(def JobStatus
+  [:enum {:description "Current job status"}
+   :queued :running :succeeded :failed])
+
+(def JobProgress
+  "Standard progress shape for item-based jobs. Open map: individual jobs may
+   report extra keys (e.g. :channel-id)."
+  [:map {:closed false}
+   [:phase        {:optional true} [:maybe :string]]
+   [:total        {:optional true} [:maybe :int]]
+   [:completed    {:optional true} [:maybe :int]]
+   [:failed       {:optional true} [:maybe :int]]
+   [:skipped      {:optional true} [:maybe :int]]
+   [:current-item {:optional true} [:maybe [:map {:closed false}
+                                            [:id   {:optional true} [:maybe :string]]
+                                            [:name {:optional true} [:maybe :string]]]]]])
+
+(def Job
+  [:map
+   [:id           JobId]
+   [:type         JobType]
+   [:status       JobStatus]
+   [:metadata     {:optional true} [:maybe :map]]
+   [:progress     {:optional true} [:maybe [:or JobProgress number?]]]
+   [:duration-ms  {:optional true} [:maybe :int]]
+   [:result       {:optional true} :any]
+   [:error        {:optional true} [:maybe [:map {:closed false}
+                                            [:message :string]
+                                            [:type    :string]]]]
+   [:created-at   {:optional true} [:maybe :string]]
+   [:started-at   {:optional true} [:maybe :string]]
+   [:completed-at {:optional true} [:maybe :string]]])
+
+(def JobSubmitResponse
+  [:map [:job Job]])
+
+(def JobListResponse
+  [:map [:jobs [:vector Job]]])
+
+(def JobInfoResponse
+  [:map [:job Job]])
+
+;; ---------------------------------------------------------------------------
 ;; Miscellaneous
 ;; ---------------------------------------------------------------------------
 

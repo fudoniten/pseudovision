@@ -139,12 +139,23 @@ pre-coercion behaviour until they're migrated.
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/channels/:id/playout` | Get the playout for a channel |
-| POST | `/api/channels/:id/playout` | Trigger a rebuild |
+| POST | `/api/channels/:id/playout` | **Trigger a rebuild** — runs as an async job, returns `202` with `{ "job": … }` (poll `/api/jobs/:job-id`) |
 | DELETE | `/api/channels/:id/playout` | **Clear the whole timeline** & reset the cursor (`?manual=true` also wipes injected events) |
 | GET | `/api/channels/:id/playout/events` | List upcoming events |
 | POST | `/api/channels/:id/playout/events` | **Inject a manual event** (bumper etc.) |
 | DELETE | `/api/channels/:id/playout/events` | **Bulk-delete events**, optionally within `?from=&to=` (deletes anything overlapping the window; `?manual=true` includes injected events) |
 | PUT/DELETE | `/api/channels/:id/playout/events/:event-id` | Edit/remove a single event |
+
+### Jobs
+Long-running work (currently playout rebuilds) runs as background **jobs**. The
+wire shape is compatible with the Tunarr Scheduler `/api/jobs` API so a shared
+UI can render jobs from either backend. See [`PLAYOUT_JOBS.md`](PLAYOUT_JOBS.md)
+for the full schema and the Marquee frontend integration spec.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/jobs` | List async jobs, newest-first (`{ "jobs": [ … ] }`) |
+| GET | `/api/jobs/:job-id` | Get a job's status, progress, and result (`{ "job": … }`, `404` if unknown) |
 
 ### Output
 | Path | Description |

@@ -3,6 +3,7 @@
             [pseudovision.db.core        :as db]
             [pseudovision.http.core      :as http]
             [pseudovision.cleanup        :as cleanup]
+            [pseudovision.jobs.runner    :as jobs]
             [pseudovision.streaming.manager :as stream-mgr]
             [taoensso.timbre             :as log])
   (:import [java.util.concurrent Executors TimeUnit]))
@@ -33,13 +34,15 @@
                                       :rebuild-interval-minutes 60}
                                      scheduling)
       :pseudovision/streaming {:db (ig/ref :pseudovision/db)}
+      :pseudovision/jobs      {}
       :pseudovision/cleanup   {:db (ig/ref :pseudovision/db)}
       :pseudovision/http      {:port        (or (some-> server :port (parse-int)) 8080)
                                :db          (ig/ref :pseudovision/db)
                                :ffmpeg      (ig/ref :pseudovision/ffmpeg)
                                :media       (ig/ref :pseudovision/media)
                                :scheduling  (ig/ref :pseudovision/scheduling)
-                               :streams     (ig/ref :pseudovision/streaming)}}))
+                               :streams     (ig/ref :pseudovision/streaming)
+                               :jobs        (ig/ref :pseudovision/jobs)}}))
 
 ;; ---------------------------------------------------------------------------
 ;; Logger
@@ -108,6 +111,19 @@
   (when reaper (.shutdownNow ^java.util.concurrent.ScheduledExecutorService reaper))
   (stream-mgr/shutdown-all! manager)
   (log/info "Channel Stream Manager stopped"))
+
+;; ---------------------------------------------------------------------------
+;; Async job runner
+;; ---------------------------------------------------------------------------
+
+(defmethod ig/init-key :pseudovision/jobs [_ opts]
+  (let [runner (jobs/create opts)]
+    (log/info "Async job runner ready")
+    runner))
+
+(defmethod ig/halt-key! :pseudovision/jobs [_ runner]
+  (jobs/shutdown! runner)
+  (log/info "Async job runner stopped"))
 
 ;; ---------------------------------------------------------------------------
 ;; Cleanup daemon
