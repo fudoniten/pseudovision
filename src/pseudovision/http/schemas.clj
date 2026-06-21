@@ -453,6 +453,7 @@
    `pseudovision.ffmpeg.profile`."
   [:map {:description "Encoder configuration (legacy flat or nested hwaccel-aware)"}
    [:accel {:optional true} [:enum "none" "nvenc" "vaapi"]]
+   [:decode {:optional true} [:enum "software" "hardware"]]
    [:device {:optional true} :string]
    [:video {:optional true}
     [:map

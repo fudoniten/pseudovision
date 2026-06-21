@@ -247,6 +247,21 @@ Each phase is independently shippable and leaves the channel working.
 - Add discontinuity-sequence eviction correctness tests (§9).
 - *Deliverable:* STB-safe output; the compatibility guarantee holds.
 
+#### Phase 3-lite — decode robustness ✅ DONE
+- [x] Add a `:decode` profile mode, default `:software`: hardware backends now
+  **software-decode → `hwupload` → hardware-encode**, robust to any input codec
+  (10-bit HEVC, odd formats) — the encode stays on the GPU (the expensive part),
+  only decode moves to CPU. `:decode "hardware"` opts back into full-GPU decode
+  for known-decodable content.
+  - VAAPI: `-vaapi_device …` + `-vf …,format=nv12,hwupload` (vs. `-hwaccel vaapi
+    -hwaccel_output_format vaapi`); NVENC: `-init_hw_device cuda` +
+    `hwupload_cuda`.
+  - Motivated by a real production failure: forced VAAPI decode aborted on
+    library HEVC content, masking as a software-encode degrade.
+  - *Tested:* `profile_test` (software-decode default, upload filters, CPU-scale
+    before upload, hardware-decode opt-in). VAAPI software path confirmed in
+    production; NVENC software path needs a hardware smoke test.
+
 ### Phase 4 — Fault isolation & watchdog
 - Per-encoder watchdog: a slot that dies/stalls is restarted; a source that
   fails to open splices in the fallback slate/filler **without** tearing down

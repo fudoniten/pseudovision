@@ -24,7 +24,8 @@
    encoder per backend; a concrete encoder name (e.g. `libx264`, `copy`) is
    passed through verbatim. JSONB round-trips keys as kebab-case keywords and
    values as strings, so both keyword and string values are tolerated."
-  (:require [clojure.string :as str]
+  (:require [clojure.java.io :as io]
+            [clojure.string :as str]
             [taoensso.timbre :as log])
   (:import [java.io File]))
 
@@ -47,16 +48,39 @@
 (defn- file-exists? [^String path]
   (.exists (File. path)))
 
-(defn detect-accels
-  "Probes the host for available hardware-acceleration backends.
-   Returns a set always containing :none plus any of :nvenc / :vaapi detected
-   from the presence of their device nodes."
+(defn- render-node-drivers
+  "DRM driver backing each present /dev/dri/renderD* node, e.g. \"i915\",
+   \"amdgpu\", \"nvidia\". A node whose driver can't be read yields \"unknown\"
+   so it is still treated as potentially VAAPI-capable."
   []
+  (keep (fn [n]
+          (when (file-exists? (str "/dev/dri/renderD" n))
+            (let [ue (io/file (str "/sys/class/drm/renderD" n "/device/uevent"))]
+              (or (when (.exists ue)
+                    (some #(second (re-find #"^DRIVER=(.+)$" (str/trim %)))
+                          (str/split-lines (slurp ue))))
+                  "unknown"))))
+        (range 128 144)))
+
+(defn- accels-from
+  "Pure decision: given the DRM render-node drivers and whether an NVIDIA device
+   node is present, which accel backends are available.
+
+   VAAPI requires a render node that is NOT nvidia-backed (iHD/AMD VAAPI cannot
+   drive an NVIDIA node — a render node alone is not enough, which is the bug
+   that made an NVIDIA-only host advertise VAAPI). NVENC requires an actual
+   /dev/nvidia* device (the NVIDIA DRM render node alone, without the injected
+   userspace driver, cannot encode)."
+  [render-drivers nvidia-device?]
   (cond-> #{:none}
-    (file-exists? "/dev/nvidia0")
-    (conj :nvenc)
-    (some file-exists? ["/dev/dri/renderD128" "/dev/dri/renderD129"])
-    (conj :vaapi)))
+    (some #(not= % "nvidia") render-drivers) (conj :vaapi)
+    nvidia-device?                            (conj :nvenc)))
+
+(defn detect-accels
+  "Probes the host for available hardware-acceleration backends. Returns a set
+   always containing :none plus any of :nvenc / :vaapi actually usable here."
+  []
+  (accels-from (render-node-drivers) (file-exists? "/dev/nvidia0")))
 
 (def available-accels
   "Memoised set of accel backends available on this host. Detection is a cheap
@@ -69,6 +93,7 @@
 
 (def ^:private defaults
   {:accel  :none
+   :decode :software
    :device default-vaapi-device
    :video  {:codec "h264" :bitrate "2000k" :rate-control :vbr}
    :audio  {:codec "aac" :bitrate "128k" :sample-rate 48000 :channels 2}
@@ -118,7 +143,7 @@
                            (log/warn "Requested FFmpeg accel unavailable; using software encoding"
                                      {:requested requested :available available}))
                          :none))]
-     (assoc merged :accel accel))))
+     (assoc merged :accel accel :decode (keyword (:decode merged))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Argument builders (operate on a resolved config)
@@ -133,40 +158,57 @@
     :else                       codec))
 
 (defn input-args
-  "Decode / hwaccel flags that must appear BEFORE `-i`."
-  [{:keys [accel device]}]
-  (case accel
-    :nvenc ["-hwaccel" "cuda" "-hwaccel_output_format" "cuda"]
-    :vaapi ["-hwaccel" "vaapi" "-hwaccel_device" (or device default-vaapi-device)
-            "-hwaccel_output_format" "vaapi"]
-    []))
+  "Decode / device-setup flags that must appear BEFORE `-i`.
+
+   `:hardware` decode runs the decoder on the GPU (fast, but the input codec must
+   be GPU-decodable). `:software` decode (the default) decodes on the CPU and only
+   uploads frames to the GPU for encoding — robust to ANY input codec (e.g. 10-bit
+   HEVC, odd formats) at the cost of CPU decode. See `video-filter` for the
+   upload step."
+  [{:keys [accel decode device]}]
+  (let [dev (or device default-vaapi-device)]
+    (case [accel decode]
+      [:vaapi :hardware] ["-hwaccel" "vaapi" "-hwaccel_device" dev "-hwaccel_output_format" "vaapi"]
+      [:vaapi :software] ["-vaapi_device" dev]
+      [:nvenc :hardware] ["-hwaccel" "cuda" "-hwaccel_output_format" "cuda"]
+      [:nvenc :software] ["-init_hw_device" "cuda=cu" "-filter_hw_device" "cu"]
+      [])))
 
 (defn video-filter
-  "Returns the `-vf` filter string that normalises output geometry for the given
-   backend, or nil when no `:normalize` block is configured.
+  "Returns the `-vf` filter string for the resolved backend + decode mode, or nil
+   when no filtering is needed.
 
-   Software does a full aspect-preserving scale + pad + format; the hardware
-   paths scale on-GPU (padding on-GPU is deferred to the normalization-hardening
-   phase)."
-  [{:keys [accel normalize]}]
-  (when normalize
-    (let [{:keys [width height fps pixfmt sar]
-           :or   {pixfmt "yuv420p" sar "1:1"}} normalize]
-      (str/join ","
-        (case accel
-          :vaapi (cond-> []
-                   fps (conj (str "fps=" fps))
-                   true (conj (str "scale_vaapi=w=" width ":h=" height)))
-          :nvenc (cond-> []
-                   fps (conj (str "fps=" fps))
-                   true (conj (str "scale_cuda=w=" width ":h=" height)))
-          (cond-> []
-            fps  (conj (str "fps=" fps))
-            true (conj (str "scale=" width ":" height
-                            ":force_original_aspect_ratio=decrease"))
-            true (conj (str "pad=" width ":" height ":(ow-iw)/2:(oh-ih)/2"))
-            true (conj (str "setsar=" sar))
-            true (conj (str "format=" pixfmt))))))))
+   For a hardware ENCODER fed by SOFTWARE decode, frames live in system memory
+   and must be converted to nv12 and uploaded to the GPU
+   (`format=nv12,hwupload[_cuda]`). That upload is emitted even without a
+   `:normalize` block — it is what makes any input codec encodable — and any
+   scale/pad happens on the CPU before the upload. For HARDWARE decode the frames
+   are already GPU surfaces, so only a GPU scale is added when normalizing.
+   Software encode (`:none`) does a full CPU scale/pad/format."
+  [{:keys [accel decode normalize]}]
+  (let [{:keys [width height fps pixfmt sar]
+         :or   {pixfmt "yuv420p" sar "1:1"}} normalize
+        cpu-scale (when normalize
+                    (cond-> []
+                      fps  (conj (str "fps=" fps))
+                      true (conj (str "scale=" width ":" height
+                                      ":force_original_aspect_ratio=decrease"))
+                      true (conj (str "pad=" width ":" height ":(ow-iw)/2:(oh-ih)/2"))
+                      true (conj (str "setsar=" sar))))
+        join      (fn [parts] (when (seq parts) (str/join "," parts)))]
+    (case [accel decode]
+      [:vaapi :software] (join (concat cpu-scale ["format=nv12" "hwupload"]))
+      [:nvenc :software] (join (concat cpu-scale ["format=nv12" "hwupload_cuda"]))
+      [:vaapi :hardware] (when normalize
+                           (join (cond-> []
+                                   fps  (conj (str "fps=" fps))
+                                   true (conj (str "scale_vaapi=w=" width ":h=" height)))))
+      [:nvenc :hardware] (when normalize
+                           (join (cond-> []
+                                   fps  (conj (str "fps=" fps))
+                                   true (conj (str "scale_cuda=w=" width ":h=" height)))))
+      ;; software encode (:none) — full CPU normalize, or nothing
+      (when normalize (join (conj cpu-scale (str "format=" pixfmt)))))))
 
 (defn- default-preset
   "Per-backend default encoder preset when none is configured."
