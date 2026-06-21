@@ -478,7 +478,8 @@
     [:map
      [:segment-duration {:optional true} :int]
      [:playlist-size {:optional true} :int]
-     [:warm-segments {:optional true} :int]]]])
+     [:warm-segments {:optional true} :int]
+     [:initial-burst {:optional true} :int]]]])
 
 (def FFmpegProfile
   [:map

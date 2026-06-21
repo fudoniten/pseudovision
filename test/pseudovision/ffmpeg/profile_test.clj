@@ -235,3 +235,32 @@
         (is (< (.indexOf cmd "-vaapi_device") (.indexOf cmd "-i")))
         (is (= "h264_vaapi" (nth cmd (inc (.indexOf cmd "-c:v")))))
         (is (= "format=nv12,hwupload" (nth cmd (inc (.indexOf cmd "-vf")))))))))
+
+(deftest build-hls-command-maps-only-video-and-audio
+  (testing "only the first video + audio tracks are mapped; subtitles dropped"
+    (let [cmd (vec (hls/build-hls-command
+                    "http://example/stream" "/tmp/out"
+                    {:profile-config {:video-codec "libx264"}}))]
+      (is (= "0:v:0" (nth cmd (inc (.indexOf cmd "-map")))))
+      (is (some #{"0:a:0?"} cmd) "audio mapped optionally")
+      (is (some #{"-sn"} cmd) "subtitles explicitly disabled")
+      ;; mapping must come after the input, before the muxer
+      (is (< (.indexOf cmd "-i") (.indexOf cmd "-map")))
+      (is (< (.indexOf cmd "-map") (.indexOf cmd "hls"))))))
+
+(deftest build-hls-command-readrate-and-initial-burst
+  (testing "input is paced at 1x and bursts the initial buffer by default"
+    (let [cmd (vec (hls/build-hls-command
+                    "http://example/stream" "/tmp/out"
+                    {:profile-config {:video-codec "libx264"}}))]
+      (is (not (some #{"-re"} cmd)) "bare -re replaced by -readrate")
+      (is (= "1" (nth cmd (inc (.indexOf cmd "-readrate")))))
+      (is (= "10" (nth cmd (inc (.indexOf cmd "-readrate_initial_burst")))))
+      ;; pacing flags precede the input
+      (is (< (.indexOf cmd "-readrate") (.indexOf cmd "-i")))))
+  (testing ":initial-burst 0 disables the burst but keeps 1x pacing"
+    (let [cmd (vec (hls/build-hls-command
+                    "http://example/stream" "/tmp/out"
+                    {:profile-config {:video-codec "libx264" :hls {:initial-burst 0}}}))]
+      (is (= "1" (nth cmd (inc (.indexOf cmd "-readrate")))))
+      (is (not (some #{"-readrate_initial_burst"} cmd))))))
