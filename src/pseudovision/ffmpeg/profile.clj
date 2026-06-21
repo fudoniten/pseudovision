@@ -24,7 +24,8 @@
    encoder per backend; a concrete encoder name (e.g. `libx264`, `copy`) is
    passed through verbatim. JSONB round-trips keys as kebab-case keywords and
    values as strings, so both keyword and string values are tolerated."
-  (:require [clojure.string :as str]
+  (:require [clojure.java.io :as io]
+            [clojure.string :as str]
             [taoensso.timbre :as log])
   (:import [java.io File]))
 
@@ -47,16 +48,39 @@
 (defn- file-exists? [^String path]
   (.exists (File. path)))
 
-(defn detect-accels
-  "Probes the host for available hardware-acceleration backends.
-   Returns a set always containing :none plus any of :nvenc / :vaapi detected
-   from the presence of their device nodes."
+(defn- render-node-drivers
+  "DRM driver backing each present /dev/dri/renderD* node, e.g. \"i915\",
+   \"amdgpu\", \"nvidia\". A node whose driver can't be read yields \"unknown\"
+   so it is still treated as potentially VAAPI-capable."
   []
+  (keep (fn [n]
+          (when (file-exists? (str "/dev/dri/renderD" n))
+            (let [ue (io/file (str "/sys/class/drm/renderD" n "/device/uevent"))]
+              (or (when (.exists ue)
+                    (some #(second (re-find #"^DRIVER=(.+)$" (str/trim %)))
+                          (str/split-lines (slurp ue))))
+                  "unknown"))))
+        (range 128 144)))
+
+(defn- accels-from
+  "Pure decision: given the DRM render-node drivers and whether an NVIDIA device
+   node is present, which accel backends are available.
+
+   VAAPI requires a render node that is NOT nvidia-backed (iHD/AMD VAAPI cannot
+   drive an NVIDIA node — a render node alone is not enough, which is the bug
+   that made an NVIDIA-only host advertise VAAPI). NVENC requires an actual
+   /dev/nvidia* device (the NVIDIA DRM render node alone, without the injected
+   userspace driver, cannot encode)."
+  [render-drivers nvidia-device?]
   (cond-> #{:none}
-    (file-exists? "/dev/nvidia0")
-    (conj :nvenc)
-    (some file-exists? ["/dev/dri/renderD128" "/dev/dri/renderD129"])
-    (conj :vaapi)))
+    (some #(not= % "nvidia") render-drivers) (conj :vaapi)
+    nvidia-device?                            (conj :nvenc)))
+
+(defn detect-accels
+  "Probes the host for available hardware-acceleration backends. Returns a set
+   always containing :none plus any of :nvenc / :vaapi actually usable here."
+  []
+  (accels-from (render-node-drivers) (file-exists? "/dev/nvidia0")))
 
 (def available-accels
   "Memoised set of accel backends available on this host. Detection is a cheap

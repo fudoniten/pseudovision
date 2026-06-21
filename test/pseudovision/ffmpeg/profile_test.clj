@@ -45,6 +45,20 @@
   (testing "JSONB round-trips :accel as a string; resolve-config keywordises it"
     (is (= :vaapi (:accel (profile/resolve-config {:accel "vaapi"} all-accels))))))
 
+(deftest accel-detection-excludes-nvidia-render-nodes
+  (let [accels-from @#'profile/accels-from]
+    (testing "an NVIDIA-only host (render nodes are nvidia, no /dev/nvidia0) offers no HW accel"
+      (is (= #{:none} (accels-from ["nvidia" "nvidia" "nvidia"] false))))
+    (testing "NVENC needs the /dev/nvidia* device, not just an nvidia render node"
+      (is (= #{:none :nvenc} (accels-from ["nvidia"] true))))
+    (testing "an Intel/AMD render node enables VAAPI"
+      (is (= #{:none :vaapi} (accels-from ["i915"] false)))
+      (is (= #{:none :vaapi} (accels-from ["amdgpu"] false))))
+    (testing "an unreadable driver is assumed VAAPI-capable (avoids false negative)"
+      (is (= #{:none :vaapi} (accels-from ["unknown"] false))))
+    (testing "no render nodes, no nvidia device -> software only"
+      (is (= #{:none} (accels-from [] false))))))
+
 (deftest accel-survives-alongside-legacy-keys
   (testing "an explicit :accel is NOT clobbered by leftover legacy flat keys"
     (let [cfg (profile/resolve-config
