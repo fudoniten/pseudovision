@@ -47,24 +47,38 @@
   (let [ffmpeg-bin (resolve-ffmpeg-path)
         cfg        (profile/resolve-config (or profile-config {}))
         seg-dur    (or segment-duration (get-in cfg [:hls :segment-duration]))
+        ;; Seconds of content to read flat-out at startup before pacing to 1×, so
+        ;; the player opens with a real buffer instead of being glued to the live
+        ;; edge (where any jitter underruns it). 0 disables the burst.
+        burst      (get-in cfg [:hls :initial-burst])
         ;; Manager mode: the Channel Stream Manager owns the served playlist and
         ;; ingests these segments, so the encoder keeps ALL of them in its scratch
         ;; playlist (hls_list_size 0) and never deletes them itself.
         list-size  (if manager-mode? 0 (or playlist-size (get-in cfg [:hls :playlist-size])))
         vf         (profile/video-filter cfg)]
-    (log/debug "Using ffmpeg" {:path ffmpeg-bin :accel (:accel cfg)})
+    (log/debug "Using ffmpeg" {:path ffmpeg-bin :accel (:accel cfg) :initial-burst burst})
     (into-array String
       (-> [ffmpeg-bin
-           ;; Read the input at its native frame rate.  This is a live channel:
-           ;; without -re, FFmpeg transcodes the whole remaining file as fast as
-           ;; the CPU allows, races past the player, deletes segments it just
-           ;; wrote (delete_segments + hls_list_size), and then exits at EOF —
-           ;; which the player sees as 404s on segments followed by the stream
-           ;; dying.  -re paces output to real time so segments stay available.
-           "-re"]
+           ;; Pace input to real time. This is a live channel: without pacing,
+           ;; FFmpeg transcodes the whole remaining file as fast as it can, races
+           ;; past the player, and exits at EOF — which the player sees as the
+           ;; stream dying. -readrate 1 is equivalent to -re (read at 1× so
+           ;; segments stay available) but lets us also burst-fill the initial
+           ;; buffer via -readrate_initial_burst below.
+           "-readrate" "1"]
+          (cond-> (and burst (pos? burst))
+            (into ["-readrate_initial_burst" (str burst)]))
           (into (profile/input-args cfg))          ; -hwaccel … (before -i)
           (into ["-ss" (str start-position-secs)   ; Start position
                  "-i" source-url])                 ; Input URL
+          ;; Take only the first video + audio track. Auto-mapping otherwise
+          ;; drags in subtitle tracks (e.g. mov_text), which FFmpeg transcodes to
+          ;; a whole second WebVTT HLS rendition and paces alongside the A/V
+          ;; streams — sparse subtitle packets thrash the readrate pacer and
+          ;; inflate startup latency. -sn belt-and-braces drops any others.
+          ;; 0:a:0? — the trailing ? makes the audio map optional so a
+          ;; video-only source does not abort the encoder.
+          (into ["-map" "0:v:0" "-map" "0:a:0?" "-sn"])
           (cond-> vf (into ["-vf" vf]))            ; Normalisation filter chain
           (into (profile/video-encode-args cfg))   ; Video codec + rate control
           (into (profile/audio-encode-args cfg))   ; Audio codec + params

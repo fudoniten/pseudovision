@@ -17,7 +17,7 @@
       :video     {:codec \"h264\" :bitrate \"4000k\" :rate-control :vbr :preset \"p4\"}
       :audio     {:codec \"aac\" :bitrate \"192k\" :sample-rate 48000 :channels 2}
       :normalize {:width 1920 :height 1080 :fps 30 :pixfmt \"yuv420p\" :sar \"1:1\"}
-      :hls       {:segment-duration 2 :playlist-size 10 :warm-segments 2}}
+      :hls       {:segment-duration 2 :playlist-size 10 :warm-segments 2 :initial-burst 10}}
      ```
 
    `:video :codec` is a *logical* name (`h264` / `hevc`) mapped to the right
@@ -98,7 +98,7 @@
    :video  {:codec "h264" :bitrate "2000k" :rate-control :vbr}
    :audio  {:codec "aac" :bitrate "128k" :sample-rate 48000 :channels 2}
    :normalize nil
-   :hls    {:segment-duration 2 :playlist-size 10 :warm-segments 2}})
+   :hls    {:segment-duration 2 :playlist-size 10 :warm-segments 2 :initial-burst 10}})
 
 (defn- fold-legacy
   "Folds any legacy flat encoder keys ({:video-codec ...}) into the nested shape
