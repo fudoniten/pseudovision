@@ -235,11 +235,29 @@ Each phase is independently shippable and leaves the channel working.
   single-discontinuity transition), `source_test`. **Needs a hardware smoke test
   on the real FFmpeg path** (no GPU/FFmpeg in CI).
 
-### Phase 2 — Pre-roll + overlap handoff
-- Add the second encoder slot; warm B before stopping A; splice on a segment
-  boundary.
-- Move `calculate-start-position` (cold-start seek) into the manager.
-- *Deliverable:* no dead air at transitions; smooth handoff.
+### Phase 2 — Pre-roll + overlap handoff ✅ DONE
+- [x] Second encoder slot (`:next-encoder`): when a boundary is near
+  (`needs-transition?`), the manager **pre-rolls** the next encoder (resolved at
+  the lookahead horizon, so it gets the upcoming event) WITHOUT stopping the
+  current one. The current encoder keeps feeding the playlist, so it never runs
+  dry.
+- [x] Once the next encoder is **warm** (has finalized ≥1 segment), the manager
+  splices: drains + stops the current encoder, marks one discontinuity, and
+  promotes the next encoder to current. No dead air.
+- [x] **Fault isolation bonus:** a pre-rolled encoder that dies before warming is
+  discarded and the failure counted, but the **current stream keeps playing** —
+  a failed transition no longer takes down the channel.
+- [x] First-connect 503 fix: the `/stream` handler now holds the request until
+  the first segment is ready (up to ~25s) instead of 503-ing after 3s, since
+  clients like VLC do not retry on 503.
+- *Deliverable:* no dead-air gap at transitions; first play succeeds first try.
+- *Tested:* `manager_test` (`encoder-warm?`, promote/splice carries exactly one
+  discontinuity, current drains first). **Needs a hardware smoke test** for the
+  live overlap timing.
+- *Known imperfection:* the splice fires when the next encoder is warm rather
+  than frame-accurately at the wall-clock boundary, so a transition can run a few
+  seconds early/late (small EPG drift). Frame-accurate alignment is a later
+  refinement.
 
 ### Phase 3 — Normalization hardening
 - Enforce the `:normalize` filter chain on every slot; verify identical output

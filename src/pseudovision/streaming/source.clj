@@ -71,30 +71,31 @@
     {:type :generated-slate :upcoming-events (upcoming-events-for-slate db playout-id)}))
 
 (defn current-stream-source
-  "Determines what should be streaming for a channel right now. Returns a
-   source-info map (see fallback-stream-source / :current-event branch)."
-  [db channel]
-  (let [channel-id (:channels/id channel)
-        playout    (db-playouts/get-playout-for-channel db channel-id)]
-    (if-not playout
-      (fallback-stream-source db channel nil)
-      (let [now           (t/now)
-            playout-id    (:playouts/id playout)
-            current-event (db-playouts/get-current-event db playout-id now)]
-        (if current-event
-          (let [media-item-id (:playout-events/media-item-id current-event)
-                source-url    (get-jellyfin-stream-url db media-item-id)]
-            (if source-url
-              {:source-url     source-url
-               :start-position (calculate-start-position current-event now)
-               :event          current-event
-               :type           :current-event
-               :media-item-id  media-item-id}
-              (do (log/error "Failed to resolve stream URL for current event"
-                             {:event-id (:playout-events/id current-event)
-                              :media-item-id media-item-id})
-                  (fallback-stream-source db channel playout-id))))
-          (fallback-stream-source db channel playout-id))))))
+  "Determines what should be streaming for a channel at `at` (default: now).
+   Returns a source-info map (see fallback-stream-source / :current-event
+   branch). Pass a future `at` to resolve the upcoming event for pre-roll."
+  ([db channel] (current-stream-source db channel (t/now)))
+  ([db channel at]
+   (let [channel-id (:channels/id channel)
+         playout    (db-playouts/get-playout-for-channel db channel-id)]
+     (if-not playout
+       (fallback-stream-source db channel nil)
+       (let [playout-id    (:playouts/id playout)
+             current-event (db-playouts/get-current-event db playout-id at)]
+         (if current-event
+           (let [media-item-id (:playout-events/media-item-id current-event)
+                 source-url    (get-jellyfin-stream-url db media-item-id)]
+             (if source-url
+               {:source-url     source-url
+                :start-position (calculate-start-position current-event at)
+                :event          current-event
+                :type           :current-event
+                :media-item-id  media-item-id}
+               (do (log/error "Failed to resolve stream URL for current event"
+                              {:event-id (:playout-events/id current-event)
+                               :media-item-id media-item-id})
+                   (fallback-stream-source db channel playout-id))))
+           (fallback-stream-source db channel playout-id)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Source identity & transition detection

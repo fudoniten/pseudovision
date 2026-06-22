@@ -9,13 +9,19 @@
             [pseudovision.streaming.manager :as mgr]
             [taoensso.timbre :as log]))
 
-(def ^:private playlist-wait-attempts 15)
-(def ^:private playlist-wait-ms 200)
+;; First-connect latency: a fresh encoder must start FFmpeg and finalize its
+;; first segment before the playlist has anything to serve. With software decode
+;; (Phase 3-lite) of e.g. HEVC plus the startup burst-fill, that can take several
+;; seconds — longer than a client like VLC will tolerate a 503 (it does not retry
+;; on 503). So hold the request open until the first segment is ready, up to a
+;; generous deadline, and only 503 if the encoder genuinely never produces one.
+(def ^:private playlist-wait-attempts 100)   ; 100 × 250ms = 25s ceiling
+(def ^:private playlist-wait-ms 250)
 
 (defn- wait-for-playlist
   "Polls the manager until the channel playlist has segments (the encoder has
-   produced its first segment), or gives up. Returns the rendered playlist or
-   nil."
+   produced its first segment), or the deadline passes. Returns the rendered
+   playlist or nil."
   [streams uuid]
   (loop [n 0]
     (or (mgr/playlist-content streams uuid)
