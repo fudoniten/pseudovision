@@ -211,14 +211,22 @@
     (case [accel decode]
       ([:vaapi :software] [:vaapi :auto]) (join (concat cpu-scale ["format=nv12" "hwupload"]))
       ([:nvenc :software] [:nvenc :auto]) (join (concat cpu-scale ["format=nv12" "hwupload_cuda"]))
-      [:vaapi :hardware] (when normalize
-                           (join (cond-> []
-                                   fps  (conj (str "fps=" fps))
-                                   true (conj (str "scale_vaapi=w=" width ":h=" height)))))
-      [:nvenc :hardware] (when normalize
-                           (join (cond-> []
-                                   fps  (conj (str "fps=" fps))
-                                   true (conj (str "scale_cuda=w=" width ":h=" height)))))
+      ;; Strict hardware decode: frames are GPU surfaces. Always run the GPU
+      ;; scaler with format=nv12 so a 10-bit source (e.g. HEVC Main 10, P010) is
+      ;; downconverted to 8-bit — otherwise h264_vaapi/h264_nvenc reject it with
+      ;; "No usable encoding profile found". w/h are added only when normalizing.
+      [:vaapi :hardware]
+      (join (cond-> []
+              fps  (conj (str "fps=" fps))
+              true (conj (str "scale_vaapi="
+                              (when normalize (str "w=" width ":h=" height ":"))
+                              "format=nv12"))))
+      [:nvenc :hardware]
+      (join (cond-> []
+              fps  (conj (str "fps=" fps))
+              true (conj (str "scale_cuda="
+                              (when normalize (str "w=" width ":h=" height ":"))
+                              "format=nv12"))))
       ;; software encode (:none) — full CPU normalize, or nothing
       (when normalize (join (conj cpu-scale (str "format=" pixfmt)))))))
 

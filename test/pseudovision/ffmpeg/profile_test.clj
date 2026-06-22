@@ -205,17 +205,26 @@
     (is (re-find #"format=yuv420p" vf))))
 
 (deftest hardware-decode-normalize-uses-gpu-scaler
-  (testing "with :decode hardware the frames are GPU surfaces, scaled on-GPU"
-    (is (re-find #"scale_vaapi=w=1280:h=720"
+  (testing "with :decode hardware the frames are GPU surfaces, scaled on-GPU to 8-bit"
+    (is (re-find #"scale_vaapi=w=1280:h=720:format=nv12"
                  (profile/video-filter
                   (profile/resolve-config {:accel "vaapi" :decode "hardware"
                                            :normalize {:width 1280 :height 720}}
                                           all-accels))))
-    (is (re-find #"scale_cuda=w=1280:h=720"
+    (is (re-find #"scale_cuda=w=1280:h=720:format=nv12"
                  (profile/video-filter
                   (profile/resolve-config {:accel "nvenc" :decode "hardware"
                                            :normalize {:width 1280 :height 720}}
                                           all-accels))))))
+
+(deftest hardware-decode-downconverts-10bit-even-without-normalize
+  (testing "10-bit sources are downconverted to nv12 (8-bit) so h264_vaapi can encode"
+    (is (= "scale_vaapi=format=nv12"
+           (profile/video-filter
+            (profile/resolve-config {:accel "vaapi" :decode "hardware"} all-accels))))
+    (is (= "scale_cuda=format=nv12"
+           (profile/video-filter
+            (profile/resolve-config {:accel "nvenc" :decode "hardware"} all-accels))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Full command integration (software path is always available)

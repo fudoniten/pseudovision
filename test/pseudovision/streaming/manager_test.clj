@@ -7,7 +7,8 @@
             [pseudovision.ffmpeg.hls :as hls]
             [pseudovision.streaming.manager :as mgr]
             [pseudovision.streaming.playlist :as pl]
-            [pseudovision.streaming.segment-store :as store])
+            [pseudovision.streaming.segment-store :as store]
+            [pseudovision.streaming.source])
   (:import [java.nio.file Files]
            [java.nio.file.attribute FileAttribute]))
 
@@ -69,6 +70,16 @@
     (is (not (warm? {:scratch-dir scratch})) "no playlist yet -> not warm")
     (write-scratch! scratch [{:name "segment-000.ts" :duration 2.0}])
     (is (warm? {:scratch-dir scratch}) "a finalized segment -> warm")))
+
+(deftest preroll-resolves-source-with-manager-db
+  (testing "preroll-next! must read db from the manager, not the (db-less) state atom"
+    (let [captured (atom :unset)]
+      (with-redefs [pseudovision.streaming.source/current-stream-source
+                    (fn [db _ch _at] (reset! captured db) (throw (ex-info "stop before spawn" {})))]
+        (let [preroll! @#'mgr/preroll-next!
+              state    (atom {:uuid "u" :channel {} :playlist (pl/new-playlist)})]
+          (try (preroll! {:db ::db} state) (catch Exception _ nil))
+          (is (= ::db @captured) "regression: a nil db here crashes the stream loop"))))))
 
 (deftest promote-splices-next-encoder-with-one-discontinuity
   (testing "current drains, next becomes current, exactly one discontinuity"
