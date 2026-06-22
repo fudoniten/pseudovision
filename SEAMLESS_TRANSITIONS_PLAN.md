@@ -266,19 +266,24 @@ Each phase is independently shippable and leaves the channel working.
 - *Deliverable:* STB-safe output; the compatibility guarantee holds.
 
 #### Phase 3-lite — decode robustness ✅ DONE
-- [x] Add a `:decode` profile mode, default `:software`: hardware backends now
-  **software-decode → `hwupload` → hardware-encode**, robust to any input codec
-  (10-bit HEVC, odd formats) — the encode stays on the GPU (the expensive part),
-  only decode moves to CPU. `:decode "hardware"` opts back into full-GPU decode
-  for known-decodable content.
-  - VAAPI: `-vaapi_device …` + `-vf …,format=nv12,hwupload` (vs. `-hwaccel vaapi
-    -hwaccel_output_format vaapi`); NVENC: `-init_hw_device cuda` +
-    `hwupload_cuda`.
-  - Motivated by a real production failure: forced VAAPI decode aborted on
-    library HEVC content, masking as a software-encode degrade.
-  - *Tested:* `profile_test` (software-decode default, upload filters, CPU-scale
-    before upload, hardware-decode opt-in). VAAPI software path confirmed in
-    production; NVENC software path needs a hardware smoke test.
+- [x] Add a `:decode` profile mode with three settings, encode always on the GPU:
+  - **`:auto` (default)** — best-effort GPU decode with **automatic per-stream
+    software fallback** (`-hwaccel vaapi` WITHOUT the strict
+    `-hwaccel_output_format`; NVENC: `-hwaccel cuda` likewise). Robust to any
+    input codec AND offloads decode of the common case. Frames return to system
+    memory and are re-uploaded for encoding (`format=nv12,hwupload[_cuda]`).
+  - **`:hardware`** — strict full-GPU decode (`-hwaccel_output_format`): fastest
+    (no round-trip, GPU scale), but FAILS on a non-decodable codec.
+  - **`:software`** — always CPU decode, upload for encode. Most robust, heaviest
+    CPU.
+  - History: started as `:software`-default (forced-GPU-decode aborted on library
+    HEVC — actually a wrong-GPU VAAPI *init* failure). Software-default then
+    underran real time on 1080p60 (CPU decode + scale), so the default moved to
+    `:auto` — GPU decode where possible, SW fallback otherwise.
+  - *Tested:* `profile_test` (auto/hardware/software input-args + filters, upload
+    step, CPU-scale-before-upload, full command ordering). **`:auto` and NVENC
+    paths need a hardware smoke test;** the manager's degrade-to-software is the
+    safety net if the `:auto` flags misbehave on a given host.
 
 ### Phase 4 — Fault isolation & watchdog
 - Per-encoder watchdog: a slot that dies/stalls is restarted; a source that
@@ -388,6 +393,47 @@ not share normalized cache with passthrough channels.
 deliverables separate, but *within* the job service a single job spanning
 audio + video + subtitles (one ffmpeg invocation) is correct and efficient. Keep
 the deliverables separate; keep each job whole.
+
+### 7a. Probe-driven compatibility pre-transcode cache (proposed)
+
+The live path now uses **best-effort hardware decode** (`decode: :auto` — GPU
+decode with automatic per-stream software fallback; see Phase 3-lite). That keeps
+every item *playable*, but an item the GPU cannot decode silently falls back to
+**software decode**, which on a modest CPU may not sustain real time (observed:
+1080p60 H.264 software decode + CPU scale underran the `-readrate 1` pacer →
+jitter). The fix for those items is to transcode them **ahead of airtime** and
+cache the result permanently, so the live path only ever streams GPU-friendly
+content.
+
+A background **schedule scanner** job:
+
+1. Walks upcoming playout events (a configurable horizon ahead).
+2. For each distinct media item, decides whether the live backend can
+   hardware-decode it in real time. The robust check is **empirical**: trial
+   hardware-decode a few seconds (one segment) and watch for decoder errors or a
+   sustained < 1× rate. (An optional codec/profile→capability matrix per GPU
+   generation is a cheap fast-path, but the trial decode is the source of truth.)
+3. If it decodes fine → no action; the live path handles it.
+4. If it cannot (unsupported codec/profile, or too slow) → enqueue a **transcode
+   job** that converts it to a GPU-decodable target (e.g. H.264 High 8-bit at the
+   channel's normalized geometry) and writes it to a **persistent** cache.
+
+Cache:
+- **Keyed by** `(media-item, source-etag, target-profile[, subtitle-policy])` so a
+  source change (re-scan/etag bump) invalidates the entry; otherwise it is kept
+  **indefinitely** (this is durable storage — CephFS / object store — not the
+  ephemeral scratch).
+- The **live path checks the cache first**: if a transcoded artifact exists for
+  the resolved `(item, profile)`, stream *that* (cheap — `-c copy` or trivial
+  remux, always compatible); else fall back to live `:auto` transcoding.
+
+This sits squarely inside the deferred distributed-transcoding subsystem: the
+scanner is a producer of the same `transcode_jobs` (§7), the workers already
+target NVENC/VAAPI hosts, and the artifact store is the same persistent cache as
+ahead-of-time normalization. The only new pieces are the **scanner/probe** and the
+**cache-lookup hook in the live source resolver**. Deferred with the rest of §7,
+but it is the highest-value first consumer: it removes both the per-play transcode
+cost and the real-time-decode risk for problem content.
 
 ---
 

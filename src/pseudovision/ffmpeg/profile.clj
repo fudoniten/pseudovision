@@ -93,7 +93,7 @@
 
 (def ^:private defaults
   {:accel  :none
-   :decode :software
+   :decode :auto
    :device default-vaapi-device
    :video  {:codec "h264" :bitrate "2000k" :rate-control :vbr}
    :audio  {:codec "aac" :bitrate "128k" :sample-rate 48000 :channels 2}
@@ -160,17 +160,29 @@
 (defn input-args
   "Decode / device-setup flags that must appear BEFORE `-i`.
 
-   `:hardware` decode runs the decoder on the GPU (fast, but the input codec must
-   be GPU-decodable). `:software` decode (the default) decodes on the CPU and only
-   uploads frames to the GPU for encoding — robust to ANY input codec (e.g. 10-bit
-   HEVC, odd formats) at the cost of CPU decode. See `video-filter` for the
-   upload step."
+   Decode modes:
+   - `:auto` (default) — best-effort GPU decode that falls back to software
+     per-stream when the codec is not GPU-decodable. Uses `-hwaccel` WITHOUT the
+     strict `-hwaccel_output_format`, so frames come back to system memory (or are
+     software-decoded) and are re-uploaded for encoding. Robust AND offloads
+     decode of the common case.
+   - `:hardware` — strict full-GPU decode (`-hwaccel_output_format`): fastest, but
+     the stream FAILS if the input codec is not GPU-decodable.
+   - `:software` — always decode on the CPU, upload only for encoding. Most
+     robust, heaviest CPU.
+
+   `:auto`/`:software` both feed the encoder from system memory, so `video-filter`
+   uploads (`format=nv12,hwupload[_cuda]`)."
   [{:keys [accel decode device]}]
   (let [dev (or device default-vaapi-device)]
     (case [accel decode]
       [:vaapi :hardware] ["-hwaccel" "vaapi" "-hwaccel_device" dev "-hwaccel_output_format" "vaapi"]
+      [:vaapi :auto]     ["-init_hw_device" (str "vaapi=va:" dev) "-hwaccel" "vaapi"
+                          "-hwaccel_device" "va" "-filter_hw_device" "va"]
       [:vaapi :software] ["-vaapi_device" dev]
       [:nvenc :hardware] ["-hwaccel" "cuda" "-hwaccel_output_format" "cuda"]
+      [:nvenc :auto]     ["-init_hw_device" "cuda=cu" "-hwaccel" "cuda"
+                          "-hwaccel_device" "cu" "-filter_hw_device" "cu"]
       [:nvenc :software] ["-init_hw_device" "cuda=cu" "-filter_hw_device" "cu"]
       [])))
 
@@ -178,13 +190,13 @@
   "Returns the `-vf` filter string for the resolved backend + decode mode, or nil
    when no filtering is needed.
 
-   For a hardware ENCODER fed by SOFTWARE decode, frames live in system memory
-   and must be converted to nv12 and uploaded to the GPU
-   (`format=nv12,hwupload[_cuda]`). That upload is emitted even without a
-   `:normalize` block — it is what makes any input codec encodable — and any
-   scale/pad happens on the CPU before the upload. For HARDWARE decode the frames
-   are already GPU surfaces, so only a GPU scale is added when normalizing.
-   Software encode (`:none`) does a full CPU scale/pad/format."
+   When the encoder is fed from system memory (`:auto` or `:software` decode),
+   frames are converted to nv12 and uploaded to the GPU
+   (`format=nv12,hwupload[_cuda]`) — emitted even without a `:normalize` block,
+   since the GPU encoder needs GPU surfaces — with any scale/pad done on the CPU
+   first. For `:hardware` decode the frames are already GPU surfaces, so only a
+   GPU scale is added when normalizing. Software encode (`:none`) does a full CPU
+   scale/pad/format."
   [{:keys [accel decode normalize]}]
   (let [{:keys [width height fps pixfmt sar]
          :or   {pixfmt "yuv420p" sar "1:1"}} normalize
@@ -197,8 +209,8 @@
                       true (conj (str "setsar=" sar))))
         join      (fn [parts] (when (seq parts) (str/join "," parts)))]
     (case [accel decode]
-      [:vaapi :software] (join (concat cpu-scale ["format=nv12" "hwupload"]))
-      [:nvenc :software] (join (concat cpu-scale ["format=nv12" "hwupload_cuda"]))
+      ([:vaapi :software] [:vaapi :auto]) (join (concat cpu-scale ["format=nv12" "hwupload"]))
+      ([:nvenc :software] [:nvenc :auto]) (join (concat cpu-scale ["format=nv12" "hwupload_cuda"]))
       [:vaapi :hardware] (when normalize
                            (join (cond-> []
                                    fps  (conj (str "fps=" fps))
