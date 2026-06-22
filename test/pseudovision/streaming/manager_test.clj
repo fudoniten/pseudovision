@@ -4,6 +4,7 @@
    needs a hardware smoke test; the segment-ingest correctness is covered here."
   (:require [clojure.test :refer [deftest is testing]]
             [clojure.java.io :as io]
+            [pseudovision.ffmpeg.hls :as hls]
             [pseudovision.streaming.manager :as mgr]
             [pseudovision.streaming.playlist :as pl]
             [pseudovision.streaming.segment-store :as store])
@@ -56,6 +57,42 @@
     (mgr/ingest-once! m state)
     (mgr/ingest-once! m state)   ; second pass must not re-ingest
     (is (= 1 (count (:segments (:playlist @state)))))))
+
+;; ---------------------------------------------------------------------------
+;; Phase 2 — pre-roll + overlap handoff
+;; ---------------------------------------------------------------------------
+
+(deftest encoder-warm-detects-first-segment
+  (let [warm?   @#'mgr/encoder-warm?
+        scratch (temp-dir)]
+    (.mkdirs (io/file scratch))
+    (is (not (warm? {:scratch-dir scratch})) "no playlist yet -> not warm")
+    (write-scratch! scratch [{:name "segment-000.ts" :duration 2.0}])
+    (is (warm? {:scratch-dir scratch}) "a finalized segment -> warm")))
+
+(deftest promote-splices-next-encoder-with-one-discontinuity
+  (testing "current drains, next becomes current, exactly one discontinuity"
+    (with-redefs [hls/stop-ffmpeg (fn [_] nil)]   ; encoders have no real process
+      (let [promote!  @#'mgr/promote-next!
+            m         (assoc (test-manager) :db nil)
+            scratch-a (temp-dir)
+            scratch-b (temp-dir)
+            state     (atom {:uuid "u4" :playlist (pl/new-playlist)
+                             :encoder      {:scratch-dir scratch-a :ingested #{} :media-view-id nil}
+                             :next-encoder {:scratch-dir scratch-b :ingested #{} :media-view-id nil}})]
+        (write-scratch! scratch-a [{:name "segment-000.ts" :duration 2.0}
+                                   {:name "segment-001.ts" :duration 2.0}])
+        (write-scratch! scratch-b [{:name "segment-000.ts" :duration 2.0}])
+        (promote! m state)
+        (testing "next encoder is now current; previous one drained and removed"
+          (is (= scratch-b (:scratch-dir (:encoder @state))))
+          (is (nil? (:next-encoder @state)))
+          (is (not (.exists (io/file scratch-a "playlist.m3u8")))))
+        (testing "splicing in the new encoder carries a single discontinuity"
+          (mgr/ingest-once! m state)
+          (let [segs (:segments (:playlist @state))]
+            (is (= ["seg-0.ts" "seg-1.ts" "seg-2.ts"] (mapv :name segs)))
+            (is (= [false false true] (mapv :discontinuity? segs)))))))))
 
 (deftest transition-inserts-single-discontinuity
   (testing "after a simulated encoder swap, only the first new segment is tagged"

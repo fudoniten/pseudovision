@@ -18,6 +18,7 @@
             [pseudovision.streaming.playlist :as playlist]
             [pseudovision.streaming.segment-store :as store]
             [pseudovision.streaming.source :as source]
+            [pseudovision.util.time :as t]
             [taoensso.timbre :as log])
   (:import [java.io File]))
 
@@ -117,53 +118,54 @@
                 :start-position-secs (or (:start-position source-info) 0)
                 :total-duration-secs dur})))))
 
-(defn- start-encoder!
-  "Resolves the current source, starts an encoder for it, and records it in the
-   state. The first encoder of a channel carries no discontinuity; every
-   subsequent one marks the playlist so its first segment gets the tag.
-
-   When the channel has been marked `:degraded?` (repeated hardware-accel
-   failures), the encoder is forced to software so the channel keeps running."
-  [{:keys [db store scratch-base]} state]
-  (let [{:keys [channel uuid enc-counter playlist degraded?] :as s} @state
-        source-info (source/current-stream-source db channel)
-        scratch     (scratch-dir! scratch-base uuid enc-counter)
-        cfg         (cond-> (profile-config db channel)
-                      degraded? (assoc :accel "none"))
-        command     (build-command channel source-info scratch cfg)
-        proc        (hls/start-ffmpeg command scratch)
-        media-view  (open-media-view! db channel source-info)
-        pl          (cond-> playlist (pos? enc-counter) playlist/mark-discontinuity)]
-    (log/info "Started encoder"
+(defn- spawn-encoder!
+  "Starts an FFmpeg encoder for `source-info` into a fresh scratch dir and opens
+   its media-view record. Bumps :enc-counter. Returns the encoder map; does NOT
+   touch the playlist — the caller decides current vs. next-encoder and whether a
+   discontinuity is needed. Honours the sticky `:degraded?` software fallback."
+  [{:keys [db scratch-base]} state source-info]
+  (let [{:keys [channel uuid enc-counter degraded?]} @state
+        scratch    (scratch-dir! scratch-base uuid enc-counter)
+        cfg        (cond-> (profile-config db channel)
+                     degraded? (assoc :accel "none"))
+        command    (build-command channel source-info scratch cfg)
+        proc       (hls/start-ffmpeg command scratch)
+        media-view (open-media-view! db channel source-info)]
+    (swap! state update :enc-counter inc)
+    (log/info "Spawned encoder"
               {:uuid uuid :enc enc-counter :pid (:pid proc)
                :type (:type source-info) :identity (source/source-identity source-info)})
-    (reset! state (-> s
-                      (assoc :playlist pl)
-                      (assoc :enc-counter (inc enc-counter))
-                      (assoc :encoder {:process     (:process proc)
-                                       :pid         (:pid proc)
-                                       :scratch-dir scratch
-                                       :source-info source-info
-                                       :media-view-id media-view
-                                       :ingested    #{}
-                                       :started-ms  (System/currentTimeMillis)})))))
+    {:process       (:process proc)
+     :pid           (:pid proc)
+     :scratch-dir   scratch
+     :source-info   source-info
+     :media-view-id media-view
+     :ingested      #{}
+     :started-ms    (System/currentTimeMillis)}))
 
-(declare ingest-once!)
-
-(defn- stop-encoder!
-  "Drains any final segments, closes the media-view record, kills the process,
-   and clears the scratch dir. Leaves the channel-view open."
-  [{:keys [db] :as mgr} state]
-  (when-let [enc (:encoder @state)]
-    (try (ingest-once! mgr state) (catch Exception e (log/warn e "final drain failed")))
+(defn- discard-encoder!
+  "Closes the encoder's media-view, kills the process, and removes its scratch
+   dir. Does NOT ingest — use for a next-encoder that never went live."
+  [db enc]
+  (when enc
     (try
       (when (:media-view-id enc)
         (source/end-view-records! db {:stream-started-ms (:started-ms enc)
                                       :media-view-id     (:media-view-id enc)}))
       (catch Exception e (log/warn e "closing media view failed")))
     (hls/stop-ffmpeg enc)
-    (delete-dir! (:scratch-dir enc))
-    (reset! state (assoc @state :encoder nil))))
+    (delete-dir! (:scratch-dir enc))))
+
+(declare ingest-once!)
+
+(defn- stop-encoder!
+  "Drains the CURRENT encoder's final segments, then discards it. Leaves the
+   channel-view open and the next-encoder (if any) untouched."
+  [{:keys [db] :as mgr} state]
+  (when-let [enc (:encoder @state)]
+    (try (ingest-once! mgr state) (catch Exception e (log/warn e "final drain failed")))
+    (discard-encoder! db enc)
+    (swap! state assoc :encoder nil)))
 
 ;; ---------------------------------------------------------------------------
 ;; Ingest (loop thread only)
@@ -201,47 +203,116 @@
 ;; Per-channel loop
 ;; ---------------------------------------------------------------------------
 
-(defn- maybe-transition!
-  "Starts the initial encoder, or transitions / restarts as needed. Loop only."
+(defn- start-current!
+  "Spawns the current encoder for what should play now. Marks a discontinuity
+   when the channel has already emitted segments (a cold start does not)."
+  [mgr state]
+  (let [si  (source/current-stream-source (:db mgr) (:channel @state))
+        enc (spawn-encoder! mgr state si)]
+    (swap! state #(cond-> (assoc % :encoder enc)
+                    (pos? (:next-seq (:playlist %)))
+                    (update :playlist playlist/mark-discontinuity)))))
+
+(defn- preroll-next!
+  "Spawns the NEXT encoder for the upcoming source (resolved at the lookahead
+   horizon) WITHOUT stopping the current one, so it warms up before the boundary."
+  [mgr state]
+  (let [{:keys [db channel uuid]} @state
+        at  (t/add-duration (t/now) (t/seconds->duration source/transition-lookahead-secs))
+        si  (source/current-stream-source db channel at)
+        enc (spawn-encoder! mgr state si)]
+    (log/info "Pre-rolling next encoder" {:uuid uuid :to (source/source-identity si)})
+    (swap! state assoc :next-encoder enc)))
+
+(defn- encoder-warm?
+  "True once an encoder has finalized at least one segment in its scratch dir."
+  [encoder]
+  (let [m3u8 (io/file (:scratch-dir encoder) "playlist.m3u8")]
+    (and (.exists m3u8)
+         (boolean (seq (playlist/parse-media-playlist (slurp m3u8)))))))
+
+(defn- promote-next!
+  "Splices the pre-rolled next encoder in: drains + stops the current one, marks a
+   discontinuity, and makes the next encoder current. Its first ingested segment
+   then carries the #EXT-X-DISCONTINUITY tag. Because the current encoder keeps
+   feeding the playlist until the next one is warm, there is no dead air."
+  [mgr state]
+  (let [nxt (:next-encoder @state)]
+    (log/info "Splicing to pre-rolled encoder"
+              {:uuid (:uuid @state) :to (source/source-identity (:source-info nxt))})
+    (stop-encoder! mgr state)
+    (swap! state #(-> %
+                      (update :playlist playlist/mark-discontinuity)
+                      (assoc :encoder nxt)
+                      (assoc :next-encoder nil)
+                      (assoc :fail-count 0)))))
+
+(defn- note-failure!
+  "Updates the consecutive-failure count and the sticky software-degrade flag for
+   an encoder that died after `lifetime` ms. Returns the backoff to wait."
+  [state uuid lifetime]
+  (let [fails (if (< lifetime healthy-runtime-ms) (inc (:fail-count @state 0)) 0)]
+    (swap! state assoc :fail-count fails)
+    (when (and (>= fails fallback-after-failures) (not (:degraded? @state)))
+      (log/warn "Repeated encoder failures; degrading channel to software encoding"
+                {:uuid uuid :failures fails})
+      (swap! state assoc :degraded? true))
+    (backoff-ms fails)))
+
+(defn- handle-dead-encoder!
+  "The current encoder died: surface its stderr, drop any pre-rolled next, back
+   off, degrade if warranted, then restart the current encoder."
   [{:keys [db] :as mgr} state]
-  (let [{:keys [channel encoder uuid]} @state]
+  (let [{:keys [encoder next-encoder uuid]} @state
+        lifetime (- (System/currentTimeMillis) (:started-ms encoder))]
+    (log/error "Encoder died"
+               {:uuid uuid :pid (:pid encoder) :exit-code (exit-code encoder)
+                :lifetime-ms lifetime
+                :ffmpeg-log (or (read-log-tail (:scratch-dir encoder)) "<no ffmpeg.log>")})
+    (when next-encoder (discard-encoder! db next-encoder))
+    (stop-encoder! mgr state)
+    (swap! state assoc :next-encoder nil)
+    (let [wait (note-failure! state uuid lifetime)]
+      (when (pos? wait) (Thread/sleep wait)))
+    (start-current! mgr state)))
+
+(defn- handle-dead-next!
+  "A pre-rolled next encoder died before warming: log and discard it, count the
+   failure. The CURRENT encoder keeps playing — a failed transition never takes
+   down the live stream."
+  [{:keys [db] :as mgr} state]
+  (let [{:keys [next-encoder uuid]} @state
+        lifetime (- (System/currentTimeMillis) (:started-ms next-encoder))]
+    (log/error "Pre-rolled encoder died before warming; current stream unaffected"
+               {:uuid uuid :pid (:pid next-encoder) :exit-code (exit-code next-encoder)
+                :lifetime-ms lifetime
+                :ffmpeg-log (or (read-log-tail (:scratch-dir next-encoder)) "<no ffmpeg.log>")})
+    (discard-encoder! db next-encoder)
+    (swap! state assoc :next-encoder nil)
+    (let [wait (note-failure! state uuid lifetime)]
+      (when (pos? wait) (Thread/sleep wait)))))
+
+(defn- maybe-transition!
+  "Drives encoder lifecycle each tick: cold start, restart on death, pre-roll the
+   next encoder before a boundary, and splice it in once it is warm — keeping the
+   current encoder live throughout so the playlist never runs dry. Loop only."
+  [{:keys [db] :as mgr} state]
+  (let [{:keys [channel encoder next-encoder]} @state]
     (cond
       (nil? encoder)
-      (start-encoder! mgr state)
+      (start-current! mgr state)
 
       (not (hls/process-alive? encoder))
-      ;; Read the ffmpeg log BEFORE stop-encoder! deletes the scratch dir, so the
-      ;; real failure (VAAPI init, unreadable source, bad command) is visible.
-      (let [lifetime (- (System/currentTimeMillis) (:started-ms encoder))
-            tail     (read-log-tail (:scratch-dir encoder))
-            fails    (if (< lifetime healthy-runtime-ms) (inc (:fail-count @state 0)) 0)
-            wait     (backoff-ms fails)
-            info     {:uuid uuid :pid (:pid encoder) :exit-code (exit-code encoder)
-                      :lifetime-ms lifetime :consecutive-failures fails :backoff-ms wait
-                      :ffmpeg-log (or tail "<no ffmpeg.log>")}]
-        (if (pos? fails)
-          (log/error "Encoder died" info)
-          (log/warn "Encoder died" info))
-        (stop-encoder! mgr state)
-        (swap! state assoc :fail-count fails)
-        ;; Degrade to software once hardware accel proves unusable, unless we are
-        ;; already running software (in which case the failure is something else).
-        (when (and (>= fails fallback-after-failures)
-                   (not (:degraded? @state)))
-          (log/warn "Repeated encoder failures; degrading channel to software encoding"
-                    {:uuid uuid :failures fails})
-          (swap! state assoc :degraded? true))
-        (when (pos? wait) (Thread/sleep wait))
-        (start-encoder! mgr state))
+      (handle-dead-encoder! mgr state)
+
+      next-encoder
+      (cond
+        (not (hls/process-alive? next-encoder)) (handle-dead-next! mgr state)
+        (encoder-warm? next-encoder)            (promote-next! mgr state)
+        :else                                   nil)   ; still warming — keep ingesting current
 
       (source/needs-transition? db channel (:source-info encoder) (:started-ms encoder))
-      (do (log/info "Event transition"
-                    {:uuid uuid
-                     :from (source/source-identity (:source-info encoder))
-                     :to   (source/desired-source-identity db channel)})
-          (swap! state assoc :fail-count 0)
-          (stop-encoder! mgr state)
-          (start-encoder! mgr state)))))
+      (preroll-next! mgr state))))
 
 (defn tick!
   "One loop iteration: transition bookkeeping then ingest. Exposed for tests."
@@ -312,6 +383,7 @@
        :degraded? (boolean (:degraded? s))
        :process-alive (boolean (and enc (hls/process-alive? enc)))
        :encoder (some-> enc (dissoc :process))
+       :next-encoder (some-> (:next-encoder s) (dissoc :process))
        :playlist (-> (:playlist s)
                      (select-keys [:next-seq :disc-seq :window-size])
                      (assoc :segment-count (count (:segments (:playlist s)))))})))
@@ -322,6 +394,8 @@
   (when-let [ref (locking registry (let [r (get @registry uuid)]
                                      (swap! registry dissoc uuid) r))]
     (reset! (:stop ref) true)
+    (try (when-let [nxt (:next-encoder @(:state ref))] (discard-encoder! db nxt))
+         (catch Exception e (log/warn e "discard next-encoder failed")))
     (try (stop-encoder! mgr (:state ref)) (catch Exception e (log/warn e "stop-encoder failed")))
     (try
       (when-let [cvid (:channel-view-id @(:state ref))]
