@@ -107,35 +107,59 @@
              (profile/video-encode-args cfg))))))
 
 ;; ---------------------------------------------------------------------------
-;; Decode mode (Phase 3-lite): software decode -> hwupload -> hardware encode
+;; Decode mode: software / hardware / auto -> hwupload -> hardware encode
 ;; ---------------------------------------------------------------------------
 
-(deftest decode-defaults-to-software
-  (is (= :software (:decode (profile/resolve-config {:accel "vaapi"} all-accels)))))
+(deftest decode-defaults-to-auto
+  (is (= :auto (:decode (profile/resolve-config {:accel "vaapi"} all-accels)))))
+
+(deftest vaapi-auto-decode-best-effort-with-upload
+  (testing "auto = best-effort GPU decode (SW fallback) feeding the GPU encoder"
+    (let [cfg (profile/resolve-config
+               {:accel "vaapi" :decode "auto" :device "/dev/dri/renderD128"
+                :video {:codec "h264" :bitrate "4000k" :rate-control "vbr"}}
+               all-accels)]
+      ;; -hwaccel WITHOUT -hwaccel_output_format => per-stream software fallback
+      (is (= ["-init_hw_device" "vaapi=va:/dev/dri/renderD128" "-hwaccel" "vaapi"
+              "-hwaccel_device" "va" "-filter_hw_device" "va"]
+             (profile/input-args cfg)))
+      (is (not (some #{"-hwaccel_output_format"} (profile/input-args cfg)))
+          "no strict output format, so a non-decodable codec falls back to software")
+      (is (= "format=nv12,hwupload" (profile/video-filter cfg)))
+      (is (= ["-c:v" "h264_vaapi" "-rc_mode" "VBR" "-b:v" "4000k"]
+             (profile/video-encode-args cfg))))))
+
+(deftest nvenc-auto-decode-best-effort
+  (let [cfg (profile/resolve-config
+             {:accel "nvenc" :decode "auto" :video {:codec "h264" :bitrate "4000k" :preset "p4"}}
+             all-accels)]
+    (is (= ["-init_hw_device" "cuda=cu" "-hwaccel" "cuda" "-hwaccel_device" "cu"
+            "-filter_hw_device" "cu"]
+           (profile/input-args cfg)))
+    (is (= "format=nv12,hwupload_cuda" (profile/video-filter cfg)))))
 
 (deftest vaapi-software-decode-uploads-then-encodes
-  (testing "the default VAAPI path software-decodes and uploads (robust to any input)"
+  (testing "explicit software decode: CPU decode, no -hwaccel, upload for encode"
     (let [cfg (profile/resolve-config
-               {:accel "vaapi" :device "/dev/dri/renderD128"
+               {:accel "vaapi" :decode "software" :device "/dev/dri/renderD128"
                 :video {:codec "h264" :bitrate "4000k" :rate-control "vbr"}}
                all-accels)]
       (is (= ["-vaapi_device" "/dev/dri/renderD128"] (profile/input-args cfg))
           "device is set up for filtering/encoding, but no -hwaccel decode")
-      (is (= "format=nv12,hwupload" (profile/video-filter cfg))
-          "frames are converted and uploaded even without a normalize block")
+      (is (= "format=nv12,hwupload" (profile/video-filter cfg)))
       (is (= ["-c:v" "h264_vaapi" "-rc_mode" "VBR" "-b:v" "4000k"]
              (profile/video-encode-args cfg))))))
 
 (deftest nvenc-software-decode-uploads-then-encodes
   (let [cfg (profile/resolve-config
-             {:accel "nvenc" :video {:codec "h264" :bitrate "4000k" :preset "p4"}}
+             {:accel "nvenc" :decode "software" :video {:codec "h264" :bitrate "4000k" :preset "p4"}}
              all-accels)]
     (is (= ["-init_hw_device" "cuda=cu" "-filter_hw_device" "cu"] (profile/input-args cfg)))
     (is (= "format=nv12,hwupload_cuda" (profile/video-filter cfg)))))
 
-(deftest vaapi-software-decode-normalize-scales-on-cpu-before-upload
+(deftest software-decode-normalize-scales-on-cpu-before-upload
   (let [cfg (profile/resolve-config
-             {:accel "vaapi" :normalize {:width 1280 :height 720 :fps 30}}
+             {:accel "vaapi" :decode "software" :normalize {:width 1280 :height 720 :fps 30}}
              all-accels)
         vf  (profile/video-filter cfg)]
     (is (re-find #"scale=1280:720" vf) "CPU scale precedes the upload")
@@ -224,15 +248,16 @@
         (is (< (.indexOf cmd "-hwaccel") (.indexOf cmd "-i")))
         (is (= "h264_nvenc" (nth cmd (inc (.indexOf cmd "-c:v")))))))))
 
-(deftest build-hls-command-vaapi-software-decode-default
-  (testing "default VAAPI command software-decodes (no -hwaccel) and uploads"
+(deftest build-hls-command-vaapi-auto-decode-default
+  (testing "default VAAPI command uses best-effort decode (-hwaccel, no strict format) + upload"
     (with-redefs [profile/available-accels (constantly #{:none :vaapi})]
       (let [cmd (vec (hls/build-hls-command
                       "http://example/stream" "/tmp/out"
                       {:profile-config {:accel "vaapi" :device "/dev/dri/renderD128"
                                         :video {:codec "h264" :bitrate "4000k" :rate-control "vbr"}}}))]
-        (is (not (some #{"-hwaccel"} cmd)) "no GPU decode is forced")
-        (is (< (.indexOf cmd "-vaapi_device") (.indexOf cmd "-i")))
+        (is (= "vaapi" (nth cmd (inc (.indexOf cmd "-hwaccel")))) "best-effort GPU decode")
+        (is (not (some #{"-hwaccel_output_format"} cmd)) "no strict format -> software fallback")
+        (is (< (.indexOf cmd "-hwaccel") (.indexOf cmd "-i")))
         (is (= "h264_vaapi" (nth cmd (inc (.indexOf cmd "-c:v")))))
         (is (= "format=nv12,hwupload" (nth cmd (inc (.indexOf cmd "-vf")))))))))
 
