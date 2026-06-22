@@ -216,8 +216,8 @@
 (defn- preroll-next!
   "Spawns the NEXT encoder for the upcoming source (resolved at the lookahead
    horizon) WITHOUT stopping the current one, so it warms up before the boundary."
-  [mgr state]
-  (let [{:keys [db channel uuid]} @state
+  [{:keys [db] :as mgr} state]
+  (let [{:keys [channel uuid]} @state
         at  (t/add-duration (t/now) (t/seconds->duration source/transition-lookahead-secs))
         si  (source/current-stream-source db channel at)
         enc (spawn-encoder! mgr state si)]
