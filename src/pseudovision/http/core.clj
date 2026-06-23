@@ -22,7 +22,8 @@
             [pseudovision.http.api.filler     :as filler]
             [pseudovision.http.api.logos      :as logos]
             [pseudovision.http.api.metrics    :as metrics]
-            [pseudovision.http.api.jobs       :as jobs]))
+             [pseudovision.http.api.jobs       :as jobs]
+             [pseudovision.ffmpeg.profile      :as profile]))
 
 (defn- routes [ctx]
   [""
@@ -35,11 +36,17 @@
            :handler (openapi/create-openapi-handler)}}]
 
    ;; ── Health ──────────────────────────────────────────────────────────────
-   ["/health"
-    {:get {:tags      ["health"]
-           :summary   "Liveness probe"
-           :responses {200 {:body s/Health}}
-           :handler   (fn [_] {:status 200 :body {:status "ok"}})}}]
+    ["/health"
+     {:get {:tags      ["health"]
+            :summary   "Liveness probe"
+            :responses {200 {:body s/Health}}
+            :handler   (fn [_]
+                         {:status 200
+                          :body {:status   "ok"
+                                 :accels   (vec (profile/available-accels))
+                                 :streams  (count @(:registry (:streams ctx)))
+                                 :hostname (try (.. java.net.InetAddress getLocalHost getHostName)
+                                                (catch Exception _ nil))}})}}]
 
    ;; ── Channels ────────────────────────────────────────────────────────────
    ["/api/channels"

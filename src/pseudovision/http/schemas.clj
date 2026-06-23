@@ -881,7 +881,11 @@
 ;; ---------------------------------------------------------------------------
 
 (def Health
-  [:map [:status :string]])
+  [:map
+   [:status :string]
+   [:accels   {:optional true} [:vector :string]]
+   [:streams  {:optional true} :int]
+   [:hostname {:optional true} [:maybe :string]]])
 
 (def Version
   [:map
