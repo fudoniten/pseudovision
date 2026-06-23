@@ -211,16 +211,26 @@
     (case [accel decode]
       ([:vaapi :software] [:vaapi :auto]) (join (concat cpu-scale ["format=nv12" "hwupload"]))
       ([:nvenc :software] [:nvenc :auto]) (join (concat cpu-scale ["format=nv12" "hwupload_cuda"]))
-      ;; Strict hardware decode: frames are GPU surfaces. Always run the GPU
-      ;; scaler with format=nv12 so a 10-bit source (e.g. HEVC Main 10, P010) is
-      ;; downconverted to 8-bit — otherwise h264_vaapi/h264_nvenc reject it with
-      ;; "No usable encoding profile found". w/h are added only when normalizing.
+      ;; Strict hardware decode: frames are GPU surfaces, so scale AND pad on the
+      ;; GPU. scale_vaapi preserves aspect (force_original_aspect_ratio) and
+      ;; downconverts 10-bit (format=nv12); pad_vaapi letterboxes/pillarboxes to
+      ;; an exact WxH so non-16:9 sources are not stretched and every event emits
+      ;; identical geometry. Without :normalize we still run scale_vaapi=format=nv12
+      ;; purely for the 10-bit downconvert (otherwise h264_vaapi rejects P010 with
+      ;; "No usable encoding profile found").
       [:vaapi :hardware]
       (join (cond-> []
-              fps  (conj (str "fps=" fps))
-              true (conj (str "scale_vaapi="
-                              (when normalize (str "w=" width ":h=" height ":"))
-                              "format=nv12"))))
+              fps       (conj (str "fps=" fps))
+              normalize (conj (str "scale_vaapi=w=" width ":h=" height
+                                   ":force_original_aspect_ratio=decrease"
+                                   ":force_divisible_by=2:format=nv12")
+                              (str "pad_vaapi=w=" width ":h=" height
+                                   ":x=(ow-iw)/2:y=(oh-ih)/2"))
+              (not normalize) (conj "scale_vaapi=format=nv12")))
+      ;; CUDA has no pad filter, so we cannot letterbox on-GPU: scale to the
+      ;; target (may stretch non-16:9) and downconvert. GPU-pad for NVENC is a
+      ;; TODO; the software/auto NVENC paths normalize aspect on the CPU, and
+      ;; NVENC is not yet hardware-validated.
       [:nvenc :hardware]
       (join (cond-> []
               fps  (conj (str "fps=" fps))

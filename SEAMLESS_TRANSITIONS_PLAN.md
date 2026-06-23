@@ -260,10 +260,18 @@ Each phase is independently shippable and leaves the channel working.
   refinement.
 
 ### Phase 3 — Normalization hardening
-- Enforce the `:normalize` filter chain on every slot; verify identical output
-  params across the discontinuity.
-- Add discontinuity-sequence eviction correctness tests (§9).
+- [x] Enforce the `:normalize` filter chain across all decode modes so every
+  event emits identical output geometry. Software/`auto` decode normalize aspect
+  on the CPU (`scale=…:force_original_aspect_ratio=decrease,pad,setsar`).
+- [x] **GPU aspect + pad on the strict `hardware` path:** `scale_vaapi`
+  (force_original_aspect_ratio + format=nv12 10-bit downconvert) + `pad_vaapi`
+  letterbox/pillarbox to an exact WxH — non-16:9 sources are no longer stretched.
+  (NVENC GPU-pad remains a TODO; CUDA has no pad filter.)
+- [x] Discontinuity-sequence eviction correctness tests (§9) — in `playlist_test`.
 - *Deliverable:* STB-safe output; the compatibility guarantee holds.
+- *Remaining:* `pad_vaapi`/`force_divisible_by` need a hardware smoke test
+  (degrade-to-software is the safety net); NVENC GPU pad; verifying identical
+  params across an actual discontinuity on a client.
 
 #### Phase 3-lite — decode robustness ✅ DONE
 - [x] Add a `:decode` profile mode with three settings, encode always on the GPU:
