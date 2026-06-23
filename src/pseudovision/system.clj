@@ -5,6 +5,7 @@
             [pseudovision.cleanup        :as cleanup]
             [pseudovision.jobs.runner    :as jobs]
             [pseudovision.streaming.manager :as stream-mgr]
+            [pseudovision.streaming.segment-store :as store]
             [taoensso.timbre             :as log])
   (:import [java.util.concurrent Executors TimeUnit]))
 
@@ -97,8 +98,11 @@
 
 (def ^:private stream-idle-ms (* 60 60 1000))   ; reap channels idle > 1h
 
-(defmethod ig/init-key :pseudovision/streaming [_ {:keys [db]}]
-  (let [manager  (stream-mgr/make-manager {:db db})
+(defmethod ig/init-key :pseudovision/streaming [_ {:keys [db streams-dir scratch-dir]}]
+  (let [manager  (stream-mgr/make-manager
+                   {:db db
+                    :store (store/local-disk-store (or streams-dir "/tmp/pseudovision/streams"))
+                    :scratch-dir (or scratch-dir "/tmp/pseudovision/scratch")})
         reaper   (Executors/newSingleThreadScheduledExecutor)]
     (.scheduleAtFixedRate reaper
                           #(try (stream-mgr/reap-idle! manager stream-idle-ms)

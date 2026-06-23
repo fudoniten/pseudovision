@@ -39,13 +39,12 @@
 (def ^:private fallback-after-failures 3)
 
 (defn make-manager
-  "Constructs a manager value. `streams-dir` is where served segments live (via
-   the SegmentStore); `scratch-dir` is where encoders write before ingest."
-  [{:keys [db streams-dir scratch-dir]
-    :or   {streams-dir "/tmp/pseudovision/streams"
-           scratch-dir "/tmp/pseudovision/scratch"}}]
+  "Constructs a manager value. `store` is a SegmentStore where served segments
+   live; `scratch-dir` is where encoders write before ingest."
+  [{:keys [db store scratch-dir]
+    :or   {scratch-dir "/tmp/pseudovision/scratch"}}]
   {:db          db
-   :store       (store/local-disk-store streams-dir)
+   :store       store
    :scratch-base scratch-dir
    :registry    (atom {})})
 
