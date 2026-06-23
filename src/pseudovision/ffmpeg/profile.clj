@@ -31,6 +31,10 @@
 
 (def ^:private default-vaapi-device "/dev/dri/renderD128")
 
+(def ^:private hardware-accels
+  "Set of hardware acceleration backends that can serve as fallback for one another."
+  #{:nvenc :vaapi})
+
 (def ^:private video-codec-map
   "Logical codec name -> per-accel FFmpeg encoder."
   {"h264" {:none "libx264" :nvenc "h264_nvenc" :vaapi "h264_vaapi"}
@@ -130,20 +134,25 @@
   ([config] (resolve-config config (available-accels)))
   ([config available]
    (let [raw      (fold-legacy (or config {}))
-         merged   (-> defaults
-                      (merge (dissoc raw :video :audio :normalize :hls))
-                      (update :video merge (:video raw))
-                      (update :audio merge (:audio raw))
-                      (assoc  :normalize (get raw :normalize (:normalize defaults)))
-                      (update :hls merge (:hls raw)))
-         requested (keyword (:accel merged))
-         accel     (if (contains? available requested)
-                     requested
-                     (do (when (not= requested :none)
-                           (log/warn "Requested FFmpeg accel unavailable; using software encoding"
-                                     {:requested requested :available available}))
-                         :none))]
-     (assoc merged :accel accel :decode (keyword (:decode merged))))))
+          merged   (-> defaults
+                       (merge (dissoc raw :video :audio :normalize :hls))
+                       (update :video merge (:video raw))
+                       (update :audio merge (:audio raw))
+                       (assoc  :normalize (get raw :normalize (:normalize defaults)))
+                       (update :hls merge (:hls raw)))
+          requested (keyword (:accel merged))
+          accel     (if (contains? available requested)
+                      requested
+                      (let [alt (some #(when (contains? available %) %) [:nvenc :vaapi])]
+                        (if (and (not= requested :none) alt)
+                          (do (log/warn "Requested FFmpeg accel unavailable; falling back to alternative hardware accel"
+                                        {:requested requested :fallback alt :available available})
+                              alt)
+                          (do (when (not= requested :none)
+                                (log/warn "Requested FFmpeg accel unavailable; using software encoding"
+                                          {:requested requested :available available}))
+                              :none))))]
+      (assoc merged :accel accel :decode (keyword (:decode merged))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Argument builders (operate on a resolved config)

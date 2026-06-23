@@ -39,7 +39,12 @@
 (deftest accel-downgrades-when-unavailable
   (testing "a requested backend missing from the host falls back to software"
     (let [cfg (profile/resolve-config {:accel "vaapi"} #{:none})]
-      (is (= :none (:accel cfg))))))
+      (is (= :none (:accel cfg)))))
+  (testing "a requested backend missing but another hardware accel is available falls back to it"
+    (let [cfg (profile/resolve-config {:accel "vaapi"} #{:none :nvenc})]
+      (is (= :nvenc (:accel cfg))))
+    (let [cfg (profile/resolve-config {:accel "nvenc"} #{:none :vaapi})]
+      (is (= :vaapi (:accel cfg))))))
 
 (deftest string-accel-values-are-normalised
   (testing "JSONB round-trips :accel as a string; resolve-config keywordises it"
