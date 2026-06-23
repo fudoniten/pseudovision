@@ -22,7 +22,15 @@
          ;; File extensions recognised as images.
          :image-extensions   [".jpg" ".jpeg" ".png" ".webp" ".gif" ".bmp"]}
 
- ;; Playout builder settings.
- :scheduling {:lookahead-hours 72
-              ;; How often (minutes) the background rebuild job runs.
-              :rebuild-interval-minutes 60}}
+  ;; Playout builder settings.
+  :scheduling {:lookahead-hours 72
+               ;; How often (minutes) the background rebuild job runs.
+               :rebuild-interval-minutes 60}
+
+  ;; Live streaming paths.  streams-dir is where served HLS segments live;
+  ;; scratch-dir is where per-encoder temporary files are written before
+  ;; ingest.  In a sharded deployment streams-dir may be a shared PVC
+  ;; (so any pod can serve any channel's segments) while scratch-dir stays
+  ;; local emptyDir (fast ephemeral I/O for the active encoders on this pod).
+  :streaming {:streams-dir #or [#env PSEUDOVISION_STREAMS_DIR "/tmp/pseudovision/streams"]
+              :scratch-dir #or [#env PSEUDOVISION_SCRATCH_DIR "/tmp/pseudovision/scratch"]}}

@@ -20,7 +20,7 @@
     :else            :info))
 
 (defn ->system-config
-  [{:keys [log-level server database ffmpeg media scheduling]}]
+  [{:keys [log-level server database ffmpeg media scheduling streaming]}]
   (letfn [(parse-int [i] (if (string? i) (Integer/parseInt i) i))]
     {:pseudovision/logger    {:level     (parse-log-level (or log-level :info))}
      :pseudovision/db        {:jdbc-url  (:jdbc-url database)
@@ -34,7 +34,8 @@
      :pseudovision/scheduling (merge {:lookahead-hours 72
                                       :rebuild-interval-minutes 60}
                                      scheduling)
-      :pseudovision/streaming {:db (ig/ref :pseudovision/db)}
+     :pseudovision/streaming (merge {:db (ig/ref :pseudovision/db)}
+                                    streaming)
       :pseudovision/jobs      {}
       :pseudovision/cleanup   {:db (ig/ref :pseudovision/db)}
       :pseudovision/http      {:port        (or (some-> server :port (parse-int)) 8080)
