@@ -205,12 +205,15 @@
     (is (re-find #"format=yuv420p" vf))))
 
 (deftest hardware-decode-normalize-uses-gpu-scaler
-  (testing "with :decode hardware the frames are GPU surfaces, scaled on-GPU to 8-bit"
-    (is (re-find #"scale_vaapi=w=1280:h=720:format=nv12"
-                 (profile/video-filter
-                  (profile/resolve-config {:accel "vaapi" :decode "hardware"
-                                           :normalize {:width 1280 :height 720}}
-                                          all-accels))))
+  (testing "VAAPI hardware normalize scales aspect-correct + pads on-GPU to 8-bit"
+    (let [vf (profile/video-filter
+              (profile/resolve-config {:accel "vaapi" :decode "hardware"
+                                       :normalize {:width 1280 :height 720}}
+                                      all-accels))]
+      (is (re-find #"scale_vaapi=w=1280:h=720:force_original_aspect_ratio=decrease:force_divisible_by=2:format=nv12" vf))
+      (is (re-find #"pad_vaapi=w=1280:h=720:x=\(ow-iw\)/2:y=\(oh-ih\)/2" vf)
+          "non-16:9 sources are letterboxed/pillarboxed, not stretched")))
+  (testing "NVENC hardware normalize scales on-GPU (pad is a TODO)"
     (is (re-find #"scale_cuda=w=1280:h=720:format=nv12"
                  (profile/video-filter
                   (profile/resolve-config {:accel "nvenc" :decode "hardware"
