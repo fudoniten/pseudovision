@@ -21,12 +21,14 @@ CREATE TABLE transcode_jobs (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-;;
+--;;
 
 CREATE INDEX idx_transcode_jobs_state
     ON transcode_jobs(state, priority, created_at);
 
-;;
+--;;
 
 CREATE INDEX idx_transcode_jobs_worker
     ON transcode_jobs(worker_id, lease_expires_at);
+
+--;;
