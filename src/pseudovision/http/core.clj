@@ -75,14 +75,21 @@
                :responses   {200 {:body s/Channel}
                              404 {:body s/APIError}}
                :handler     (ch/get-channel-handler ctx)}
-     :put     {:summary     "Update a channel"
-               :parameters  {:path [:map [:id s/ChannelId]]
-                             :body s/ChannelUpdate}
-               :responses   {200 {:body s/Channel}
-                             404 {:body s/APIError}
-                             400 {:body s/CoercionError}}
-               :handler     (ch/update-channel-handler ctx)}
-     :delete  {:summary     "Delete a channel"
+      :put     {:summary     "Update a channel"
+                :parameters  {:path [:map [:id s/ChannelId]]
+                              :body s/ChannelUpdate}
+                :responses   {200 {:body s/Channel}
+                              404 {:body s/APIError}
+                              400 {:body s/CoercionError}}
+                :handler     (ch/update-channel-handler ctx)}
+      :patch   {:summary     "Partially update a channel"
+                :parameters  {:path [:map [:id s/ChannelId]]
+                              :body s/ChannelUpdate}
+                :responses   {200 {:body s/Channel}
+                              404 {:body s/APIError}
+                              400 {:body s/CoercionError}}
+                :handler     (ch/update-channel-handler ctx)}
+      :delete  {:summary     "Delete a channel"
                :parameters  {:path [:map [:id s/ChannelId]]}
                :responses   {204 {}}
                :handler     (ch/delete-channel-handler ctx)}}]
@@ -482,14 +489,21 @@
               :responses {200 {:body s/FFmpegProfile}
                           404 {:body s/APIError}}
               :handler   (ffmpeg/get-profile-handler ctx)}
-     :put    {:summary    "Update an FFmpeg profile"
-              :parameters {:path [:map [:id s/FFmpegProfileId]]
-                           :body s/FFmpegProfileUpdate}
-              :responses  {200 {:body s/FFmpegProfile}
+      :put    {:summary    "Update an FFmpeg profile"
+               :parameters {:path [:map [:id s/FFmpegProfileId]]
+                            :body s/FFmpegProfileUpdate}
+               :responses  {200 {:body s/FFmpegProfile}
                            404 {:body s/APIError}
                            400 {:body s/APIError}}
-              :handler    (ffmpeg/update-profile-handler ctx)}
-     :delete {:summary   "Delete an FFmpeg profile"
+               :handler    (ffmpeg/update-profile-handler ctx)}
+      :patch  {:summary    "Partially update an FFmpeg profile"
+               :parameters {:path [:map [:id s/FFmpegProfileId]]
+                            :body s/FFmpegProfileUpdate}
+               :responses  {200 {:body s/FFmpegProfile}
+                           404 {:body s/APIError}
+                           400 {:body s/APIError}}
+               :handler    (ffmpeg/update-profile-handler ctx)}
+      :delete {:summary   "Delete an FFmpeg profile"
               :parameters {:path [:map [:id s/FFmpegProfileId]]}
               :responses {200 {:body s/FFmpegProfileDeleted}
                           404 {:body s/APIError}
