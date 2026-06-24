@@ -43,7 +43,7 @@
             :handler   (fn [_]
                          {:status 200
                           :body {:status   "ok"
-                                 :accels   (vec (profile/available-accels))
+                                 :accels   (mapv name (profile/available-accels))
                                  :streams  (count @(:registry (:streams ctx)))
                                  :hostname (try (.. java.net.InetAddress getLocalHost getHostName)
                                                 (catch Exception _ nil))}})}}]
