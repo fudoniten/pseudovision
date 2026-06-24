@@ -895,3 +895,75 @@
 
 (def StreamDebug
   [:map {:description "Opaque diagnostic payload for a running HLS stream"}])
+
+;; ---------------------------------------------------------------------------
+;; CatalogProfile — Tunabrain scheduling contract
+;; ---------------------------------------------------------------------------
+
+(def ShowProfile
+  "Per-show or per-movie rollup sent to Tunabrain."
+  [:map
+   [:media_id              :string]
+   [:title                 :string]
+   [:genres                {:optional true} [:vector :string]]
+   [:episode_count         :int]
+   [:available_episode_count :int]
+   [:avg_runtime_minutes   {:optional true} [:maybe :double]]
+   [:tags                  {:optional true} [:vector :string]]])
+
+(def GenreProfile
+  "Per-genre aggregate."
+  [:map
+   [:genre        :string]
+   [:show_count   :int]
+   [:episode_count :int]])
+
+(def RuntimeBucket
+  "One bar of the runtime histogram."
+  [:map
+   [:label       :string]
+   [:min_minutes :int]
+   [:max_minutes [:maybe :int]]
+   [:item_count  :int]])
+
+(def CatalogProfile
+  "The shape of the library — never the raw items."
+  [:map
+   [:channel_scope      {:optional true} [:maybe :string]]
+   [:total_items        :int]
+   [:total_episodes     :int]
+   [:movie_count        :int]
+   [:shows              [:vector ShowProfile]]
+   [:genres             [:vector GenreProfile]]
+   [:runtime_histogram  [:vector RuntimeBucket]]
+   [:generated_at       {:optional true} [:maybe :string]]])
+
+;; ---------------------------------------------------------------------------
+;; DailySlot — expanded slot from Tunabrain expander
+;; ---------------------------------------------------------------------------
+
+(def DailySlot
+  "Concrete slot produced by the deterministic expander."
+  [:map
+   [:start-time                :string]
+   [:end-time                  :string]
+   [:media-id                  {:optional true} [:maybe :string]]
+   [:media-selection-strategy  {:optional true} [:enum "random" "sequential" "specific"]]
+   [:category-filters          {:optional true} [:vector :string]]
+   [:notes                     {:optional true} [:vector :string]]])
+
+(def DailySlotIngestResult
+  "Result of bulk-ingesting DailySlots into a channel."
+  [:map
+   [:ingested        :int]
+   [:skipped         :int]
+   [:errors          [:vector :string]]
+   [:channel_id      :int]])
+
+(def CatalogCountRequest
+  [:map
+   [:filters {:optional true} [:map]]])
+
+(def CatalogCountResponse
+  [:map
+   [:count :int]])

@@ -23,6 +23,8 @@
             [pseudovision.http.api.logos      :as logos]
             [pseudovision.http.api.metrics    :as metrics]
              [pseudovision.http.api.jobs       :as jobs]
+             [pseudovision.http.api.catalog    :as catalog]
+             [pseudovision.http.api.daily-slots :as ds]
              [pseudovision.ffmpeg.profile      :as profile]))
 
 (defn- routes [ctx]
@@ -406,14 +408,42 @@
             :parameters {:body s/CollectionItemAdd}
             :responses  {204 {}}
             :handler    (med/add-collection-item-handler ctx)}}]
-   ["/api/media/collections/:id/items/:item-id"
-    {:tags       ["media"]
-     :parameters {:path [:map [:id s/CollectionId] [:item-id s/MediaItemRef]]}
-     :delete {:summary   "Remove a media item from a collection"
-              :responses {204 {}}
-              :handler   (med/remove-collection-item-handler ctx)}}]
+    ["/api/media/collections/:id/items/:item-id"
+     {:tags       ["media"]
+      :parameters {:path [:map [:id s/CollectionId] [:item-id s/MediaItemRef]]}
+      :delete {:summary   "Remove a media item from a collection"
+               :responses {204 {}}
+               :handler   (med/remove-collection-item-handler ctx)}}]
 
-   ;; ── Filler Presets ───────────────────────────────────────────────────────
+    ;; ── Catalog ─────────────────────────────────────────────────────────────
+    ["/api/catalog/aggregate"
+     {:tags ["catalog"]
+      :get  {:summary    "Catalog aggregate profile for Tunabrain scheduling"
+             :description "Returns a summarized view of the library: show counts, genre breakdowns, runtime histogram."
+             :parameters {:query [:map
+                                  [:channel {:optional true} :string]
+                                  [:tag     {:optional true} :string]]}
+             :responses  {200 {:body s/CatalogProfile}}
+             :handler    (catalog/catalog-aggregate-handler ctx)}}]
+    ["/api/catalog/count"
+     {:tags ["catalog"]
+      :post {:summary    "Count media items matching filters (Phase 7 stub)"
+             :parameters {:body s/CatalogCountRequest}
+             :responses  {200 {:body s/CatalogCountResponse}}
+             :handler    (catalog/catalog-count-handler ctx)}}]
+
+    ;; ── Daily Slots (Tunabrain expander output) ────────────────────────────
+    ["/api/channels/:channel-id/daily-slots"
+     {:tags       ["daily-slots"]
+      :parameters {:path [:map [:channel-id s/ChannelId]]}
+      :post       {:summary    "Ingest expanded DailySlot[] from Tunarr Scheduler"
+                   :description "Resolves media_id + media_selection_strategy into concrete playout events for the channel."
+                   :parameters {:body [:vector s/DailySlot]}
+                   :responses  {200 {:body s/DailySlotIngestResult}
+                                404 {:body s/APIError}}
+                   :handler    (ds/ingest-daily-slots-handler ctx)}}]
+
+    ;; ── Filler Presets ───────────────────────────────────────────────────────
    ["/api/filler-presets"
     {:tags ["filler"]
      :get  {:summary    "List filler presets (paginated)"

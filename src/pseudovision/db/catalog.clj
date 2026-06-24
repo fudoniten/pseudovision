@@ -1,0 +1,311 @@
+(ns pseudovision.db.catalog
+  "Aggregation queries for building the CatalogProfile that Tunarr Scheduler
+   sends to Tunabrain. All queries are deterministic and return summarized
+   shapes — no per-episode rows in the main response."
+  (:require [honey.sql         :as sql]
+            [honey.sql.helpers :as h]
+            [pseudovision.db.core :as db]
+            [pseudovision.util.sql :as sql-util]))
+
+;; ---------------------------------------------------------------------------
+;; Tag-filter helpers (shared with smart-collection logic)
+;; ---------------------------------------------------------------------------
+
+(defn- tag-exists-subq
+  "Returns an EXISTS subquery for `media_items` aliased as `mi`.
+   Checks whether `mi.id` has a metadata tag matching `tag`.
+   `name-clause` is a HoneySQL predicate against `mt.name`."
+  [name-clause]
+  [:exists {:select [1]
+            :from   [[:metadata :m2]]
+            :join   [[:metadata-tags :mt2] [:= :mt2.metadata-id :m2.id]]
+            :where  [:and [:= :m2.media-item-id :mi.id] name-clause]}])
+
+(defn- tag-filter-clause
+  "Returns a WHERE clause that limits `mi` to items carrying `tag`.
+   Used for channel-scoped catalog slicing."
+  [tag]
+  (tag-exists-subq [:= :mt2.name tag]))
+
+;; ---------------------------------------------------------------------------
+;; Total counts
+;; ---------------------------------------------------------------------------
+
+(defn count-playable-items
+  "Returns a map with :total_items, :total_episodes, :movie_count.
+   Optional `tag-filter` limits the count to items with that tag."
+  [ds tag-filter]
+  (let [base (-> (h/select [:%count.* :total_items])
+                 (h/from [:media-items :mi])
+                 (h/where [:= :mi.state (sql-util/->pg-enum "media_item_state" "normal")])
+                 (cond->
+                   tag-filter (h/where (tag-filter-clause tag-filter))))
+        total-result (db/query-one ds (sql/format base))
+        total-items  (:total_items total-result 0)
+
+        ;; Episodes count
+        episode-base (-> (h/select [:%count.* :total_episodes])
+                         (h/from [:media-items :mi])
+                         (h/where [:and [:= :mi.state (sql-util/->pg-enum "media_item_state" "normal")]
+                                        [:= :mi.kind (sql-util/->pg-enum "media_item_kind" "episode")]])
+                         (cond->
+                           tag-filter (h/where (tag-filter-clause tag-filter))))
+        episode-result (db/query-one ds (sql/format episode-base))
+        total-episodes (:total_episodes episode-result 0)
+
+        ;; Movies count
+        movie-base (-> (h/select [:%count.* :movie_count])
+                        (h/from [:media-items :mi])
+                        (h/where [:and [:= :mi.state (sql-util/->pg-enum "media_item_state" "normal")]
+                                       [:= :mi.kind (sql-util/->pg-enum "media_item_kind" "movie")]])
+                        (cond->
+                          tag-filter (h/where (tag-filter-clause tag-filter))))
+        movie-result (db/query-one ds (sql/format movie-base))
+        movie-count  (:movie_count movie-result 0)]
+    {:total_items      total-items
+     :total_episodes   total-episodes
+     :movie_count      movie-count}))
+
+;; ---------------------------------------------------------------------------
+;; Show / movie profiles
+;; ---------------------------------------------------------------------------
+
+(defn- show-genres
+  "Returns a map {show-id -> [genre-name ...]} for the given show ids."
+  [ds show-ids]
+  (if (seq show-ids)
+    (let [rows (db/query ds
+                  (-> (h/select :m.media-item-id :mg.name)
+                      (h/from [:metadata-genres :mg])
+                      (h/join [:metadata :m] [:= :m.id :mg.metadata-id])
+                      (h/where [:in :m.media-item-id show-ids])
+                      (h/order-by :m.media-item-id :mg.name)
+                      sql/format))]
+      (reduce (fn [acc r]
+                (update acc (:metadata/media-item-id r)
+                        (fnil conj []) (:metadata-genres/name r)))
+              {} rows))
+    {}))
+
+(defn- show-tags
+  "Returns a map {show-id -> [tag-name ...]} for the given show ids."
+  [ds show-ids]
+  (if (seq show-ids)
+    (let [rows (db/query ds
+                  (-> (h/select :m.media-item-id :mt.name)
+                      (h/from [:metadata-tags :mt])
+                      (h/join [:metadata :m] [:= :m.id :mt.metadata-id])
+                      (h/where [:in :m.media-item-id show-ids])
+                      (h/order-by :m.media-item-id :mt.name)
+                      sql/format))]
+      (reduce (fn [acc r]
+                (update acc (:metadata/media-item-id r)
+                        (fnil conj []) (:metadata-tags/name r)))
+              {} rows))
+    {}))
+
+(defn list-show-profiles
+  "Returns a seq of per-show / per-movie profile maps.
+   Optional `tag-filter` limits results to items with that tag.
+
+   Shape per row (before decoration):
+   {:id, :remote_key, :name, :episode_count, :avg_runtime_minutes}"
+  [ds tag-filter]
+  (let [;; For shows we aggregate episode counts and average episode runtime.
+        ;; For movies episode_count is 1 and avg_runtime is the movie's own
+        ;; runtime.
+        show-base
+        (-> (h/select :mi.id :mi.kind :mi.remote-key [:m.title :name]
+                     [[:%count.e.id] :episode_count]
+                     [[:avg [:raw "EXTRACT(EPOCH FROM mv.duration) / 60"]] :avg_runtime_minutes])
+            (h/from [:media-items :mi])
+            (h/join [:metadata :m] [:= :m.media-item-id :mi.id])
+            (h/left-join [:media-items :e]
+                         [:and [:= :e.parent-id :mi.id] [:= :e.kind (sql-util/->pg-enum "media_item_kind" "episode")]])
+            (h/left-join [:media-versions :mv]
+                         [:= :mv.media-item-id :e.id])
+            (h/where [:= :mi.state (sql-util/->pg-enum "media_item_state" "normal")])
+            (h/where [:= :mi.kind (sql-util/->pg-enum "media_item_kind" "show")])
+            (cond->
+              tag-filter (h/where (tag-filter-clause tag-filter)))
+            (h/group-by :mi.id :mi.remote-key :m.title)
+            (h/order-by :mi.id))
+
+        show-rows (db/query ds (sql/format show-base))
+
+        ;; Movies are profiled as a single-item "show"
+        movie-base
+        (-> (h/select :mi.id :mi.kind :mi.remote-key [:m.title :name]
+                     [[:%count.mi.id] :episode_count]
+                     [[:avg [:raw "EXTRACT(EPOCH FROM mv.duration) / 60"]] :avg_runtime_minutes])
+            (h/from [:media-items :mi])
+            (h/join [:metadata :m] [:= :m.media-item-id :mi.id])
+            (h/left-join [:media-versions :mv]
+                         [:= :mv.media-item-id :mi.id])
+            (h/where [:= :mi.state (sql-util/->pg-enum "media_item_state" "normal")])
+            (h/where [:= :mi.kind (sql-util/->pg-enum "media_item_kind" "movie")])
+            (cond->
+              tag-filter (h/where (tag-filter-clause tag-filter)))
+            (h/group-by :mi.id :mi.remote-key :m.title)
+            (h/order-by :mi.id))
+
+        movie-rows (db/query ds (sql/format movie-base))
+
+        all-rows   (concat show-rows movie-rows)
+        all-ids    (map :media-items/id all-rows)
+        genre-map  (show-genres ds all-ids)
+        tag-map    (show-tags ds all-ids)]
+
+    (mapv (fn [row]
+            (let [id        (:media-items/id row)
+                  remote-key (:media-items/remote-key row)
+                  media-id  (if (seq remote-key)
+                              (str (if (= "movie" (:media-items/kind row)) "movie:" "series:")
+                                   remote-key)
+                              (str (if (= "movie" (:media-items/kind row)) "movie:" "series:")
+                                   id))]
+              {:media_id              media-id
+               :title                 (:name row)
+               :genres                (get genre-map id [])
+               :episode_count         (or (:episode_count row) 0)
+               :available_episode_count (or (:episode_count row) 0)
+                :avg_runtime_minutes   (when-let [v (:avg_runtime_minutes row)]
+                                          (when (number? v)
+                                            (/ (Math/round (* v 100.0)) 100.0)))
+               :tags                  (get tag-map id [])}))
+          all-rows)))
+
+;; ---------------------------------------------------------------------------
+;; Genre aggregates
+;; ---------------------------------------------------------------------------
+
+(defn list-genre-aggregates
+  "Returns a seq of {:genre, :show_count, :episode_count}.
+   Optional `tag-filter` limits to items with that tag.
+
+   A show is counted for a genre if its metadata carries that genre.
+   Episodes are counted as children of those shows."
+  [ds tag-filter]
+  (let [query
+        (-> (h/select [:mg.name :genre]
+                     [[:%count.distinct :mi.id] :show_count]
+                     [[:coalesce [:sum :e.count] 0] :episode_count])
+            (h/from [:metadata-genres :mg])
+            (h/join [:metadata :m] [:= :m.id :mg.metadata-id])
+            (h/join [:media-items :mi] [:= :mi.id :m.media-item-id])
+            (h/left-join [:lateral
+                          {:select [[:%count.* :count]]
+                           :from   [[:media-items :e2]]
+                           :where  [:and [:= :e2.parent-id :mi.id]
+                                         [:= :e2.kind "episode"]]}
+                          :e]
+                         [:on [:= 1 1]])
+             (h/where [:and [:= :mi.state (sql-util/->pg-enum "media_item_state" "normal")]
+                            [:in :mi.kind [(sql-util/->pg-enum "media_item_kind" "show")
+                                           (sql-util/->pg-enum "media_item_kind" "movie")]]])
+            (cond->
+              tag-filter (h/where (tag-filter-clause tag-filter)))
+            (h/group-by :mg.name)
+            (h/order-by :mg.name))
+        rows (db/query ds (sql/format query))]
+    (mapv (fn [r]
+            {:genre         (:metadata-genres/name r)
+             :show_count    (or (:show_count r) 0)
+             :episode_count (or (:episode_count r) 0)})
+          rows)))
+
+;; ---------------------------------------------------------------------------
+;; Runtime histogram
+;; ---------------------------------------------------------------------------
+
+(defn- runtime-bucket-clause
+  "Returns a CASE expression that buckets durations into human-readable labels.
+   Durations are measured in minutes (from EXTRACT(EPOCH FROM duration)/60)."
+  []
+  [:case
+   [:<= [:raw "EXTRACT(EPOCH FROM mv.duration) / 60"] 10]
+   [:raw "'0-10min'"]
+   [:<= [:raw "EXTRACT(EPOCH FROM mv.duration) / 60"] 20]
+   [:raw "'10-20min'"]
+   [:<= [:raw "EXTRACT(EPOCH FROM mv.duration) / 60"] 30]
+   [:raw "'20-30min'"]
+   [:<= [:raw "EXTRACT(EPOCH FROM mv.duration) / 60"] 40]
+   [:raw "'30-40min'"]
+   [:<= [:raw "EXTRACT(EPOCH FROM mv.duration) / 60"] 50]
+   [:raw "'40-50min'"]
+   [:<= [:raw "EXTRACT(EPOCH FROM mv.duration) / 60"] 60]
+   [:raw "'50-60min'"]
+   [:<= [:raw "EXTRACT(EPOCH FROM mv.duration) / 60"] 90]
+   [:raw "'60-90min'"]
+   :else
+   [:raw "'90+min'"]])
+
+(defn- bucket->min-max
+  "Map a bucket label to [min max] for the RuntimeBucket shape."
+  [label]
+  (case label
+    "0-10min"   [0 10]
+    "10-20min"  [10 20]
+    "20-30min"  [20 30]
+    "30-40min"  [30 40]
+    "40-50min"  [40 50]
+    "50-60min"  [50 60]
+    "60-90min"  [60 90]
+    "90+min"    [90 nil]
+    [0 nil]))
+
+(defn list-runtime-histogram
+  "Returns a seq of {:label, :min_minutes, :max_minutes, :item_count}.
+   Only counts items with a positive duration (probed)."
+  [ds tag-filter]
+  (let [query
+        (-> (h/select [(runtime-bucket-clause) :label]
+                     [[:%count.*] :item_count])
+            (h/from [:media-items :mi])
+            (h/join [:media-versions :mv] [:= :mv.media-item-id :mi.id])
+             (h/where [:and [:= :mi.state (sql-util/->pg-enum "media_item_state" "normal")]
+                            [:> :mv.duration [:raw "INTERVAL '0'"]]])
+            (cond->
+              tag-filter (h/where (tag-filter-clause tag-filter)))
+            (h/group-by [(runtime-bucket-clause)])
+            (h/order-by [(runtime-bucket-clause)]))
+        rows (db/query ds (sql/format query))]
+    (mapv (fn [r]
+            (let [label (:label r)
+                  [min max] (bucket->min-max label)]
+              {:label       label
+               :min_minutes min
+               :max_minutes max
+               :item_count  (or (:item_count r) 0)}))
+          rows)))
+
+;; ---------------------------------------------------------------------------
+;; Public assembly
+;; ---------------------------------------------------------------------------
+
+(defn build-catalog-profile
+  "Assembles the full CatalogProfile map for the optional channel scope.
+   `channel-name` is a string (e.g. 'Classic Comedy'); when nil the
+   profile covers the entire catalog.
+
+   Returns a map ready to be JSON-encoded."
+  [ds channel-name]
+  (let [tag-filter (when (seq channel-name)
+                     ;; Tunarr-scheduler convention is channel:<kebab-cased-name>,
+                     ;; but we also try the exact name for robustness.
+                     (let [kebab (-> channel-name
+                                     (.toLowerCase)
+                                     (.replaceAll " " "-"))]
+                       (str "channel:" kebab)))
+        counts   (count-playable-items ds tag-filter)
+        shows    (list-show-profiles ds tag-filter)
+        genres   (list-genre-aggregates ds tag-filter)
+        histo    (list-runtime-histogram ds tag-filter)]
+    {:channel_scope    channel-name
+     :total_items      (:total_items counts)
+     :total_episodes   (:total_episodes counts)
+     :movie_count      (:movie_count counts)
+     :shows            shows
+     :genres           genres
+     :runtime_histogram histo
+     :generated_at     (str (java.time.Instant/now))}))

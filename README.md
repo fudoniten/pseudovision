@@ -146,6 +146,17 @@ pre-coercion behaviour until they're migrated.
 | DELETE | `/api/channels/:id/playout/events` | **Bulk-delete events**, optionally within `?from=&to=` (deletes anything overlapping the window; `?manual=true` includes injected events) |
 | PUT/DELETE | `/api/channels/:id/playout/events/:event-id` | Edit/remove a single event |
 
+### Catalog (Tunarr Scheduler / Tunabrain integration)
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/catalog/aggregate` | **Library aggregate profile** — show counts, genre breakdowns, runtime histogram. Optional `?channel=` or `?tag=` scope. |
+| POST | `/api/catalog/count` | Stub count endpoint (Phase 7). |
+
+### Daily Slots (Tunarr Scheduler expander output)
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/api/channels/:id/daily-slots` | **Ingest expanded DailySlot[]** — resolves `media_id` + `media_selection_strategy` into concrete playout events. Clears non-manual events in the slot range before inserting. |
+
 ### Jobs
 Long-running work (currently playout rebuilds) runs as background **jobs**. The
 wire shape is compatible with the Tunarr Scheduler `/api/jobs` API so a shared
@@ -189,6 +200,7 @@ src/pseudovision/
   config.clj            Config → Integrant key translation
   db/
     core.clj            Connection pool, migrations, query helpers
+    catalog.clj         Aggregation queries for the Tunabrain CatalogProfile
     channels.clj        Channel CRUD
     schedules.clj       Schedule + slot CRUD
     playouts.clj        Playout, event, history, gap queries
@@ -202,7 +214,9 @@ src/pseudovision/
     schemas.clj         Malli schemas for request/response coercion and the
                         OpenAPI spec
     api/
+      catalog.clj       Catalog aggregate endpoint (Tunabrain profile)
       channels.clj      Channel API handlers
+      daily_slots.clj   DailySlot ingestion endpoint (Tunarr Scheduler expander)
       schedules.clj     Schedule/slot API handlers
       playouts.clj      Playout/event API handlers (incl. manual inject)
       epg.clj           XMLTV generation
