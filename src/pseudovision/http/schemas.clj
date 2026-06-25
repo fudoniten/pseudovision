@@ -918,6 +918,13 @@
    [:show_count   :int]
    [:episode_count :int]])
 
+(def TagAggregate
+  "Per-tag aggregate."
+  [:map
+   [:tag         :string]
+   [:show_count   :int]
+   [:episode_count :int]])
+
 (def RuntimeBucket
   "One bar of the runtime histogram."
   [:map
@@ -935,6 +942,7 @@
    [:movie_count        :int]
    [:shows              [:vector ShowProfile]]
    [:genres             [:vector GenreProfile]]
+   [:tag_aggregates     {:optional true} [:vector TagAggregate]]
    [:runtime_histogram  [:vector RuntimeBucket]]
    [:generated_at       {:optional true} [:maybe :string]]])
 

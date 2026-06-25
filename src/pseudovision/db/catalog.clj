@@ -292,6 +292,50 @@
           rows)))
 
 ;; ---------------------------------------------------------------------------
+;; Tag aggregates
+;; ---------------------------------------------------------------------------
+
+(defn list-tag-aggregates
+  "Returns a seq of {:tag, :show_count, :episode_count}.
+   Optional `tag-filter` limits to items with that tag.
+
+   A show is counted for a tag if its metadata carries that tag.
+   Episodes are counted as children of those shows."
+  [ds tag-filter]
+  (let [query
+        (-> (h/select [:mt.name :tag]
+                      [[:count [:distinct :mi.id]] :show_count]
+                      [[:raw "SUM(e.count)::int"] :episode_count])
+            (h/from [:metadata-tags :mt])
+            (h/join [:metadata :m] [:= :m.id :mt.metadata-id])
+            (h/join [:media-items :mi] [:= :mi.id :m.media-item-id])
+            (h/left-join [[:lateral
+                           {:select [[:%count.* :count]]
+                            :from   [[:media-items :e2]]
+                            :where  [:and [:= :e2.kind (sql-util/->pg-enum "media_item_kind" "episode")]
+                                          [:or [:= :e2.parent-id :mi.id]
+                                               [:in :e2.parent-id {:select [:season.id]
+                                                                   :from   [[:media-items :season]]
+                                                                   :where  [:and [:= :season.parent-id :mi.id]
+                                                                                 [:= :season.kind (sql-util/->pg-enum "media_item_kind" "season")]]}]]]}]
+                          :e]
+                          [:= 1 1])
+            (h/where [:and [:= :mi.state (sql-util/->pg-enum "media_item_state" "normal")]
+                           [:in :mi.kind [(sql-util/->pg-enum "media_item_kind" "show")
+                                          (sql-util/->pg-enum "media_item_kind" "movie")]]])
+            (cond->
+              tag-filter (h/where (tag-filter-clause tag-filter)))
+            (h/group-by :mt.name)
+            (h/order-by :mt.name))
+        rows (db/query-unqualified ds (sql/format query))]
+    (->> rows
+         (mapv (fn [r]
+                 {:tag           (or (:tag r) "Unknown")
+                  :show_count    (or (:show-count r) 0)
+                  :episode_count (or (:episode-count r) 0)}))
+         (filterv #(pos? (:show_count %))))))
+
+;; ---------------------------------------------------------------------------
 ;; Public assembly
 ;; ---------------------------------------------------------------------------
 
@@ -316,6 +360,7 @@
   (let [counts   (count-playable-items ds tag-filter)
         shows    (list-show-profiles ds tag-filter)
         genres   (list-genre-aggregates ds tag-filter)
+        tags     (list-tag-aggregates ds tag-filter)
         histo    (list-runtime-histogram ds tag-filter)]
     {:channel_scope    channel-name
      :total_items      (:total_items counts)
@@ -323,5 +368,6 @@
      :movie_count      (:movie_count counts)
      :shows            shows
      :genres           genres
+     :tag_aggregates   tags
      :runtime_histogram histo
      :generated_at     (str (java.time.Instant/now))}))
