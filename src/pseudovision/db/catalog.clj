@@ -165,13 +165,13 @@
                               (str (if (= "movie" (:media-items/kind row)) "movie:" "series:")
                                    id))]
               {:media_id              media-id
-               :title                 (:name row)
+               :title                 (or (:name row) "Unknown")
                :genres                (get genre-map id [])
                :episode_count         (or (:episode_count row) 0)
                :available_episode_count (or (:episode_count row) 0)
-                :avg_runtime_minutes   (when-let [v (:avg_runtime_minutes row)]
-                                          (when (number? v)
-                                            (/ (Math/round (* v 100.0)) 100.0)))
+               :avg_runtime_minutes   (when-let [v (:avg_runtime_minutes row)]
+                                        (when (number? v)
+                                          (/ (Math/round (* v 100.0)) 100.0)))
                :tags                  (get tag-map id [])}))
           all-rows)))
 
@@ -209,7 +209,7 @@
             (h/order-by :mg.name))
         rows (db/query ds (sql/format query))]
     (mapv (fn [r]
-            {:genre         (:metadata-genres/name r)
+            {:genre         (or (:metadata-genres/name r) "Unknown")
              :show_count    (or (:show_count r) 0)
              :episode_count (or (:episode_count r) 0)})
           rows)))
