@@ -223,19 +223,19 @@
    Durations are measured in minutes (from EXTRACT(EPOCH FROM duration)/60)."
   []
   [:case
-   [:<= [:raw "EXTRACT(EPOCH FROM mv.duration) / 60"] 10]
+   [:<= [:raw "EXTRACT(EPOCH FROM mv.duration) / 60"] [:raw "10"]]
    [:raw "'0-10min'"]
-   [:<= [:raw "EXTRACT(EPOCH FROM mv.duration) / 60"] 20]
+   [:<= [:raw "EXTRACT(EPOCH FROM mv.duration) / 60"] [:raw "20"]]
    [:raw "'10-20min'"]
-   [:<= [:raw "EXTRACT(EPOCH FROM mv.duration) / 60"] 30]
+   [:<= [:raw "EXTRACT(EPOCH FROM mv.duration) / 60"] [:raw "30"]]
    [:raw "'20-30min'"]
-   [:<= [:raw "EXTRACT(EPOCH FROM mv.duration) / 60"] 40]
+   [:<= [:raw "EXTRACT(EPOCH FROM mv.duration) / 60"] [:raw "40"]]
    [:raw "'30-40min'"]
-   [:<= [:raw "EXTRACT(EPOCH FROM mv.duration) / 60"] 50]
+   [:<= [:raw "EXTRACT(EPOCH FROM mv.duration) / 60"] [:raw "50"]]
    [:raw "'40-50min'"]
-   [:<= [:raw "EXTRACT(EPOCH FROM mv.duration) / 60"] 60]
+   [:<= [:raw "EXTRACT(EPOCH FROM mv.duration) / 60"] [:raw "60"]]
    [:raw "'50-60min'"]
-   [:<= [:raw "EXTRACT(EPOCH FROM mv.duration) / 60"] 90]
+   [:<= [:raw "EXTRACT(EPOCH FROM mv.duration) / 60"] [:raw "90"]]
    [:raw "'60-90min'"]
    :else
    [:raw "'90+min'"]])
