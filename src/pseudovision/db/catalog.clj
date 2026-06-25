@@ -260,7 +260,7 @@
   [ds tag-filter]
   (let [query
         (-> (h/select [(runtime-bucket-clause) :label]
-                     [[:%count.*] :item_count])
+                     [:%count.* :item_count])
             (h/from [:media-items :mi])
             (h/join [:media-versions :mv] [:= :mv.media-item-id :mi.id])
              (h/where [:and [:= :mi.state (sql-util/->pg-enum "media_item_state" "normal")]
