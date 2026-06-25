@@ -264,10 +264,13 @@
    - :offset    - number of items to skip"
   [ds library-id opts]
   (let [attrs       (mapv keyword (or (seq (:attrs opts)) default-item-attrs))
-        need-meta?  (some metadata-attrs attrs)
-        need-count? (some #{:child-count} attrs)
-        col-attrs   (remove #{:child-count} attrs)
-        select-cols (cond-> (mapv item-attr->col (filter item-attr->col col-attrs))
+         ;; Always ensure id is present so downstream consumers (including
+         ;; response coercion) have a primary key.
+         attrs       (if (some #{:id} attrs) attrs (conj attrs :id))
+         need-meta?  (some metadata-attrs attrs)
+         need-count? (some #{:child-count} attrs)
+         col-attrs   (remove #{:child-count} attrs)
+         select-cols (cond-> (mapv item-attr->col (filter item-attr->col col-attrs))
                       need-count?
                       (conj [{:select [:%count.*]
                               :from   [[:media-items :ch]]
