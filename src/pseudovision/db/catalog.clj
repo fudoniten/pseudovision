@@ -40,8 +40,8 @@
                  (h/where [:= :mi.state (sql-util/->pg-enum "media_item_state" "normal")])
                  (cond->
                    tag-filter (h/where (tag-filter-clause tag-filter))))
-        total-result (db/query-one ds (sql/format base))
-        total-items  (:total_items total-result 0)
+        total-result (db/query-one-unqualified ds (sql/format base))
+        total-items  (:total-items total-result 0)
 
         ;; Episodes count
         episode-base (-> (h/select [:%count.* :total_episodes])
@@ -50,8 +50,8 @@
                                         [:= :mi.kind (sql-util/->pg-enum "media_item_kind" "episode")]])
                          (cond->
                            tag-filter (h/where (tag-filter-clause tag-filter))))
-        episode-result (db/query-one ds (sql/format episode-base))
-        total-episodes (:total_episodes episode-result 0)
+        episode-result (db/query-one-unqualified ds (sql/format episode-base))
+        total-episodes (:total-episodes episode-result 0)
 
         ;; Movies count
         movie-base (-> (h/select [:%count.* :movie_count])
@@ -60,8 +60,8 @@
                                        [:= :mi.kind (sql-util/->pg-enum "media_item_kind" "movie")]])
                         (cond->
                           tag-filter (h/where (tag-filter-clause tag-filter))))
-        movie-result (db/query-one ds (sql/format movie-base))
-        movie-count  (:movie_count movie-result 0)]
+        movie-result (db/query-one-unqualified ds (sql/format movie-base))
+        movie-count  (:movie-count movie-result 0)]
     {:total_items      total-items
      :total_episodes   total-episodes
      :movie_count      movie-count}))
@@ -74,7 +74,7 @@
   "Returns a map {show-id -> [genre-name ...]} for the given show ids."
   [ds show-ids]
   (if (seq show-ids)
-    (let [rows (db/query ds
+    (let [rows (db/query-unqualified ds
                   (-> (h/select :m.media-item-id :mg.name)
                       (h/from [:metadata-genres :mg])
                       (h/join [:metadata :m] [:= :m.id :mg.metadata-id])
@@ -82,8 +82,8 @@
                       (h/order-by :m.media-item-id :mg.name)
                       sql/format))]
       (reduce (fn [acc r]
-                (update acc (:metadata/media-item-id r)
-                        (fnil conj []) (:metadata-genres/name r)))
+                (update acc (:media-item-id r)
+                        (fnil conj []) (:name r)))
               {} rows))
     {}))
 
@@ -91,7 +91,7 @@
   "Returns a map {show-id -> [tag-name ...]} for the given show ids."
   [ds show-ids]
   (if (seq show-ids)
-    (let [rows (db/query ds
+    (let [rows (db/query-unqualified ds
                   (-> (h/select :m.media-item-id :mt.name)
                       (h/from [:metadata-tags :mt])
                       (h/join [:metadata :m] [:= :m.id :mt.metadata-id])
@@ -99,8 +99,8 @@
                       (h/order-by :m.media-item-id :mt.name)
                       sql/format))]
       (reduce (fn [acc r]
-                (update acc (:metadata/media-item-id r)
-                        (fnil conj []) (:metadata-tags/name r)))
+                (update acc (:media-item-id r)
+                        (fnil conj []) (:name r)))
               {} rows))
     {}))
 
@@ -131,7 +131,7 @@
             (h/group-by :mi.id :mi.remote-key :m.title)
             (h/order-by :mi.id))
 
-        show-rows (db/query ds (sql/format show-base))
+        show-rows (db/query-unqualified ds (sql/format show-base))
 
         ;; Movies are profiled as a single-item "show"
         movie-base
@@ -149,28 +149,29 @@
             (h/group-by :mi.id :mi.remote-key :m.title)
             (h/order-by :mi.id))
 
-        movie-rows (db/query ds (sql/format movie-base))
+        movie-rows (db/query-unqualified ds (sql/format movie-base))
 
         all-rows   (concat show-rows movie-rows)
-        all-ids    (map :media-items/id all-rows)
+        all-ids    (map :id all-rows)
         genre-map  (show-genres ds all-ids)
         tag-map    (show-tags ds all-ids)]
 
     (->> all-rows
          (mapv (fn [row]
-                 (let [id        (:media-items/id row)
-                       remote-key (:media-items/remote-key row)
+                 (let [id        (:id row)
+                       remote-key (:remote-key row)
+                       kind      (let [k (:kind row)] (if (keyword? k) (name k) (str k)))
                        media-id  (if (seq remote-key)
-                                   (str (if (= "movie" (:media-items/kind row)) "movie:" "series:")
+                                   (str (if (= "movie" kind) "movie:" "series:")
                                         remote-key)
-                                   (str (if (= "movie" (:media-items/kind row)) "movie:" "series:")
+                                   (str (if (= "movie" kind) "movie:" "series:")
                                         id))]
                    {:media_id              media-id
-                    :title                 (or (:metadata/name row) "Unknown")
+                    :title                 (or (:name row) "Unknown")
                     :genres                (get genre-map id [])
-                    :episode_count         (or (:episode_count row) 0)
-                    :available_episode_count (or (:episode_count row) 0)
-                    :avg_runtime_minutes   (when-let [v (:avg_runtime_minutes row)]
+                    :episode_count         (or (:episode-count row) 0)
+                    :available_episode_count (or (:episode-count row) 0)
+                    :avg_runtime_minutes   (when-let [v (:avg-runtime-minutes row)]
                                              (when (number? v)
                                                (/ (Math/round (* v 100.0)) 100.0)))
                     :tags                  (get tag-map id [])})))
@@ -208,12 +209,12 @@
               tag-filter (h/where (tag-filter-clause tag-filter)))
             (h/group-by :mg.name)
             (h/order-by :mg.name))
-        rows (db/query ds (sql/format query))]
+        rows (db/query-unqualified ds (sql/format query))]
     (->> rows
          (mapv (fn [r]
-                 {:genre         (or (:metadata-genres/genre r) "Unknown")
-                  :show_count    (or (:show_count r) 0)
-                  :episode_count (or (:episode_count r) 0)}))
+                 {:genre         (or (:genre r) "Unknown")
+                  :show_count    (or (:show-count r) 0)
+                  :episode_count (or (:episode-count r) 0)}))
          (filterv #(pos? (:show_count %))))))
 
 ;; ---------------------------------------------------------------------------
@@ -271,14 +272,14 @@
               tag-filter (h/where (tag-filter-clause tag-filter)))
             (h/group-by [(runtime-bucket-clause)])
             (h/order-by [(runtime-bucket-clause)]))
-        rows (db/query ds (sql/format query))]
+        rows (db/query-unqualified ds (sql/format query))]
     (mapv (fn [r]
             (let [label (:label r)
                   [min max] (bucket->min-max label)]
               {:label       label
                :min_minutes min
                :max_minutes max
-               :item_count  (or (:item_count r) 0)}))
+               :item_count  (or (:item-count r) 0)}))
           rows)))
 
 ;; ---------------------------------------------------------------------------

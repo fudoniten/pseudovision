@@ -123,3 +123,15 @@
   "Returns a single row or nil."
   [ds sql-map]
   (jdbc/execute-one! ds sql-map {:builder-fn rs/as-kebab-maps}))
+
+(defn query-unqualified
+  "Like `query` but returns rows with unqualified kebab-case keys.
+   Useful for aggregate queries whose computed columns and aliases have no
+   reliable table qualifier."
+  [ds sql-map]
+  (jdbc/execute! ds sql-map {:builder-fn rs/as-unqualified-kebab-maps}))
+
+(defn query-one-unqualified
+  "Like `query-one` but returns a row with unqualified kebab-case keys."
+  [ds sql-map]
+  (jdbc/execute-one! ds sql-map {:builder-fn rs/as-unqualified-kebab-maps}))
