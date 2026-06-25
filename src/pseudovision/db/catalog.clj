@@ -120,10 +120,15 @@
                      [[:avg [:raw "EXTRACT(EPOCH FROM mv.duration) / 60"]] :avg_runtime_minutes])
             (h/from [:media-items :mi])
             (h/join [:metadata :m] [:= :m.media-item-id :mi.id])
-            (h/left-join [:media-items :e]
-                         [:and [:= :e.parent-id :mi.id] [:= :e.kind (sql-util/->pg-enum "media_item_kind" "episode")]])
-            (h/left-join [:media-versions :mv]
-                         [:= :mv.media-item-id :e.id])
+             (h/left-join [:media-items :season]
+                          [:and [:= :season.parent-id :mi.id] [:= :season.kind (sql-util/->pg-enum "media_item_kind" "season")]])
+             (h/left-join [:media-items :e]
+                          [:and
+                           [:or [:= :e.parent-id :mi.id]
+                                [:= :e.parent-id :season.id]]
+                           [:= :e.kind (sql-util/->pg-enum "media_item_kind" "episode")]])
+             (h/left-join [:media-versions :mv]
+                          [:= :mv.media-item-id :e.id])
             (h/where [:= :mi.state (sql-util/->pg-enum "media_item_state" "normal")])
             (h/where [:= :mi.kind (sql-util/->pg-enum "media_item_kind" "show")])
             (cond->
@@ -191,17 +196,21 @@
   (let [query
         (-> (h/select [:mg.name :genre]
                      [[:count [:distinct :mi.id]] :show_count]
-                     [[:coalesce [:sum :e.count] 0] :episode_count])
+                      [[:raw "SUM(e.count)::int"] :episode_count])
             (h/from [:metadata-genres :mg])
             (h/join [:metadata :m] [:= :m.id :mg.metadata-id])
             (h/join [:media-items :mi] [:= :mi.id :m.media-item-id])
-            (h/left-join [[:lateral
-                           {:select [[:%count.* :count]]
-                            :from   [[:media-items :e2]]
-                            :where  [:and [:= :e2.parent-id :mi.id]
-                                          [:= :e2.kind (sql-util/->pg-enum "media_item_kind" "episode")]]}]
-                          :e]
-                         [:= 1 1])
+             (h/left-join [[:lateral
+                            {:select [[:%count.* :count]]
+                             :from   [[:media-items :e2]]
+                             :where  [:and [:= :e2.kind (sql-util/->pg-enum "media_item_kind" "episode")]
+                                           [:or [:= :e2.parent-id :mi.id]
+                                                [:in :e2.parent-id {:select [:season.id]
+                                                                    :from   [[:media-items :season]]
+                                                                    :where  [:and [:= :season.parent-id :mi.id]
+                                                                                  [:= :season.kind (sql-util/->pg-enum "media_item_kind" "season")]]}]]]}]
+                           :e]
+                          [:= 1 1])
              (h/where [:and [:= :mi.state (sql-util/->pg-enum "media_item_state" "normal")]
                             [:in :mi.kind [(sql-util/->pg-enum "media_item_kind" "show")
                                            (sql-util/->pg-enum "media_item_kind" "movie")]]])
