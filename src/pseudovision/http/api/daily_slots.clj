@@ -92,7 +92,7 @@
                (-> (h/select :mi.id)
                    (h/from [:media-items :mi])
                    (h/where [:and [:= :mi.id show-id]
-                                  [:= :mi.kind "show"]])
+                                  [:= :mi.kind (sql-util/->pg-enum "media_item_kind" "show")]])
                    sql/format))]
     (when show
       (let [last-event (db-core/query-one ds
@@ -101,7 +101,7 @@
                              (h/join [:media-items :mi2] [:= :mi2.id :pe.media-item-id])
                              (h/where [:and [:= :pe.playout-id playout-id]
                                             [:= :mi2.parent-id show-id]
-                                            [:= :mi2.kind "episode"]])
+                                            [:= :mi2.kind (sql-util/->pg-enum "media_item_kind" "episode")]])
                              (h/order-by [:pe.start-at :desc])
                              (h/limit 1)
                              sql/format))]
@@ -154,8 +154,8 @@
                                            (-> (h/select :m.media-item-id :mt.name)
                                                (h/from [:metadata-tags :mt])
                                                (h/join [:metadata :m] [:= :m.id :mt.metadata-id])
-                                                (h/where [:in :m.media-item-id item-ids])
-          sql/format)))
+                                               (h/where [:in :m.media-item-id item-ids])
+                                               sql/format)))
                               item-tags (group-by :metadata/media-item-id
                                                   (map (fn [r]
                                                          {:item-id (:metadata/media-item-id r)
