@@ -36,22 +36,22 @@
           channel-name (when ch (:channels/name ch))
           ;; If caller supplies an explicit tag, use it; otherwise derive from channel name.
           tag-filter (or explicit-tag
-                        (when (seq channel-name)
-                          (str "channel:" (-> channel-name .toLowerCase (.replaceAll " " "-")))))]
+                         (catalog-db/channel-name->tag channel-name))]
       (log/info "Catalog aggregate request"
                 {:channel-ref channel-ref
                  :resolved-channel channel-name
                  :tag-filter tag-filter})
-      (let [profile (catalog-db/build-catalog-profile db channel-name)]
-        ;; If an explicit tag was requested but the channel-scoped profile is empty
-        ;; (no shows match), fall back to the full catalog so the caller still
-        ;; gets a usable profile. This is a safety net while tag conventions are
-        ;; still being standardised.
-        (if (and explicit-tag
+      (let [profile (catalog-db/build-catalog-profile
+                      db {:channel-name channel-name :tag-filter tag-filter})]
+        ;; If a tag filter was applied but the scoped profile is empty (no shows
+        ;; match), fall back to the full catalog so the caller still gets a
+        ;; usable profile. This is a safety net while tag conventions are still
+        ;; being standardised.
+        (if (and tag-filter
                  (zero? (:total_items profile)))
           (do (log/warn "Tag filter returned empty catalog; falling back to full catalog"
-                        {:tag explicit-tag})
-              {:status 200 :body (catalog-db/build-catalog-profile db nil)})
+                        {:tag tag-filter})
+              {:status 200 :body (catalog-db/build-catalog-profile db {})})
           {:status 200 :body profile})))))
 
 (defn catalog-count-handler

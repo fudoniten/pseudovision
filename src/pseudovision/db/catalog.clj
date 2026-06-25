@@ -116,7 +116,7 @@
         ;; runtime.
         show-base
         (-> (h/select :mi.id :mi.kind :mi.remote-key [:m.title :name]
-                     [[:%count.e.id] :episode_count]
+                     [[:count [:distinct :e.id]] :episode_count]
                      [[:avg [:raw "EXTRACT(EPOCH FROM mv.duration) / 60"]] :avg_runtime_minutes])
             (h/from [:media-items :mi])
             (h/join [:metadata :m] [:= :m.media-item-id :mi.id])
@@ -136,7 +136,7 @@
         ;; Movies are profiled as a single-item "show"
         movie-base
         (-> (h/select :mi.id :mi.kind :mi.remote-key [:m.title :name]
-                     [[:%count.mi.id] :episode_count]
+                     [[:count [:distinct :mi.id]] :episode_count]
                      [[:avg [:raw "EXTRACT(EPOCH FROM mv.duration) / 60"]] :avg_runtime_minutes])
             (h/from [:media-items :mi])
             (h/join [:metadata :m] [:= :m.media-item-id :mi.id])
@@ -188,7 +188,7 @@
   [ds tag-filter]
   (let [query
         (-> (h/select [:mg.name :genre]
-                     [[:%count.distinct :mi.id] :show_count]
+                     [[:count [:distinct :mi.id]] :show_count]
                      [[:coalesce [:sum :e.count] 0] :episode_count])
             (h/from [:metadata-genres :mg])
             (h/join [:metadata :m] [:= :m.id :mg.metadata-id])
@@ -197,7 +197,7 @@
                           {:select [[:%count.* :count]]
                            :from   [[:media-items :e2]]
                            :where  [:and [:= :e2.parent-id :mi.id]
-                                         [:= :e2.kind "episode"]]}
+                                         [:= :e2.kind (sql-util/->pg-enum "media_item_kind" "episode")]]}
                           :e]
                          [:on [:= 1 1]])
              (h/where [:and [:= :mi.state (sql-util/->pg-enum "media_item_state" "normal")]
@@ -283,21 +283,25 @@
 ;; Public assembly
 ;; ---------------------------------------------------------------------------
 
+(defn channel-name->tag
+  "Derives the Tunarr-scheduler tag convention (channel:<kebab-cased-name>)
+   from a channel name, or nil when the name is blank."
+  [channel-name]
+  (when (seq channel-name)
+    (str "channel:" (-> channel-name
+                        (.toLowerCase)
+                        (.replaceAll " " "-")))))
+
 (defn build-catalog-profile
-  "Assembles the full CatalogProfile map for the optional channel scope.
-   `channel-name` is a string (e.g. 'Classic Comedy'); when nil the
-   profile covers the entire catalog.
+  "Assembles the full CatalogProfile map for the optional scope.
+
+   `scope` is a map with:
+     :channel-name — display name recorded in the profile's :channel_scope.
+     :tag-filter   — resolved tag to slice the catalog by (nil = whole catalog).
 
    Returns a map ready to be JSON-encoded."
-  [ds channel-name]
-  (let [tag-filter (when (seq channel-name)
-                     ;; Tunarr-scheduler convention is channel:<kebab-cased-name>,
-                     ;; but we also try the exact name for robustness.
-                     (let [kebab (-> channel-name
-                                     (.toLowerCase)
-                                     (.replaceAll " " "-"))]
-                       (str "channel:" kebab)))
-        counts   (count-playable-items ds tag-filter)
+  [ds {:keys [channel-name tag-filter]}]
+  (let [counts   (count-playable-items ds tag-filter)
         shows    (list-show-profiles ds tag-filter)
         genres   (list-genre-aggregates ds tag-filter)
         histo    (list-runtime-histogram ds tag-filter)]

@@ -52,9 +52,9 @@
 (deftest catalog-aggregate-accepts-channel-param
   (testing "GET /api/catalog/aggregate?channel=Test returns scoped profile"
     (let [captured (atom nil)]
-      (with-redefs [catalog-db/build-catalog-profile (fn [_ channel-name]
-                                                        (reset! captured channel-name)
-                                                        {:channel_scope channel-name
+      (with-redefs [catalog-db/build-catalog-profile (fn [_ scope]
+                                                        (reset! captured scope)
+                                                        {:channel_scope (:channel-name scope)
                                                          :total_items 50
                                                          :total_episodes 50
                                                          :movie_count 0
@@ -66,13 +66,14 @@
         (let [handler (make-test-handler)
               resp    (handler (mock/request :get "/api/catalog/aggregate?channel=Test"))]
           (is (= 200 (:status resp)))
-          (is (= "Test" @captured)))))))
+          (is (= "Test" (:channel-name @captured)))
+          (is (= "channel:test" (:tag-filter @captured))))))))
 
 (deftest catalog-aggregate-accepts-tag-param
   (testing "GET /api/catalog/aggregate?tag=channel:comedy returns tagged profile"
     (let [captured (atom nil)]
-      (with-redefs [catalog-db/build-catalog-profile (fn [_ channel-name]
-                                                        (reset! captured channel-name)
+      (with-redefs [catalog-db/build-catalog-profile (fn [_ scope]
+                                                        (reset! captured scope)
                                                         {:channel_scope nil
                                                          :total_items 10
                                                          :total_episodes 10
@@ -83,7 +84,8 @@
                                                          :generated_at "2026-06-24T12:00:00Z"})]
         (let [handler (make-test-handler)
               resp    (handler (mock/request :get "/api/catalog/aggregate?tag=channel:comedy"))]
-          (is (= 200 (:status resp))))))))
+          (is (= 200 (:status resp)))
+          (is (= "channel:comedy" (:tag-filter @captured))))))))
 
 (deftest catalog-count-returns-200
   (testing "POST /api/catalog/count returns a count stub"
