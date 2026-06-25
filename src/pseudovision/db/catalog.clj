@@ -156,24 +156,25 @@
         genre-map  (show-genres ds all-ids)
         tag-map    (show-tags ds all-ids)]
 
-    (mapv (fn [row]
-            (let [id        (:media-items/id row)
-                  remote-key (:media-items/remote-key row)
-                  media-id  (if (seq remote-key)
-                              (str (if (= "movie" (:media-items/kind row)) "movie:" "series:")
-                                   remote-key)
-                              (str (if (= "movie" (:media-items/kind row)) "movie:" "series:")
-                                   id))]
-              {:media_id              media-id
-               :title                 (or (:name row) "Unknown")
-               :genres                (get genre-map id [])
-               :episode_count         (or (:episode_count row) 0)
-               :available_episode_count (or (:episode_count row) 0)
-               :avg_runtime_minutes   (when-let [v (:avg_runtime_minutes row)]
-                                        (when (number? v)
-                                          (/ (Math/round (* v 100.0)) 100.0)))
-               :tags                  (get tag-map id [])}))
-          all-rows)))
+    (->> all-rows
+         (mapv (fn [row]
+                 (let [id        (:media-items/id row)
+                       remote-key (:media-items/remote-key row)
+                       media-id  (if (seq remote-key)
+                                   (str (if (= "movie" (:media-items/kind row)) "movie:" "series:")
+                                        remote-key)
+                                   (str (if (= "movie" (:media-items/kind row)) "movie:" "series:")
+                                        id))]
+                   {:media_id              media-id
+                    :title                 (or (:metadata/name row) "Unknown")
+                    :genres                (get genre-map id [])
+                    :episode_count         (or (:episode_count row) 0)
+                    :available_episode_count (or (:episode_count row) 0)
+                    :avg_runtime_minutes   (when-let [v (:avg_runtime_minutes row)]
+                                             (when (number? v)
+                                               (/ (Math/round (* v 100.0)) 100.0)))
+                    :tags                  (get tag-map id [])})))
+         (filterv #(pos? (:episode_count %))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Genre aggregates
@@ -208,11 +209,12 @@
             (h/group-by :mg.name)
             (h/order-by :mg.name))
         rows (db/query ds (sql/format query))]
-    (mapv (fn [r]
-            {:genre         (or (:metadata-genres/name r) "Unknown")
-             :show_count    (or (:show_count r) 0)
-             :episode_count (or (:episode_count r) 0)})
-          rows)))
+    (->> rows
+         (mapv (fn [r]
+                 {:genre         (or (:metadata-genres/genre r) "Unknown")
+                  :show_count    (or (:show_count r) 0)
+                  :episode_count (or (:episode_count r) 0)}))
+         (filterv #(pos? (:show_count %))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Runtime histogram
