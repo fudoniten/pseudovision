@@ -193,13 +193,13 @@
             (h/from [:metadata-genres :mg])
             (h/join [:metadata :m] [:= :m.id :mg.metadata-id])
             (h/join [:media-items :mi] [:= :mi.id :m.media-item-id])
-            (h/left-join [:lateral
-                          {:select [[:%count.* :count]]
-                           :from   [[:media-items :e2]]
-                           :where  [:and [:= :e2.parent-id :mi.id]
-                                         [:= :e2.kind (sql-util/->pg-enum "media_item_kind" "episode")]]}
+            (h/left-join [[:lateral
+                           {:select [[:%count.* :count]]
+                            :from   [[:media-items :e2]]
+                            :where  [:and [:= :e2.parent-id :mi.id]
+                                          [:= :e2.kind (sql-util/->pg-enum "media_item_kind" "episode")]]}]
                           :e]
-                         [:on [:= 1 1]])
+                         [:= 1 1])
              (h/where [:and [:= :mi.state (sql-util/->pg-enum "media_item_state" "normal")]
                             [:in :mi.kind [(sql-util/->pg-enum "media_item_kind" "show")
                                            (sql-util/->pg-enum "media_item_kind" "movie")]]])
