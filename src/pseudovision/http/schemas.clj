@@ -900,8 +900,14 @@
 ;; CatalogProfile — Tunabrain scheduling contract
 ;; ---------------------------------------------------------------------------
 
+;; DEPRECATED: :genres is a hardcoded first-class field. Genres are dimensions
+;; now and should be represented as tags (e.g. "genre:comedy").
+;; Use :tags instead. See TS DIMENSION_CLEANUP.md for the full migration plan.
 (def ShowProfile
-  "Per-show or per-movie rollup sent to Tunabrain."
+  "Per-show or per-movie rollup sent to Tunabrain.
+
+   DEPRECATED: Includes :genres as a hardcoded field. Genres are dimensions
+   now and should be in :tags as 'genre:NAME'."
   [:map
    [:media_id              :string]
    [:title                 :string]
@@ -911,8 +917,12 @@
    [:avg_runtime_minutes   {:optional true} [:maybe :double]]
    [:tags                  {:optional true} [:vector :string]]])
 
+;; DEPRECATED: Hardcoded genre aggregate. Genres are dimensions now.
+;; Use TagAggregate with "genre:" prefix instead.
+;; See TS DIMENSION_CLEANUP.md for the full migration plan.
 (def GenreProfile
-  "Per-genre aggregate."
+  "DEPRECATED: Per-genre aggregate. Genres are dimensions now.
+   Use TagAggregate with 'genre:' prefix instead."
   [:map
    [:genre        :string]
    [:show_count   :int]
@@ -933,8 +943,19 @@
    [:max_minutes [:maybe :int]]
    [:item_count  :int]])
 
+;; DEPRECATED: Includes :channel_scope (hardcoded channel concept) and
+;; :genres (hardcoded genre aggregates). Both are legacy first-class fields.
+;; In the dimension model, channels and genres are just tags in :tag_aggregates
+;; with "channel:" and "genre:" prefixes.
+;; See TS DIMENSION_CLEANUP.md for the full migration plan.
 (def CatalogProfile
-  "The shape of the library — never the raw items."
+  "DEPRECATED: The shape of the library with hardcoded fields.
+
+   Includes :channel_scope (hardcoded channel concept) and :genres
+   (hardcoded genre aggregates). In the dimension model, both are
+   tags in :tag_aggregates with 'channel:' and 'genre:' prefixes.
+
+   The raw items are never included."
   [:map
    [:channel_scope      {:optional true} [:maybe :string]]
    [:total_items        :int]
