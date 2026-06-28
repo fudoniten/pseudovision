@@ -275,7 +275,7 @@
     "40-50min"  [40 50]
     "50-60min"  [50 60]
     "60-90min"  [60 90]
-    "90+min"    [90 nil]
+    "90+min"    [90 999]
     [0 nil]))
 
 (defn list-runtime-histogram
