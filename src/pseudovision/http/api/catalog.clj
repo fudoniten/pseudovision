@@ -23,36 +23,51 @@
   "GET /api/catalog/aggregate
 
    Query params:
-     - channel (optional) — integer id, number, or name.
-     - tag     (optional) — explicit tag to filter by (overrides channel inference).
+     - tag     (optional) — the dimension tag the catalog is scoped to, e.g.
+                            \"channel:goldenreels\". This is what actually
+                            filters the profile. Channel membership lives in
+                            metadata_tags (Tunarr Scheduler writes the channel
+                            dimension there during sync), and TS — which owns
+                            the dimension value — passes it here verbatim.
+     - channel (optional) — integer id, number, or name. Resolved only to
+                            label :channel_scope in the response; it does NOT
+                            drive filtering, because a channel's display name
+                            is not reliably the same string as its dimension
+                            tag value.
 
-   Returns the CatalogProfile JSON (§2.1 of the handoff spec)."
+   Filtering is strictly tag-driven. When `tag` matches nothing the response is
+   a truthful empty profile (total_items 0) — the handler never substitutes the
+   full catalog, so a missed filter can never masquerade as the whole library.
+
+   Returns the CatalogProfile JSON (§1 of the handoff spec)."
   [{:keys [db]}]
   (fn [req]
-    (let [qp        (get-in req [:parameters :query])
+    (let [qp          (get-in req [:parameters :query])
           channel-ref (:channel qp)
-          explicit-tag (:tag qp)
+          tag-filter  (:tag qp)
           ch          (when channel-ref (resolve-channel db channel-ref))
-          channel-name (when ch (:channels/name ch))
-          ;; If caller supplies an explicit tag, use it; otherwise derive from channel name.
-          tag-filter (or explicit-tag
-                         (catalog-db/channel-name->tag channel-name))]
-      (log/info "Catalog aggregate request"
-                {:channel-ref channel-ref
-                 :resolved-channel channel-name
-                 :tag-filter tag-filter})
-      (let [profile (catalog-db/build-catalog-profile
-                      db {:channel-name channel-name :tag-filter tag-filter})]
-        ;; If a tag filter was applied but the scoped profile is empty (no shows
-        ;; match), fall back to the full catalog so the caller still gets a
-        ;; usable profile. This is a safety net while tag conventions are still
-        ;; being standardised.
-        (if (and tag-filter
-                 (zero? (:total_items profile)))
-          (do (log/warn "Tag filter returned empty catalog; falling back to full catalog"
-                        {:tag tag-filter})
-              {:status 200 :body (catalog-db/build-catalog-profile db {})})
-          {:status 200 :body profile})))))
+          channel-name (when ch (:channels/name ch))]
+      (cond
+        ;; A channel ref was supplied but resolves to nothing — surface it
+        ;; instead of silently producing an unscoped or mislabelled profile.
+        (and channel-ref (nil? ch))
+        (do (log/warn "Catalog aggregate: channel not found"
+                      {:channel-ref channel-ref})
+            {:status 422 :body {:error "Channel not found"
+                                :channel-ref channel-ref}})
+
+        :else
+        (do
+          (when (and channel-ref (not tag-filter))
+            (log/warn "Catalog aggregate: channel supplied without a tag filter; returning the full catalog (filtering is tag-driven, pass ?tag=channel:<value>)"
+                      {:channel-ref channel-ref :resolved-channel channel-name}))
+          (log/info "Catalog aggregate request"
+                    {:channel-ref channel-ref
+                     :resolved-channel channel-name
+                     :tag-filter tag-filter})
+          {:status 200
+           :body (catalog-db/build-catalog-profile
+                   db {:channel-name channel-name :tag-filter tag-filter})})))))
 
 (defn catalog-count-handler
   "POST /api/catalog/count  (Phase 7, deferred — minimal stub)

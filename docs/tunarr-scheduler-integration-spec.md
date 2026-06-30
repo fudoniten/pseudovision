@@ -21,9 +21,16 @@ Query parameters (both optional):
 
 | Param     | Type     | Description                                              |
 |-----------|----------|----------------------------------------------------------|
+| `tag`     | `string` | The dimension tag the catalog is scoped to, e.g.         |
+|           |          | `"channel:goldenreels"`. **This is what filters the      |
+|           |          | profile.** Channel membership is stored in `metadata_tags`|
+|           |          | (the channel dimension is written there during sync), so |
+|           |          | pass the exact dimension value you assigned.             |
 | `channel` | `string` | Integer id, channel number, or exact channel name.       |
-| `tag`     | `string` | Explicit tag filter, e.g. `"channel:comedy"`. Overrides  |
-|           |          | the channel-name inference when both are supplied.       |
+|           |          | Resolved **only** to label `channel-scope` in the        |
+|           |          | response — it does **not** filter. A channel's display    |
+|           |          | name is not reliably the same string as its dimension    |
+|           |          | tag, so always send `tag` to scope the catalog.          |
 
 ### Response `200` — `CatalogProfile`
 
@@ -81,13 +88,20 @@ Query parameters (both optional):
 
 ### Behaviour notes for the TS client
 
-* `channel` is resolved in order: **id → number → name**. If omitted, the
-  profile is **unscoped** (full library).
+* Filtering is **strictly tag-driven**. Pass `?tag=channel:<value>` to scope
+  the catalog to a channel. Omitting `tag` returns the **full library**
+  (unscoped) — there is no inference from the channel name.
+* `channel` is resolved in order: **id → number → name** purely to populate
+  `channel-scope`. If a `channel` ref is supplied that does not resolve, the
+  endpoint returns **`422 {"error": "Channel not found"}`** rather than a
+  mislabelled or unscoped profile.
 * `media-id` uses the `remote_key` when available; otherwise falls back to the
   internal `id`. The prefix is always `series:` or `movie:`.
-* If you pass `?tag=channel:comedy` and the scoped profile comes back empty
-  (`total-items: 0`), the handler **automatically falls back to the full
-  catalog** so you always get a usable profile.
+* If you pass `?tag=channel:goldenreels` and nothing matches, the response is a
+  **truthful empty profile** (`total-items: 0`). The handler **never** falls
+  back to the full catalog — a missed filter can never masquerade as the whole
+  library, so an empty result means the channel genuinely has no mapped media
+  (or the tag value is wrong).
 
 ---
 
