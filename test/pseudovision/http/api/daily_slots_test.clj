@@ -3,6 +3,7 @@
             [ring.mock.request :as mock]
             [cheshire.core     :as json]
             [pseudovision.http.core :as http]
+            [pseudovision.http.api.daily-slots :as ds]
             [pseudovision.db.playouts :as playout-db]
             [pseudovision.db.channels :as channels-db]
             [pseudovision.db.core :as db-core]))
@@ -103,3 +104,43 @@
           (is (= (count batch) (:ingested body)))
           (is (= 0 (:skipped body)))
           (is (empty? (:errors body))))))))
+
+;; ---------------------------------------------------------------------------
+;; Media resolution — SQL-shape regressions
+;;
+;; These lock in that the daily-slots resolver looks up the SAME id/dimension
+;; space that GET /api/catalog/aggregate emits:
+;;   - series:<id> episodes are nested show -> season -> episode, so the lookup
+;;     must traverse seasons (not only direct children of the show);
+;;   - random:<category> matches metadata_genres (the genre names the aggregate
+;;     returns) and tags, expanding shows to playable episodes.
+;; ---------------------------------------------------------------------------
+
+(deftest resolve-show-episodes-traverses-seasons
+  (testing "series episode lookup reaches season-nested episodes, not just direct children"
+    (let [captured (atom nil)]
+      (with-redefs [db-core/query-one (fn [_ _] {:media-items/id 7})
+                    db-core/query     (fn [_ sqlvec] (reset! captured sqlvec) [])]
+        (#'ds/resolve-show-episodes nil "f2c639e8be1a00ff83e176aa034ee765")
+        (let [sql (first @captured)]
+          (is (re-find #"(?i)season" sql)
+              "joins the seasons table to reach episodes")
+          (is (re-find #"(?i)parent_id" sql)
+              "links episodes to the show via parent_id"))))))
+
+(deftest resolve-by-category-matches-genres-and-expands-playables
+  (testing "random:<category> reads the genre table the aggregate emits and resolves to playable items"
+    (let [captured (atom nil)]
+      (with-redefs [db-core/query (fn [_ sqlvec] (reset! captured sqlvec) [])]
+        (#'ds/resolve-by-category nil "Mystery")
+        (let [[sql & params] @captured]
+          (is (re-find #"(?i)metadata_genres" sql)
+              "matches against the genre dimension the aggregate emits")
+          (is (re-find #"(?i)metadata_tags" sql)
+              "also honours the tag dimension")
+          (is (re-find #"(?i) play\b|AS play" sql)
+              "selects a distinct playable row (episode/movie), not the show")
+          (is (some #{"Mystery"} params)
+              "binds the requested category verbatim")
+          (is (some #{"genre:Mystery"} params)
+              "honours the genre:<name> tag convention"))))))
