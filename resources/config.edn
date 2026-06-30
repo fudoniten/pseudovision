@@ -1,7 +1,7 @@
 {:log-level #or [#env PSEUDOVISION_LOG_LEVEL :info]
 
  ;; Application-wide timezone (IANA id, e.g. "America/New_York"). Read directly
- ;; from the PSEUDOVISION_TZ environment variable by pseudovision.util.time
+ ;; from the standard TZ environment variable by pseudovision.util.time
  ;; (defaults to "UTC"). Used everywhere a wall-clock zone is needed but none is
  ;; supplied explicitly: playout scheduling, EPG/XMLTV output, DailySlot
  ;; ingestion of naive datetimes, and on-screen clocks.

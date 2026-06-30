@@ -198,7 +198,7 @@
        or \"2026-06-29T00:00:00+02:00\"
      - a naive local ISO datetime, e.g. \"2026-06-29T00:00:00\", which is
        interpreted in the application default zone (`pseudovision.util.time/
-       default-zone`, configured via PSEUDOVISION_TZ; UTC by default)
+       default-zone`, configured via the TZ env var; UTC by default)
 
    Returns nil for nil, blank, or unparseable input."
   [x]

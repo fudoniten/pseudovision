@@ -4,8 +4,8 @@
   (:import [java.time Instant ZoneId]))
 
 (deftest default-zone-defaults-to-utc
-  (testing "with PSEUDOVISION_TZ unset, the application zone is UTC"
-    ;; The test environment does not set PSEUDOVISION_TZ.
+  (testing "with TZ unset, the application zone is UTC"
+    ;; The test environment does not set TZ.
     (is (= "UTC" (t/default-zone-id)))
     (is (= (ZoneId/of "UTC") (t/default-zone)))))
 

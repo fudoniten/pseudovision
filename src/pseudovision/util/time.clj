@@ -11,7 +11,7 @@
 ;; Application-wide default timezone
 ;;
 ;; A single source of truth for "which wall-clock zone does this deployment run
-;; in". Read once from the PSEUDOVISION_TZ environment variable (an IANA zone id
+;; in". Read once from the standard TZ environment variable (an IANA zone id
 ;; like "America/New_York"), defaulting to UTC. Every place that needs a zone but
 ;; isn't given one explicitly — playout scheduling, EPG/XMLTV output, DailySlot
 ;; ingestion, on-screen clocks — defers to this so they all agree.
@@ -19,20 +19,19 @@
 
 (def ^:private default-zone-id*
   (delay
-   (let [tz (System/getenv "PSEUDOVISION_TZ")]
+   (let [tz (System/getenv "TZ")]
      (if (str/blank? tz)
        "UTC"
        (try
          (ZoneId/of tz)                      ; validate the id
          tz
          (catch Exception _
-           (log/warn "Invalid PSEUDOVISION_TZ" (pr-str tz)
-                     "- falling back to UTC")
+           (log/warn "Invalid TZ" (pr-str tz) "- falling back to UTC")
            "UTC"))))))
 
 (defn default-zone-id
   "The application-wide default timezone id (IANA name) as a string, taken from
-   the PSEUDOVISION_TZ environment variable and defaulting to \"UTC\"."
+   the standard TZ environment variable and defaulting to \"UTC\"."
   []
   @default-zone-id*)
 
