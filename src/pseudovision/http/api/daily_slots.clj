@@ -104,14 +104,22 @@
                            [:= :season.kind (sql-util/->pg-enum "media_item_kind" "season")]])
         ;; The actual playable row: the movie itself, or an episode of the show
         ;; (direct child or nested under one of its seasons).
-        (h/join [:media-items :play]
-                [:or
-                 [:and [:= :top.kind (sql-util/->pg-enum "media_item_kind" "movie")]
-                       [:= :play.id :top.id]]
-                 [:and [:= :top.kind (sql-util/->pg-enum "media_item_kind" "show")]
-                       [:= :play.kind (sql-util/->pg-enum "media_item_kind" "episode")]
-                       [:or [:= :play.parent-id :top.id]
-                            [:= :play.parent-id :season.id]]]])
+        ;;
+        ;; This is a LEFT JOIN even though it behaves like an inner join (the
+        ;; `play.state = normal` predicate in WHERE drops the unmatched NULL
+        ;; rows). HoneySQL emits every inner `:join` before every `:left-join`
+        ;; regardless of threading order, so an inner join here would be
+        ;; rendered ahead of the `:season` LEFT JOIN it references, producing
+        ;; "missing FROM-clause entry for table season". Keeping it a left join
+        ;; preserves the season → play ordering.
+        (h/left-join [:media-items :play]
+                     [:or
+                      [:and [:= :top.kind (sql-util/->pg-enum "media_item_kind" "movie")]
+                            [:= :play.id :top.id]]
+                      [:and [:= :top.kind (sql-util/->pg-enum "media_item_kind" "show")]
+                            [:= :play.kind (sql-util/->pg-enum "media_item_kind" "episode")]
+                            [:or [:= :play.parent-id :top.id]
+                                 [:= :play.parent-id :season.id]]]])
         (h/left-join [:media-versions :mvp] [:= :mvp.media-item-id :play.id])
         (h/where [:and
                   [:= :top.state (sql-util/->pg-enum "media_item_state" "normal")]

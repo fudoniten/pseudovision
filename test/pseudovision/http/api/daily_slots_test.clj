@@ -1,5 +1,6 @@
 (ns pseudovision.http.api.daily-slots-test
   (:require [clojure.test :refer [deftest is testing]]
+            [clojure.string :as str]
             [ring.mock.request :as mock]
             [cheshire.core     :as json]
             [pseudovision.http.core :as http]
@@ -144,3 +145,24 @@
               "binds the requested category verbatim")
           (is (some #{"genre:Mystery"} params)
               "honours the genre:<name> tag convention"))))))
+
+(deftest resolve-by-category-declares-season-join-before-it-is-referenced
+  (testing "the season join is emitted before the play join that references season.id"
+    ;; HoneySQL renders every inner :join ahead of every :left-join regardless
+    ;; of threading order. When the playable-row join was an inner :join it was
+    ;; emitted before the :season LEFT JOIN it referenced, yielding Postgres
+    ;; error 42P01: "missing FROM-clause entry for table season". Lock in that
+    ;; the season alias is declared before its first use.
+    (let [captured (atom nil)]
+      (with-redefs [db-core/query (fn [_ sqlvec] (reset! captured sqlvec) [])]
+        (#'ds/resolve-by-category nil "Mystery")
+        (let [sql      (str/lower-case (first @captured))
+              ;; season.parent_id appears only in the :season join's own ON
+              ;; clause (its declaration); season.id appears only in the play
+              ;; join that references it.
+              decl-idx (.indexOf sql "season.parent_id")
+              ref-idx  (.indexOf sql "season.id")]
+          (is (not (neg? decl-idx)) "season table is joined in the query")
+          (is (not (neg? ref-idx))  "play join references season.id")
+          (is (< decl-idx ref-idx)
+              "season must be in scope (declared) before it is referenced"))))))
