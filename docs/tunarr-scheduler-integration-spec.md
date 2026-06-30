@@ -179,15 +179,33 @@ blank field is reported as `"Missing start_time"`.
 
 ### Behaviour notes for the TS client
 
-* `media-id` format: `series:<id>`, `movie:<id>`, or `random:<tag>`.
-  * `series:` → resolves to a concrete episode. `sequential` uses playout
-    history to pick the next unseen episode; `random` picks uniformly;
-    `specific` picks the first episode.
-  * `movie:` → resolves to the single movie item.
-  * `random:` → resolves to any item tagged with `<tag>` (e.g. `random:comedy`).
+* `media-id` format: `series:<id>`, `movie:<id>`, or `random:<category>`. **The
+  identifiers are exactly the ones `GET /api/catalog/aggregate` emits for the
+  same catalog** — `series:`/`movie:` ids are `shows[].media-id`, and
+  `random:` categories are `genres[].genre` (or any `tags[]`/`tag_aggregates[]`
+  name). You do not need to discover a separate id space.
+  * `series:<id>` → `<id>` is the show's `remote_key` (or its internal numeric
+    id if it has no remote key) — the value the aggregate puts in
+    `shows[].media-id`. Resolves to a concrete **episode**, traversing the
+    `show → season → episode` hierarchy. `sequential` uses playout history to
+    pick the next episode; `random` picks uniformly; `specific` picks the first.
+  * `movie:<id>` → the movie's `remote_key`/id; resolves to that single movie.
+  * `random:<category>` → `<category>` is matched **verbatim** against genre
+    names (e.g. `random:Mystery`, `random:Sci-Fi & Fantasy`) and tag names,
+    including the `genre:<name>` tag convention. Matching shows are expanded to
+    their episodes and matching movies resolve to themselves, so the pool is
+    always concrete playable items. Matching is **case- and
+    punctuation-sensitive** — send the genre string exactly as the aggregate
+    returned it.
 * `media-selection-strategy` defaults to `"random"` if omitted.
 * `category-filters` are **AND**-ed tag filters applied after the initial media
-  resolution.
+  resolution (matched against `metadata_tags` names). Leave empty (`[]`) for no
+  extra filtering.
+* **Channel scoping:** daily-slots resolution is **library-wide** — it is not
+  restricted to the channel's tagged subset. Any well-formed `media-id` that
+  exists anywhere in the catalog resolves, regardless of which channel the slot
+  is posted to. (The channel only determines which playout the events are
+  written to.)
 * The handler **clears existing non-manual events** in the date range of the
   slots before inserting the new ones, so each daily-slot push is idempotent
   for that day.
@@ -196,9 +214,9 @@ blank field is reported as `"Missing start_time"`.
 
 ## Quick-reference: `media-id` prefixes
 
-| Prefix  | Meaning          | Example         |
-|---------|------------------|-----------------|
-| `series:` | Show / series  | `series:42`     |
-| `movie:`  | Single movie   | `movie:99`      |
-| `random:` | Tag-based pool | `random:comedy` |
+| Prefix  | Meaning          | Source in aggregate        | Example                 |
+|---------|------------------|----------------------------|-------------------------|
+| `series:` | Show / series  | `shows[].media-id`         | `series:f2c639e8…`      |
+| `movie:`  | Single movie   | `shows[].media-id`         | `movie:99`              |
+| `random:` | Genre/tag pool | `genres[].genre` / `tags`  | `random:Mystery`        |
 

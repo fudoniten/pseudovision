@@ -45,11 +45,19 @@
       (db-core/query ds
         (-> (h/select :mi.* [:mv.duration :duration])
             (h/from [:media-items :mi])
+            ;; Episodes are nested under seasons (episode.parent_id → season →
+            ;; show), so join each episode's parent-as-season to reach the show.
+            ;; A direct show→episode link is also honoured for flat libraries.
+            (h/left-join [:media-items :season]
+                         [:and [:= :season.id :mi.parent-id]
+                               [:= :season.kind (sql-util/->pg-enum "media_item_kind" "season")]])
             (h/left-join [:media-versions :mv] [:= :mv.media-item-id :mi.id])
-            (h/where [:and [:= :mi.parent-id (:media-items/id show)]
-                           [:= :mi.kind (sql-util/->pg-enum "media_item_kind" "episode")]
-                           [:= :mi.state (sql-util/->pg-enum "media_item_state" "normal")]])
-            (h/order-by :mi.position :mi.id)
+            (h/where [:and
+                      [:= :mi.kind (sql-util/->pg-enum "media_item_kind" "episode")]
+                      [:= :mi.state (sql-util/->pg-enum "media_item_state" "normal")]
+                      [:or [:= :mi.parent-id (:media-items/id show)]
+                           [:= :season.parent-id (:media-items/id show)]]])
+            (h/order-by :season.position :mi.position :mi.id)
             sql/format))
       [])))
 
@@ -72,18 +80,48 @@
                             [:= :mi.kind (sql-util/->pg-enum "media_item_kind" "movie")]])
              sql/format))))
 
-(defn- resolve-by-tag
-  "Returns items tagged with `tag`, ordered by id."
-  [ds tag]
+(defn- resolve-by-category
+  "Resolves a `random:<category>` pool to concrete *playable* items.
+
+   `category` is matched against the metadata of top-level items (shows and
+   movies) — exactly the dimension space the catalog aggregate emits — against:
+     - genres   (metadata_genres.name, e.g. \"Mystery\", \"Sci-Fi & Fantasy\")
+     - tags     (metadata_tags.name), including the `genre:<name>` convention.
+
+   Matching shows are expanded to their (season-nested) episodes and matching
+   movies resolve to themselves, so the returned rows are always directly
+   playable items, never bare show rows."
+  [ds category]
   (db-core/query ds
-    (-> (h/select :mi.* [:mv.duration :duration])
-        (h/from [:media-items :mi])
-        (h/join [:metadata :m] [:= :m.media-item-id :mi.id])
-        (h/join [:metadata-tags :mt] [:= :mt.metadata-id :m.id])
-        (h/left-join [:media-versions :mv] [:= :mv.media-item-id :mi.id])
-        (h/where [:and [:= :mt.name tag]
-                       [:= :mi.state (sql-util/->pg-enum "media_item_state" "normal")]])
-        (h/order-by :mi.id)
+    (-> (h/select-distinct :play.* [:mvp.duration :duration])
+        (h/from [:media-items :top])
+        (h/join [:metadata :mtop] [:= :mtop.media-item-id :top.id])
+        (h/left-join [:metadata-genres :g] [:= :g.metadata-id :mtop.id])
+        (h/left-join [:metadata-tags :t]   [:= :t.metadata-id :mtop.id])
+        ;; Seasons of matching shows, so we can reach their episodes.
+        (h/left-join [:media-items :season]
+                     [:and [:= :season.parent-id :top.id]
+                           [:= :season.kind (sql-util/->pg-enum "media_item_kind" "season")]])
+        ;; The actual playable row: the movie itself, or an episode of the show
+        ;; (direct child or nested under one of its seasons).
+        (h/join [:media-items :play]
+                [:or
+                 [:and [:= :top.kind (sql-util/->pg-enum "media_item_kind" "movie")]
+                       [:= :play.id :top.id]]
+                 [:and [:= :top.kind (sql-util/->pg-enum "media_item_kind" "show")]
+                       [:= :play.kind (sql-util/->pg-enum "media_item_kind" "episode")]
+                       [:or [:= :play.parent-id :top.id]
+                            [:= :play.parent-id :season.id]]]])
+        (h/left-join [:media-versions :mvp] [:= :mvp.media-item-id :play.id])
+        (h/where [:and
+                  [:= :top.state (sql-util/->pg-enum "media_item_state" "normal")]
+                  [:= :play.state (sql-util/->pg-enum "media_item_state" "normal")]
+                  [:in :top.kind [(sql-util/->pg-enum "media_item_kind" "show")
+                                  (sql-util/->pg-enum "media_item_kind" "movie")]]
+                  [:or [:= :g.name category]
+                       [:= :t.name category]
+                       [:= :t.name (str "genre:" category)]]])
+        (h/order-by :play.id)
         sql/format)))
 
 (defn- last-aired-episode-index
@@ -101,9 +139,15 @@
                          (-> (h/select :pe.media-item-id)
                              (h/from [:playout-events :pe])
                              (h/join [:media-items :mi2] [:= :mi2.id :pe.media-item-id])
+                             ;; Episodes hang off seasons, so reach the show via
+                             ;; the episode's parent-as-season too.
+                             (h/left-join [:media-items :season2]
+                                          [:and [:= :season2.id :mi2.parent-id]
+                                                [:= :season2.kind (sql-util/->pg-enum "media_item_kind" "season")]])
                              (h/where [:and [:= :pe.playout-id playout-id]
-                                            [:= :mi2.parent-id show-id]
-                                            [:= :mi2.kind (sql-util/->pg-enum "media_item_kind" "episode")]])
+                                            [:= :mi2.kind (sql-util/->pg-enum "media_item_kind" "episode")]
+                                            [:or [:= :mi2.parent-id show-id]
+                                                 [:= :season2.parent-id show-id]]])
                              (h/order-by [:pe.start-at :desc])
                              (h/limit 1)
                              sql/format))]
@@ -145,7 +189,7 @@
           items (case type
                   "series" (resolve-show-episodes ds id)
                   "movie"  (when-let [m (resolve-movie ds id)] [m])
-                  "random" (resolve-by-tag ds id)
+                  "random" (resolve-by-category ds id)
                   [])]
       ;; Apply category_filters (tag filters) if provided
       (let [filtered (if (seq category-filters)
