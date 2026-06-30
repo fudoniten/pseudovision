@@ -105,13 +105,13 @@ Path parameters:
 |--------------|--------|----------------------------------------------------------|
 | `channel-id` | `int`  | Integer primary key **or** string channel number (e.g. `"2.1"`). |
 
-Body — `DailySlot[]` (vector):
+Body — a **bare `DailySlot[]` JSON array** (not wrapped in an envelope):
 
 ```json
 [
   {
-    "start-time": "2026-06-24T08:00:00Z",
-    "end-time": "2026-06-24T10:00:00Z",
+    "start-time": "2026-06-24T08:00:00",
+    "end-time": "2026-06-24T10:00:00",
     "media-id": "series:42",
     "media-selection-strategy": "sequential",
     "category-filters": ["comedy", "channel:comedy"],
@@ -119,6 +119,26 @@ Body — `DailySlot[]` (vector):
   }
 ]
 ```
+
+**Key casing:** Pseudovision normalises every inbound JSON key to kebab-case, so
+`start-time`, `start_time`, and `startTime` are all accepted and map to the same
+field. The canonical/documented form is **kebab-case** (matching the response
+encoding).
+
+**`start-time` / `end-time` format:** an ISO-8601 datetime. Both forms are
+accepted:
+
+* **Naive local datetime** — `"2026-06-24T08:00:00"` (no zone/offset). This is
+  the form the expander emits; it is interpreted in the **server's configured
+  timezone** (`TZ`, defaulting to UTC). The same zone governs
+  playout scheduling and EPG output, so naive slot times line up with the rest
+  of the system.
+* **Zoned/offset instant** — `"2026-06-24T08:00:00Z"` or
+  `"2026-06-24T08:00:00+02:00"`.
+
+A field that is present but does not parse is reported as
+`"Invalid start_time: <value>"` (not `"Missing start_time"`); a truly absent or
+blank field is reported as `"Missing start_time"`.
 
 ### Response `200` — `DailySlotIngestResult`
 

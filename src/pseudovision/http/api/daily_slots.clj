@@ -7,9 +7,11 @@
             [pseudovision.db.channels      :as channels-db]
             [pseudovision.db.core          :as db-core]
             [pseudovision.util.sql         :as sql-util]
+            [pseudovision.util.time        :as time]
             [honey.sql.helpers :as h]
             [honey.sql :as sql]
-            [taoensso.timbre :as log]))
+            [taoensso.timbre :as log])
+  (:import [java.time Instant LocalDateTime OffsetDateTime]))
 
 ;; ---------------------------------------------------------------------------
 ;; Media resolution
@@ -187,24 +189,51 @@
 ;; Event creation
 ;; ---------------------------------------------------------------------------
 
-(defn- ->instant [x]
+(defn- ->instant
+  "Parses a DailySlot datetime value into a java.time.Instant.
+
+   Accepts:
+     - a java.time.Instant (returned as-is)
+     - a full ISO-8601 instant with offset/zone, e.g. \"2026-06-29T00:00:00Z\"
+       or \"2026-06-29T00:00:00+02:00\"
+     - a naive local ISO datetime, e.g. \"2026-06-29T00:00:00\", which is
+       interpreted in the application default zone (`pseudovision.util.time/
+       default-zone`, configured via the TZ env var; UTC by default)
+
+   Returns nil for nil, blank, or unparseable input."
+  [x]
   (cond
-    (nil? x)    nil
-    (string? x) (try (java.time.Instant/parse x)
-                     (catch Exception _ nil))
-    :else       x))
+    (nil? x)              nil
+    (instance? Instant x) x
+    (string? x)
+    (let [s (str/trim x)]
+      (when (seq s)
+        (or
+         ;; Full instant: has a trailing 'Z' or numeric offset.
+         (try (Instant/parse s)               (catch Exception _ nil))
+         ;; Offset datetime without instant-normalisation (defensive).
+         (try (.toInstant (OffsetDateTime/parse s)) (catch Exception _ nil))
+         ;; Naive local datetime ("YYYY-MM-DDTHH:MM:SS"): interpret in the
+         ;; configured application zone.
+         (try (.toInstant (.atZone (LocalDateTime/parse s) (time/default-zone)))
+              (catch Exception _ nil)))))
+    :else x))
 
 (defn- create-event-from-slot
   "Creates a playout_event map from a DailySlot. Returns [event error] or [nil nil]."
   [ds playout-id slot guide-group]
-  (let [start (->instant (:start-time slot))
-        end   (->instant (:end-time slot))
+  (let [raw-start (:start-time slot)
+        raw-end   (:end-time slot)
+        start (->instant raw-start)
+        end   (->instant raw-end)
         media-id (:media-id slot)
         strategy (or (:media-selection-strategy slot) "random")
         filters  (:category-filters slot)]
     (cond
-      (nil? start) [nil "Missing start_time"]
-      (nil? end)   [nil "Missing end_time"]
+      (str/blank? (str raw-start)) [nil "Missing start_time"]
+      (nil? start) [nil (str "Invalid start_time: " raw-start)]
+      (str/blank? (str raw-end))   [nil "Missing end_time"]
+      (nil? end)   [nil (str "Invalid end_time: " raw-end)]
       (nil? media-id) [nil "Missing media_id"]
       :else
       (let [[item err] (pick-item ds playout-id media-id strategy filters)]

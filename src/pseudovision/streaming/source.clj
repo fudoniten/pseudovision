@@ -41,7 +41,7 @@
     (max 0 (+ elapsed-secs in-point-secs))))
 
 (defn- format-time-12h [^java.time.Instant inst]
-  (let [zdt (.atZone inst (java.time.ZoneId/of "America/Los_Angeles"))]
+  (let [zdt (.atZone inst (t/default-zone))]
     (.format zdt (java.time.format.DateTimeFormatter/ofPattern "h:mm a"))))
 
 (defn- truncate-title [title max-length]
