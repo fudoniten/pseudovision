@@ -1,5 +1,6 @@
 (ns pseudovision.db.media
-  (:require [honey.sql         :as sql]
+  (:require [clojure.string    :as str]
+            [honey.sql         :as sql]
             [honey.sql.helpers :as h]
             [pseudovision.db.core :as db]
             [pseudovision.util.sql :as sql-util]
@@ -223,10 +224,28 @@
 
 (def ^:private default-item-attrs [:id :name])
 
+(defn- like-escape
+  "Escapes LIKE/ILIKE wildcard characters (\\ % _) so a user-supplied term is
+   matched as a literal substring rather than a pattern."
+  [s]
+  (-> s
+      (str/replace "\\" "\\\\")
+      (str/replace "%" "\\%")
+      (str/replace "_" "\\_")))
+
+(defn- search-term
+  "Returns the trimmed, non-blank search string from opts, or nil."
+  [opts]
+  (some-> (:search opts) str/trim not-empty))
+
 (defn- build-media-items-base-query
-  "Builds the base query for media items with filters, without pagination."
+  "Builds the base query for media items with filters, without pagination.
+
+   When `:search` is a non-blank string, joins the metadata table and adds a
+   case-insensitive substring filter on the item title."
   [library-id opts]
-  (let [base (-> (h/from [:media-items :mi])
+  (let [search (search-term opts)
+        base (-> (h/from [:media-items :mi])
                  (h/join [:library-paths :lp] [:= :lp.id :mi.library-path-id])
                  (h/where [:= :lp.library-id library-id]))
         with-type (cond-> base
@@ -234,15 +253,20 @@
                     (h/where [:= :mi.kind (sql-util/->pg-enum "media_item_kind" (name (:type opts)))]))
         with-parent (cond-> with-type
                       (contains? opts :parent-id)
-                      (h/where [:= :mi.parent-id (:parent-id opts)]))]
-    with-parent))
+                      (h/where [:= :mi.parent-id (:parent-id opts)]))
+        with-search (cond-> with-parent
+                      search
+                      (-> (h/left-join [:metadata :m] [:= :m.media-item-id :mi.id])
+                          (h/where [:ilike :m.title (str "%" (like-escape search) "%")])))]
+    with-search))
 
 (defn count-media-items
   "Counts total media items in a library with optional filtering.
    
    opts:
    - :type      - media_item_kind keyword or string to filter by (e.g. :movie)
-   - :parent-id - when present in opts (even if nil), filters by parent_id"
+   - :parent-id - when present in opts (even if nil), filters by parent_id
+   - :search    - case-insensitive substring matched against the item title"
   [ds library-id opts]
   (let [query (-> (build-media-items-base-query library-id opts)
                   (h/select [:%count.*])
@@ -260,6 +284,7 @@
    - :type      - media_item_kind keyword or string to filter by (e.g. :movie)
    - :parent-id - when present in opts (even if nil), adds a WHERE clause on
                   parent_id; pass an integer to list children of that item.
+   - :search    - case-insensitive substring matched against the item title
    - :limit     - maximum number of items to return
    - :offset    - number of items to skip"
   [ds library-id opts]
@@ -278,8 +303,11 @@
                              :child-count]))
         base        (-> (build-media-items-base-query library-id opts)
                         (as-> q (apply h/select q select-cols)))
+         ;; The base query already joins metadata when a search term is present;
+         ;; only add the join here if it's needed for projection and not already
+         ;; present, to avoid a duplicate-alias error.
         with-meta   (cond-> base
-                      need-meta?
+                      (and need-meta? (not (search-term opts)))
                       (h/left-join [:metadata :m] [:= :m.media-item-id :mi.id]))
         with-order  (h/order-by with-meta :mi.id)
         with-pagination (cond-> with-order

@@ -340,7 +340,8 @@
                           [:offset     {:optional true} [:int {:min 0 :description "Number of items to skip (default: 0)"}]]
                           [:attrs      {:optional true} :string]
                           [:type       {:optional true} :string]
-                          [:parent-id  {:optional true} :int]]}
+                          [:parent-id  {:optional true} :int]
+                          [:search     {:optional true} [:string {:description "Case-insensitive substring filter on the item title"}]]]}
      :get {:summary   "List media items in a library (paginated)"
            :responses {200 {:body s/PaginatedMediaItems}}
            :handler   (med/list-library-items-handler ctx)}}]
