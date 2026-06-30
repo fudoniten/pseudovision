@@ -29,6 +29,29 @@
     (let [[sql] (capture-sql {:attrs [:id :name] :limit 50 :offset 0})]
       (is (re-find #"(?i)LEFT JOIN metadata" sql)))))
 
+(deftest list-media-items-search-adds-ilike-filter
+  (testing "a search term joins metadata and adds a case-insensitive title filter"
+    (let [[sql & params] (capture-sql {:search "blade" :limit 50 :offset 0})]
+      (is (re-find #"(?i)LEFT JOIN metadata" sql))
+      (is (re-find #"(?i)m\.title ILIKE \?" sql))
+      (is (some #{"%blade%"} params)))))
+
+(deftest list-media-items-search-does-not-double-join-metadata
+  (testing "search + a metadata-backed attr joins metadata exactly once"
+    (let [[sql] (capture-sql {:search "blade" :attrs [:id :name] :limit 50 :offset 0})
+          joins (count (re-seq #"(?i)LEFT JOIN metadata" sql))]
+      (is (= 1 joins) "metadata must be joined exactly once"))))
+
+(deftest list-media-items-blank-search-is-ignored
+  (testing "a blank/whitespace search term adds no filter or join"
+    (let [[sql] (capture-sql {:search "   " :limit 50 :offset 0})]
+      (is (not (re-find #"(?i)ILIKE" sql))))))
+
+(deftest list-media-items-search-escapes-like-wildcards
+  (testing "LIKE wildcards in the search term are escaped to literals"
+    (let [[_ & params] (capture-sql {:search "50%_x" :limit 50 :offset 0})]
+      (is (some #{"%50\\%\\_x%"} params)))))
+
 ;; ---------------------------------------------------------------------------
 ;; get-media-item / resolve-media-item-id reference matching
 ;; ---------------------------------------------------------------------------
@@ -41,6 +64,13 @@
     (with-redefs [db/query-one (fn [_ sql] (reset! captured sql) nil)]
       (f))
     @captured))
+
+(deftest count-media-items-applies-search-filter
+  (testing "count uses the same search filter so the total reflects matches only"
+    (let [[sql & params] (capture-query-one #(sut/count-media-items nil 26 {:search "blade"}))]
+      (is (re-find #"(?i)SELECT COUNT" sql))
+      (is (re-find #"(?i)m\.title ILIKE \?" sql))
+      (is (some #{"%blade%"} params)))))
 
 (deftest get-media-item-by-integer-id
   (testing "an integer ref matches either the internal id or remote_key"

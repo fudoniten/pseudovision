@@ -138,11 +138,13 @@
           qp         (get-in req [:parameters :query])
           attrs      (parse-attrs (:attrs qp))
           item-type  (not-empty (:type qp))
+          search     (not-empty (some-> (:search qp) str/trim))
           limit      (or (:limit qp) 50)
           offset     (or (:offset qp) 0)
           opts       (cond-> {:limit limit :offset offset}
                        attrs                       (assoc :attrs attrs)
                        item-type                   (assoc :type item-type)
+                       search                      (assoc :search search)
                        (contains? qp :parent-id)   (assoc :parent-id (:parent-id qp)))]
       (log/info "list-library-items handler called" {:library-id library-id :attrs attrs :opts opts})
       (let [total  (db/count-media-items db library-id opts)
