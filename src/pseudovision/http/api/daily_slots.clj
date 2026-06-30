@@ -7,10 +7,11 @@
             [pseudovision.db.channels      :as channels-db]
             [pseudovision.db.core          :as db-core]
             [pseudovision.util.sql         :as sql-util]
+            [pseudovision.util.time        :as time]
             [honey.sql.helpers :as h]
             [honey.sql :as sql]
             [taoensso.timbre :as log])
-  (:import [java.time Instant LocalDateTime OffsetDateTime ZoneId]))
+  (:import [java.time Instant LocalDateTime OffsetDateTime]))
 
 ;; ---------------------------------------------------------------------------
 ;; Media resolution
@@ -188,12 +189,6 @@
 ;; Event creation
 ;; ---------------------------------------------------------------------------
 
-(def ^:private default-slot-zone
-  "Zone used to interpret naive (offset-less) DailySlot datetimes. The expander
-   emits naive local wall-clock times; UTC matches the scheduler's default
-   zone (see pseudovision.scheduling.core)."
-  (ZoneId/of "UTC"))
-
 (defn- ->instant
   "Parses a DailySlot datetime value into a java.time.Instant.
 
@@ -202,7 +197,8 @@
      - a full ISO-8601 instant with offset/zone, e.g. \"2026-06-29T00:00:00Z\"
        or \"2026-06-29T00:00:00+02:00\"
      - a naive local ISO datetime, e.g. \"2026-06-29T00:00:00\", which is
-       interpreted in `default-slot-zone` (UTC)
+       interpreted in the application default zone (`pseudovision.util.time/
+       default-zone`, configured via PSEUDOVISION_TZ; UTC by default)
 
    Returns nil for nil, blank, or unparseable input."
   [x]
@@ -217,8 +213,9 @@
          (try (Instant/parse s)               (catch Exception _ nil))
          ;; Offset datetime without instant-normalisation (defensive).
          (try (.toInstant (OffsetDateTime/parse s)) (catch Exception _ nil))
-         ;; Naive local datetime ("YYYY-MM-DDTHH:MM:SS"): assume UTC.
-         (try (.toInstant (.atZone (LocalDateTime/parse s) default-slot-zone))
+         ;; Naive local datetime ("YYYY-MM-DDTHH:MM:SS"): interpret in the
+         ;; configured application zone.
+         (try (.toInstant (.atZone (LocalDateTime/parse s) (time/default-zone)))
               (catch Exception _ nil)))))
     :else x))
 

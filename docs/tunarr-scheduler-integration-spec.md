@@ -129,7 +129,10 @@ encoding).
 accepted:
 
 * **Naive local datetime** — `"2026-06-24T08:00:00"` (no zone/offset). This is
-  the form the expander emits; it is interpreted in **UTC**.
+  the form the expander emits; it is interpreted in the **server's configured
+  timezone** (`PSEUDOVISION_TZ`, defaulting to UTC). The same zone governs
+  playout scheduling and EPG output, so naive slot times line up with the rest
+  of the system.
 * **Zoned/offset instant** — `"2026-06-24T08:00:00Z"` or
   `"2026-06-24T08:00:00+02:00"`.
 

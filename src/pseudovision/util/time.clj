@@ -1,13 +1,51 @@
 (ns pseudovision.util.time
   "Thin wrappers around tick for the time operations used by the scheduler."
-  (:require [tick.core :as t])
+  (:require [clojure.string  :as str]
+            [tick.core       :as t]
+            [taoensso.timbre :as log])
   (:import [java.time Duration DayOfWeek Instant ZonedDateTime ZoneId]))
 
 (defn now [] (t/now))
 
+;; ---------------------------------------------------------------------------
+;; Application-wide default timezone
+;;
+;; A single source of truth for "which wall-clock zone does this deployment run
+;; in". Read once from the PSEUDOVISION_TZ environment variable (an IANA zone id
+;; like "America/New_York"), defaulting to UTC. Every place that needs a zone but
+;; isn't given one explicitly — playout scheduling, EPG/XMLTV output, DailySlot
+;; ingestion, on-screen clocks — defers to this so they all agree.
+;; ---------------------------------------------------------------------------
+
+(def ^:private default-zone-id*
+  (delay
+   (let [tz (System/getenv "PSEUDOVISION_TZ")]
+     (if (str/blank? tz)
+       "UTC"
+       (try
+         (ZoneId/of tz)                      ; validate the id
+         tz
+         (catch Exception _
+           (log/warn "Invalid PSEUDOVISION_TZ" (pr-str tz)
+                     "- falling back to UTC")
+           "UTC"))))))
+
+(defn default-zone-id
+  "The application-wide default timezone id (IANA name) as a string, taken from
+   the PSEUDOVISION_TZ environment variable and defaulting to \"UTC\"."
+  []
+  @default-zone-id*)
+
+(defn default-zone
+  "The application-wide default timezone as a java.time.ZoneId. See
+   `default-zone-id`."
+  ^ZoneId []
+  (ZoneId/of (default-zone-id)))
+
 (defn instant->zdt
-  "Converts an Instant to a ZonedDateTime, defaulting to UTC when no zone is given."
-  ([inst] (instant->zdt inst "UTC"))
+  "Converts an Instant to a ZonedDateTime, defaulting to the application zone
+   (`default-zone-id`) when no zone is given."
+  ([inst] (instant->zdt inst (default-zone-id)))
   ([inst zone-id]
    (.atZone ^Instant inst (ZoneId/of zone-id))))
 
@@ -149,7 +187,7 @@
 
 (defn ->xmltv-date
   "Formats an Instant as the XMLTV date string: 20240101200000 +0000"
-  ([inst] (->xmltv-date inst "UTC"))
+  ([inst] (->xmltv-date inst (default-zone-id)))
   ([^Instant inst zone-id]
    (let [zdt  (instant->zdt inst zone-id)
          fmt  (java.time.format.DateTimeFormatter/ofPattern "yyyyMMddHHmmss Z")]

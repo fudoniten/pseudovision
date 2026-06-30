@@ -567,7 +567,7 @@
    so sequential shows (e.g. Mad Men MWF) resume from exactly where they left
    off on the next airing day."
   [db cursor slot channel playout-id slots opts]
-  (let [zone-id  (get opts :zone-id "UTC")
+  (let [zone-id  (get opts :zone-id (t/default-zone-id))
         dow-mask (:schedule-slots/days-of-week slot)
         now      (:next-start cursor)]
     (log/info "Processing slot"
@@ -729,7 +729,7 @@
                                                      tx cursor slot channel
                                                      playout-id slots opts')
                               fill-mode   (keyword (or (:schedule-slots/fill-mode slot) "once"))
-                              zone-id     (get opts' :zone-id "UTC")
+                              zone-id     (get opts' :zone-id (t/default-zone-id))
                               next-slot   (nth slots (mod (inc slot-idx) (count slots)) nil)
                               gap-end     (when (and (not= fill-mode :flood)
                                                      (= "fixed" (:schedule-slots/anchor next-slot)))
