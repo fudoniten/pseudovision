@@ -49,8 +49,9 @@
           (is (= 1 (count (:shows body))))
           (is (= "series:test" (get-in body [:shows 0 :media-id]))))))))
 
-(deftest catalog-aggregate-accepts-channel-param
-  (testing "GET /api/catalog/aggregate?channel=Test returns scoped profile"
+(deftest catalog-aggregate-channel-param-labels-scope-only
+  (testing "GET /api/catalog/aggregate?channel=Test labels the scope but does NOT
+            infer a tag filter (filtering is tag-driven)"
     (let [captured (atom nil)]
       (with-redefs [catalog-db/build-catalog-profile (fn [_ scope]
                                                         (reset! captured scope)
@@ -67,7 +68,19 @@
               resp    (handler (mock/request :get "/api/catalog/aggregate?channel=Test"))]
           (is (= 200 (:status resp)))
           (is (= "Test" (:channel-name @captured)))
-          (is (= "channel:test" (:tag-filter @captured))))))))
+          ;; No inference: the channel name is never turned into a tag filter.
+          (is (nil? (:tag-filter @captured))))))))
+
+(deftest catalog-aggregate-unknown-channel-returns-422
+  (testing "GET /api/catalog/aggregate?channel=Nope returns 422 when the channel
+            does not resolve, instead of a mislabelled or full-catalog profile"
+    (with-redefs [channels-db/get-channel-by-number (fn [_ _] nil)
+                  channels-db/get-channel           (fn [_ _] nil)
+                  channels-db/list-channels         (fn [_] [])]
+      (let [handler (make-test-handler)
+            resp    (handler (mock/request :get "/api/catalog/aggregate?channel=Nope"))]
+        (is (= 422 (:status resp)))
+        (is (= "Channel not found" (:error (parse-json-body resp))))))))
 
 (deftest catalog-aggregate-accepts-tag-param
   (testing "GET /api/catalog/aggregate?tag=channel:comedy returns tagged profile"

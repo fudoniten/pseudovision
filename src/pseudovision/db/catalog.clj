@@ -351,23 +351,6 @@
 ;; Public assembly
 ;; ---------------------------------------------------------------------------
 
-;; DEPRECATED: Treats channel names as concrete entities mapping to a special
-;; tag convention. Channels are dimensions now; this bridge is a legacy adapter.
-;; Use the tag-based filter directly instead.
-;; See TS DIMENSION_CLEANUP.md for the full migration plan.
-(defn channel-name->tag
-  "DEPRECATED: Derives the Tunarr-scheduler tag convention (channel:<kebab-cased-name>)
-   from a channel name, or nil when the name is blank.
-
-   This treats channels as concrete entities with a special tag convention.
-   In the dimension model, channels are just one dimension among many, and
-   this bridge is a legacy adapter."
-  [channel-name]
-  (when (seq channel-name)
-    (str "channel:" (-> channel-name
-                        (.toLowerCase)
-                        (.replaceAll " " "-")))))
-
 ;; DEPRECATED: Includes hardcoded :channel_scope and :genres fields in the
 ;; CatalogProfile. These are legacy first-class concepts. Use :tag_aggregates
 ;; and tag-based filtering instead.
@@ -391,9 +374,9 @@
         tags     (list-tag-aggregates ds tag-filter)
         histo    (list-runtime-histogram ds tag-filter)]
     {:channel_scope    channel-name
-     :total_items      (:total_items counts)
-     :total_episodes   (:total_episodes counts)
-     :movie_count      (:movie_count counts)
+     :total_items      (or (:total_items counts) 0)
+     :total_episodes   (or (:total_episodes counts) 0)
+     :movie_count      (or (:movie_count counts) 0)
      :shows            shows
      :genres           genres
      :tag_aggregates   tags
