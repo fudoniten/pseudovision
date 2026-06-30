@@ -80,19 +80,45 @@
                             [:= :mi.kind (sql-util/->pg-enum "media_item_kind" "movie")]])
              sql/format))))
 
+(def ^:private content-kind-pools
+  "`random:<category>` values that name a content *kind* rather than a
+   genre/tag. These resolve to every directly-playable item of that kind,
+   library-wide (e.g. `random:movie` → any movie). Keyed by the lower-cased
+   category; value is the media_item_kind enum."
+  {"movie"  "movie"
+   "movies" "movie"})
+
+(defn- resolve-by-kind
+  "Returns every normal, directly-playable item of `kind` (a media_item_kind
+   enum value, e.g. \"movie\"). Backs kind-based random pools like
+   `random:movie`."
+  [ds kind]
+  (db-core/query ds
+    (-> (h/select :mi.* [:mv.duration :duration])
+        (h/from [:media-items :mi])
+        (h/left-join [:media-versions :mv] [:= :mv.media-item-id :mi.id])
+        (h/where [:and [:= :mi.kind (sql-util/->pg-enum "media_item_kind" kind)]
+                       [:= :mi.state (sql-util/->pg-enum "media_item_state" "normal")]])
+        (h/order-by :mi.id)
+        sql/format)))
+
 (defn- resolve-by-category
   "Resolves a `random:<category>` pool to concrete *playable* items.
 
-   `category` is matched against the metadata of top-level items (shows and
-   movies) — exactly the dimension space the catalog aggregate emits — against:
-     - genres   (metadata_genres.name, e.g. \"Mystery\", \"Sci-Fi & Fantasy\")
-     - tags     (metadata_tags.name), including the `genre:<name>` convention.
-
-   Matching shows are expanded to their (season-nested) episodes and matching
-   movies resolve to themselves, so the returned rows are always directly
-   playable items, never bare show rows."
+   `category` is interpreted two ways, in order:
+     1. A content *kind* keyword (see `content-kind-pools`, e.g. `movie`) —
+        resolves to every playable item of that kind, library-wide.
+     2. Otherwise a *dimension* matched against the metadata of top-level items
+        (shows and movies) — exactly the space the catalog aggregate emits:
+          - genres (metadata_genres.name, e.g. \"Mystery\", \"Sci-Fi & Fantasy\")
+          - tags   (metadata_tags.name), including the `genre:<name>` convention.
+        Matching shows are expanded to their (season-nested) episodes and
+        matching movies resolve to themselves, so the returned rows are always
+        directly playable items, never bare show rows."
   [ds category]
-  (db-core/query ds
+  (if-let [kind (get content-kind-pools (str/lower-case (str category)))]
+    (resolve-by-kind ds kind)
+    (db-core/query ds
     (-> (h/select-distinct :play.* [:mvp.duration :duration])
         (h/from [:media-items :top])
         (h/join [:metadata :mtop] [:= :mtop.media-item-id :top.id])
@@ -130,7 +156,7 @@
                        [:= :t.name category]
                        [:= :t.name (str "genre:" category)]]])
         (h/order-by :play.id)
-        sql/format)))
+        sql/format))))
 
 (defn- last-aired-episode-index
   "Finds the index of the most recently aired episode for a show in a playout.

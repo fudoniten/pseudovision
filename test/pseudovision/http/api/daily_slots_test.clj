@@ -146,6 +146,17 @@
           (is (some #{"genre:Mystery"} params)
               "honours the genre:<name> tag convention"))))))
 
+(deftest resolve-by-category-movie-kind-pool
+  (testing "random:movie resolves to all movies (a content-kind pool), not a genre/tag match"
+    (let [captured (atom nil)]
+      (with-redefs [db-core/query (fn [_ sqlvec] (reset! captured sqlvec) [])]
+        (#'ds/resolve-by-category nil "movie")
+        (let [sql (first @captured)]
+          (is (re-find #"(?i)media_items" sql)
+              "queries media items by kind")
+          (is (not (re-find #"(?i)metadata_genres" sql))
+              "movie is a kind pool, not a genre/tag dimension lookup"))))))
+
 (deftest resolve-by-category-declares-season-join-before-it-is-referenced
   (testing "the season join is emitted before the play join that references season.id"
     ;; HoneySQL renders every inner :join ahead of every :left-join regardless

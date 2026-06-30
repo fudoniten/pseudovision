@@ -190,13 +190,18 @@ blank field is reported as `"Missing start_time"`.
     `show → season → episode` hierarchy. `sequential` uses playout history to
     pick the next episode; `random` picks uniformly; `specific` picks the first.
   * `movie:<id>` → the movie's `remote_key`/id; resolves to that single movie.
-  * `random:<category>` → `<category>` is matched **verbatim** against genre
-    names (e.g. `random:Mystery`, `random:Sci-Fi & Fantasy`) and tag names,
-    including the `genre:<name>` tag convention. Matching shows are expanded to
-    their episodes and matching movies resolve to themselves, so the pool is
-    always concrete playable items. Matching is **case- and
-    punctuation-sensitive** — send the genre string exactly as the aggregate
-    returned it.
+  * `random:<category>` → resolves to a random-pickable pool of playable items.
+    `<category>` is interpreted in two ways:
+    * **Content kind** — the reserved keyword `movie` (also `movies`,
+      case-insensitive) means *any movie in the library*, e.g. `random:movie`.
+      This is a kind pool, **not** a genre named "movie".
+    * **Genre / tag dimension** — otherwise matched **verbatim** against genre
+      names (e.g. `random:Mystery`, `random:Sci-Fi & Fantasy`) and tag names,
+      including the `genre:<name>` tag convention. Matching shows are expanded
+      to their episodes and matching movies resolve to themselves, so the pool
+      is always concrete playable items. Dimension matching is **case- and
+      punctuation-sensitive** — send the genre string exactly as the aggregate
+      returned it.
 * `media-selection-strategy` defaults to `"random"` if omitted.
 * `category-filters` are **AND**-ed tag filters applied after the initial media
   resolution (matched against `metadata_tags` names). Leave empty (`[]`) for no
@@ -214,9 +219,10 @@ blank field is reported as `"Missing start_time"`.
 
 ## Quick-reference: `media-id` prefixes
 
-| Prefix  | Meaning          | Source in aggregate        | Example                 |
-|---------|------------------|----------------------------|-------------------------|
-| `series:` | Show / series  | `shows[].media-id`         | `series:f2c639e8…`      |
-| `movie:`  | Single movie   | `shows[].media-id`         | `movie:99`              |
-| `random:` | Genre/tag pool | `genres[].genre` / `tags`  | `random:Mystery`        |
+| Prefix  | Meaning             | Source in aggregate        | Example                 |
+|---------|---------------------|----------------------------|-------------------------|
+| `series:` | Show / series     | `shows[].media-id`         | `series:f2c639e8…`      |
+| `movie:`  | Single movie      | `shows[].media-id`         | `movie:99`              |
+| `random:` | Genre/tag pool    | `genres[].genre` / `tags`  | `random:Mystery`        |
+| `random:` | Movie kind pool   | reserved keyword           | `random:movie`          |
 
