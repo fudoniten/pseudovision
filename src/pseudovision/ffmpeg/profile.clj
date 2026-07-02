@@ -14,11 +14,14 @@
      ```
      {:accel     :none            ; :none | :nvenc | :vaapi (or the strings)
       :device    \"/dev/dri/renderD128\"
-      :video     {:codec \"h264\" :bitrate \"4000k\" :rate-control :vbr :preset \"p4\"}
+      :video     {:codec \"h264\" :bitrate \"4000k\" :rate-control :vbr :preset \"p4\" :gop 60}
       :audio     {:codec \"aac\" :bitrate \"192k\" :sample-rate 48000 :channels 2}
       :normalize {:width 1920 :height 1080 :fps 30 :pixfmt \"yuv420p\" :sar \"1:1\"}
       :hls       {:segment-duration 2 :playlist-size 10 :warm-segments 2 :initial-burst 10}}
      ```
+     `:video.gop` is the keyframe interval in frames. Defaults to `fps × hls/segment-duration`
+     so the HLS muxer can cut a segment on every keyframe boundary (otherwise NVENC's
+     250-frame default forces 8.33s segments at 30fps even when hls-time=2).
 
    `:video :codec` is a *logical* name (`h264` / `hevc`) mapped to the right
    encoder per backend; a concrete encoder name (e.g. `libx264`, `copy`) is
@@ -134,12 +137,23 @@
   ([config] (resolve-config config (available-accels)))
   ([config available]
    (let [raw      (fold-legacy (or config {}))
-          merged   (-> defaults
-                       (merge (dissoc raw :video :audio :normalize :hls))
-                       (update :video merge (:video raw))
-                       (update :audio merge (:audio raw))
-                       (assoc  :normalize (get raw :normalize (:normalize defaults)))
-                       (update :hls merge (:hls raw)))
+          base-merged (-> defaults
+                          (merge (dissoc raw :video :audio :normalize :hls))
+                          (update :video merge (:video raw))
+                          (update :audio merge (:audio raw))
+                          (assoc  :normalize (get raw :normalize (:normalize defaults)))
+                          (update :hls merge (:hls raw)))
+          ;; Default the video GOP to one HLS segment so ffmpeg's HLS muxer
+          ;; (which cuts on keyframe boundaries) produces segments of the
+          ;; configured hls_time. NVENC's default GOP is 250 frames, which
+          ;; forces 8.33s segments at 30fps regardless of hls_time=2.
+          ;; Overridable via :video.gop in the profile config.
+          merged   (update base-merged :video
+                       (fn [v]
+                         (assoc v :gop
+                                (or (:gop v)
+                                    (* (or (get-in base-merged [:normalize :fps]) 30)
+                                       (or (get-in base-merged [:hls :segment-duration]) 2))))))
           requested (keyword (:accel merged))
           accel     (if (contains? available requested)
                       requested
@@ -260,7 +274,7 @@
 (defn video-encode-args
   "Video encoder selection + rate control for the resolved backend."
   [{:keys [accel video]}]
-  (let [{:keys [codec bitrate rate-control preset]} video
+  (let [{:keys [codec bitrate rate-control preset gop]} video
         enc    (resolve-encoder codec accel)
         preset (or preset (default-preset accel))
         rc     (when rate-control (name rate-control))]
@@ -270,15 +284,18 @@
             (case accel
               :vaapi (cond-> []
                        rc      (into ["-rc_mode" (str/upper-case rc)])
-                       bitrate (into ["-b:v" bitrate]))
+                       bitrate (into ["-b:v" bitrate])
+                       gop     (into ["-g" gop]))
               :nvenc (cond-> []
                        preset  (into ["-preset" preset])
                        rc      (into ["-rc" rc])
-                       bitrate (into ["-b:v" bitrate]))
+                       bitrate (into ["-b:v" bitrate])
+                       gop     (into ["-g" gop]))
               ;; software / libx264
               (cond-> []
                 preset  (into ["-preset" preset])
-                bitrate (into ["-b:v" bitrate])))))))
+                bitrate (into ["-b:v" bitrate])
+                gop     (into ["-g" gop "-keyint_min" gop])))))))
 
 (defn audio-encode-args
   "Audio encoder selection and stream parameters."

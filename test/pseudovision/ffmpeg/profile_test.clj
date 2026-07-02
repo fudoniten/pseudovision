@@ -79,6 +79,58 @@
       (is (= "8000k" (get-in cfg [:video :bitrate]))))))
 
 ;; ---------------------------------------------------------------------------
+;; GOP derivation (one keyframe per HLS segment)
+;; ---------------------------------------------------------------------------
+;;
+;; Without an explicit GOP, the HLS muxer would inherit the encoder's default
+;; keyframe interval — NVENC's 250 frames @ 30fps forces 8.33s segments even
+;; when hls.segment-duration is 2. These tests pin the default to one segment.
+
+(deftest gop-defaults-to-one-hls-segment
+  (testing "fps × hls.segment-duration when both are present"
+    (let [cfg (profile/resolve-config
+               {:accel "nvenc"
+                :normalize {:fps 30 :width 1920 :height 1080}
+                :hls      {:segment-duration 2}}
+               all-accels)]
+      (is (= 60 (-> cfg :video :gop)) "30fps × 2s = 60-frame GOP"))))
+
+(deftest gop-scales-with-fps
+  (testing "24fps content with 2s segments gets 48-frame GOP"
+    (let [cfg (profile/resolve-config
+               {:accel "nvenc"
+                :normalize {:fps 24}
+                :hls      {:segment-duration 2}}
+               all-accels)]
+      (is (= 48 (-> cfg :video :gop))))))
+
+(deftest gop-scales-with-segment-duration
+  (testing "10s segments get 10×fps GOP"
+    (let [cfg (profile/resolve-config
+               {:accel "nvenc"
+                :normalize {:fps 30}
+                :hls      {:segment-duration 10}}
+               all-accels)]
+      (is (= 300 (-> cfg :video :gop))))))
+
+(deftest gop-explicit-override-wins
+  (testing ":video.gop in the profile overrides the derived default"
+    (let [cfg (profile/resolve-config
+               {:accel "nvenc"
+                :video     {:codec "h264" :gop 250}
+                :normalize {:fps 30}
+                :hls      {:segment-duration 2}}
+               all-accels)]
+      (is (= 250 (-> cfg :video :gop))))))
+
+(deftest gop-fallback-when-fps-and-segment-missing
+  (testing "no :normalize :fps and no :hls :segment-duration → 30×2=60 fallback"
+    (let [cfg (profile/resolve-config
+               {:accel "nvenc" :video {:codec "h264"}}
+               all-accels)]
+      (is (= 60 (-> cfg :video :gop))))))
+
+;; ---------------------------------------------------------------------------
 ;; Argument builders
 ;; ---------------------------------------------------------------------------
 
@@ -110,6 +162,48 @@
     (testing "VAAPI uses -rc_mode and no -preset"
       (is (= ["-c:v" "h264_vaapi" "-rc_mode" "VBR" "-b:v" "4000k"]
              (profile/video-encode-args cfg))))))
+
+(deftest nvenc-encode-args-emits-gop
+  (testing "NVENC: -g <gop> is emitted so segments align with hls_time"
+    (let [args (profile/video-encode-args
+                {:accel :nvenc
+                 :video {:codec "h264" :bitrate "4000k"
+                         :rate-control :vbr :preset "p4" :gop 60}})]
+      (is (some #(= "-g" %) args))
+      (is (some #(= "60" %) args)))))
+
+(deftest software-encode-args-emits-gop-and-keyint-min
+  (testing "libx264: both -g and -keyint_min force keyframes at the GOP interval"
+    (let [args (profile/video-encode-args
+                {:accel :none
+                 :video {:codec "h264" :bitrate "2000k"
+                         :preset "veryfast" :gop 60}})]
+      (is (some #(= "-g" %) args))
+      (is (some #(= "60" %) args))
+      (is (some #(= "-keyint_min" %) args)))))
+
+(deftest vaapi-encode-args-emits-gop
+  (testing "VAAPI: -g <gop> is emitted"
+    (let [args (profile/video-encode-args
+                {:accel :vaapi
+                 :video {:codec "h264" :bitrate "4000k"
+                         :rate-control :vbr :gop 60}})]
+      (is (some #(= "-g" %) args))
+      (is (some #(= "60" %) args)))))
+
+(deftest encode-args-omit-gop-when-not-set
+  (testing "backwards compat: no -g emitted when :gop is nil"
+    (let [args (profile/video-encode-args
+                {:accel :nvenc
+                 :video {:codec "h264" :bitrate "4000k"
+                         :rate-control :vbr :preset "p4"}})]  ; no :gop
+      (is (not (some #(= "-g" %) args))))))
+
+(deftest copy-codec-bypasses-gop
+  (testing ":codec 'copy' emits only -c:v copy; no GOP args"
+    (let [args (profile/video-encode-args
+                {:accel :nvenc :video {:codec "copy" :gop 60}})]
+      (is (= ["-c:v" "copy"] args)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Decode mode: software / hardware / auto -> hwupload -> hardware encode
