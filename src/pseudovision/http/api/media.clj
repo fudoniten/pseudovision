@@ -264,6 +264,22 @@
         {:status 200 :body (unqualify-keys item)}
         {:status 404 :body {:error "Media item not found"}}))))
 
+(defn get-media-item-children-handler [{:keys [db]}]
+  (fn [req]
+    (let [item-id (get-in req [:parameters :path :id])
+          qp      (get-in req [:parameters :query])
+          limit   (min (or (:limit qp) 50) 1000)
+          offset  (or (:offset qp) 0)
+          search  (not-empty (some-> (:search qp) str/trim))
+          opts    (cond-> {:limit limit :offset offset}
+                    search (assoc :search search))]
+      (if-let [item (db/get-media-item db item-id)]
+        (let [total  (db/count-children db (:media-items/id item))
+              items  (mapv unqualify-keys (db/list-children db (:media-items/id item) opts))]
+          {:status 200
+           :body (pagination/offset-pagination-response items limit offset total)})
+        {:status 404 :body {:error "Media item not found"}}))))
+
 (defn- resolve-stream-url [db item-id]
   (when-let [row (db/get-media-item-with-source db item-id)]
     (let [kind        (or (some-> row :media-sources/kind str) "")

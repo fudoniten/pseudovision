@@ -367,12 +367,23 @@
                        404 {:body s/APIError}
                        422 {:body s/APIError}}
            :handler   (med/get-item-playback-url-handler ctx)}}]
-   ["/api/media/items/:id/stream"
-    {:tags       ["media"]
-     :get {:summary "Proxy a media item's stream from its source"
-           :parameters {:path [:map [:id s/MediaItemRef]]}
-           :handler (med/redirect-to-stream-handler ctx)}}]
-   ["/api/media/collections"
+    ["/api/media/items/:id/stream"
+     {:tags       ["media"]
+      :get {:summary "Proxy a media item's stream from its source"
+            :parameters {:path [:map [:id s/MediaItemRef]]}
+            :handler (med/redirect-to-stream-handler ctx)}}]
+    ["/api/media/items/:id/children"
+     {:tags       ["media"]
+      :get {:summary "List children of a media item (seasons/episodes)"
+            :parameters {:path [:map [:id s/MediaItemRef]]
+                         :query [:map
+                                 [:limit  {:optional true} [:int {:min 1 :max 1000}]]
+                                 [:offset {:optional true} [:int {:min 0}]]
+                                 [:search {:optional true} :string]]}
+            :responses {200 {:body s/PaginatedMediaItems}
+                        404 {:body s/APIError}}
+            :handler (med/get-media-item-children-handler ctx)}}]
+    ["/api/media/collections"
     {:tags ["media"]
      :get  {:summary   "List collections (paginated)"
             :parameters {:query s/PaginationQuery}

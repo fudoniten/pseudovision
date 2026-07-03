@@ -30,8 +30,8 @@
    (db/query ds (-> (h/select :*)
                     (h/from :media-sources)
                     (cond->
-                      (:limit opts)  (h/limit (:limit opts))
-                      (:offset opts) (h/offset (:offset opts)))
+                     (:limit opts)  (h/limit (:limit opts))
+                     (:offset opts) (h/offset (:offset opts)))
                     sql/format))))
 
 (defn get-media-source [ds id]
@@ -96,8 +96,8 @@
                     (h/from :libraries)
                     (h/order-by :name)
                     (cond->
-                      (:limit opts)  (h/limit (:limit opts))
-                      (:offset opts) (h/offset (:offset opts)))
+                     (:limit opts)  (h/limit (:limit opts))
+                     (:offset opts) (h/offset (:offset opts)))
                     sql/format))))
 
 (defn list-libraries-for-source [ds source-id]
@@ -291,11 +291,11 @@
   (let [attrs       (mapv keyword (or (seq (:attrs opts)) default-item-attrs))
          ;; Always ensure id is present so downstream consumers (including
          ;; response coercion) have a primary key.
-         attrs       (if (some #{:id} attrs) attrs (conj attrs :id))
-         need-meta?  (some metadata-attrs attrs)
-         need-count? (some #{:child-count} attrs)
-         col-attrs   (remove #{:child-count} attrs)
-         select-cols (cond-> (mapv item-attr->col (filter item-attr->col col-attrs))
+        attrs       (if (some #{:id} attrs) attrs (conj attrs :id))
+        need-meta?  (some metadata-attrs attrs)
+        need-count? (some #{:child-count} attrs)
+        col-attrs   (remove #{:child-count} attrs)
+        select-cols (cond-> (mapv item-attr->col (filter item-attr->col col-attrs))
                       need-count?
                       (conj [{:select [:%count.*]
                               :from   [[:media-items :ch]]
@@ -364,6 +364,50 @@
                         (h/order-by :mv.id :mf.id)
                         (h/limit 1)
                         sql/format))))
+
+;; ---------------------------------------------------------------------------
+;; Media item children
+;; ---------------------------------------------------------------------------
+
+(defn count-children
+  "Counts direct children of a media item."
+  [ds parent-id]
+  (let [result (db/query-one
+                ds
+                (-> (h/select [:%count.*])
+                    (h/from :media-items)
+                    (h/where [:= :parent-id parent-id])
+                    sql/format))]
+    (or (:count result) 0)))
+
+(defn list-children
+  "Lists direct children of a media item, ordered by position then name.
+
+   opts:
+   - :limit  - maximum number of items to return
+   - :offset - number of items to skip
+   - :search - case-insensitive substring matched against the item title"
+  [ds parent-id opts]
+  (let [search (some-> (:search opts) str/trim not-empty)
+        base (-> (h/select :mi.id :mi.kind :mi.state :mi.parent-id :mi.position
+                           [:mi.remote_key :remote-key]
+                           [:mi.remote_etag :remote-etag]
+                           [:m.title :name]
+                           :m.year
+                           [:m.release-date :release-date]
+                           :m.plot
+                           [:m.content-rating :content-rating])
+                 (h/from [:media-items :mi])
+                 (h/left-join [:metadata :m] [:= :m.media-item-id :mi.id])
+                 (h/where [:= :mi.parent-id parent-id]))
+        with-search (cond-> base
+                      search
+                      (h/where [:ilike :m.title (str "%" (like-escape search) "%")]))
+        with-order (h/order-by with-search :mi.position :mi.id)
+        with-pagination (cond-> with-order
+                          (:limit opts)  (h/limit (:limit opts))
+                          (:offset opts) (h/offset (:offset opts)))]
+    (db/query ds (sql/format with-pagination))))
 
 (defn list-items-for-library-path [ds library-path-id]
   (db/query ds (-> (h/select :*)
@@ -453,8 +497,8 @@
                     (h/from :collections)
                     (h/order-by :name)
                     (cond->
-                      (:limit opts)  (h/limit (:limit opts))
-                      (:offset opts) (h/offset (:offset opts)))
+                     (:limit opts)  (h/limit (:limit opts))
+                     (:offset opts) (h/offset (:offset opts)))
                     sql/format))))
 
 (defn get-collection [ds id]
