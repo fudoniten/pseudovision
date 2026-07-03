@@ -163,7 +163,8 @@
      (delete-test-channel! ds \"999\" {:verbose false})"
   ([ds identifier] (delete-test-channel! ds identifier {}))
   ([ds identifier {:keys [verbose] :or {verbose true}}]
-   (let [channel (or (db-channels/get-channel-by-uuid ds identifier)
+   (let [channel (or (try (db-channels/get-channel-by-uuid ds identifier)
+                           (catch Exception _ nil))
                      (db-channels/get-channel-by-number ds identifier))]
      (if channel
        (let [channel-id (:channels/id channel)

@@ -62,7 +62,7 @@
 (deftest list-events-resolves-channel-by-number
   (testing "GET /api/channels/:number/playout/events falls back to channel number lookup"
     (with-redefs [ch/get-channel                      (fn [_ _] nil)
-                  ch/get-channel-by-number             (fn [_ n] (when (= n 41) {:channels/id 7}))
+                  ch/get-channel-by-number             (fn [_ n] (when (= n "41") {:channels/id 7}))
                   pl/get-playout-for-channel            (fn [_ id] (when (= id 7) test-playout))
                   pl/get-upcoming-events-with-metadata  (fn [_ _ _ _ & _] [test-event])]
       (let [handler (make-test-handler)

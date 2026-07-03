@@ -17,10 +17,17 @@
    rather than the internal primary key. Try the primary key first; if no
    channel matches, fall back to a channel-number lookup."
   [ds id]
-  (if (db-channels/get-channel ds id)
-    id
-    (when-let [ch (db-channels/get-channel-by-number ds id)]
-      (:channels/id ch))))
+  (let [int-id (cond
+                 (integer? id) id
+                 (string? id) (try (Integer/parseInt id) (catch Exception _ nil))
+                 :else nil)
+        str-id (when id (str id))]
+    (or (when int-id
+          (when-let [ch (db-channels/get-channel ds int-id)]
+            (:channels/id ch)))
+        (when str-id
+          (when-let [ch (db-channels/get-channel-by-number ds str-id)]
+            (:channels/id ch))))))
 
 (defn get-playout-handler [{:keys [db]}]
   (fn [req]
