@@ -218,7 +218,7 @@
 
 (def filler-event-kinds
   "event_kind values that represent filler rather than primary content."
-  ["pre" "mid" "post" "pad" "tail" "fallback"])
+  ["pre" "mid" "post" "pad" "tail" "fallback" "bumper"])
 
 (defn recent-filler-airings
   "Returns, across ALL playouts (every channel), the finish times of filler

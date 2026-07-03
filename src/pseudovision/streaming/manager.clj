@@ -12,9 +12,10 @@
    Request threads only read the rendered playlist / segments and bump a separate
    `:last-access` atom, so they never contend with the loop."
   (:require [clojure.java.io :as io]
-            [pseudovision.db.ffmpeg :as db-ffmpeg]
-            [pseudovision.db.metrics :as db-metrics]
-            [pseudovision.ffmpeg.hls :as hls]
+             [pseudovision.db.ffmpeg :as db-ffmpeg]
+             [pseudovision.db.metrics :as db-metrics]
+             [pseudovision.db.playouts :as db-playouts]
+             [pseudovision.ffmpeg.hls :as hls]
             [pseudovision.streaming.playlist :as playlist]
             [pseudovision.streaming.segment-store :as store]
             [pseudovision.streaming.source :as source]
@@ -90,8 +91,11 @@
 
 (defn- build-command
   "Builds the FFmpeg command for `source-info`, writing into `scratch` in
-   manager mode (encoder does not own the served playlist)."
-  [channel source-info scratch cfg]
+   manager mode (encoder does not own the served playlist).
+
+   When the source-info carries an :event with kind 'bumper', adds a drawtext
+   overlay showing what's coming up next."
+  [db channel source-info scratch cfg]
   (if (= (:type source-info) :generated-slate)
     (hls/build-slate-command scratch
                              {:channel-name    (:channels/name channel)
@@ -99,10 +103,24 @@
                               :upcoming-events (:upcoming-events source-info)
                               :profile-config  cfg
                               :manager-mode?   true})
-    (hls/build-hls-command (:source-url source-info) scratch
-                           {:start-position-secs (or (:start-position source-info) 0)
-                            :profile-config      cfg
-                            :manager-mode?       true})))
+    (let [event (:event source-info)
+          is-bumper? (= "bumper" (some-> event :playout-events/kind str))
+          ;; Build overlay text for bumpers
+          overlay-text (when is-bumper?
+                         (let [playout-id (some-> event :playout-events/playout-id)
+                               next-events (when playout-id
+                                            (db-playouts/get-upcoming-events-with-metadata
+                                             db playout-id (t/now) 3))
+                               next-title (some-> next-events first :metadata/title)
+                               channel-name (:channels/name channel)]
+                           (if next-title
+                             (format "Coming up next: %s" next-title)
+                             (format "You're watching %s" channel-name))))]
+      (hls/build-hls-command (:source-url source-info) scratch
+                             {:start-position-secs (or (:start-position source-info) 0)
+                              :profile-config      cfg
+                              :manager-mode?       true
+                              :overlay-text        overlay-text}))))
 
 (defn- open-media-view!
   "Records a media_item_views row for a real content encoder; nil for slates."
@@ -127,7 +145,7 @@
         scratch    (scratch-dir! scratch-base uuid enc-counter)
         cfg        (cond-> (profile-config db channel)
                      degraded? (assoc :accel "none"))
-        command    (build-command channel source-info scratch cfg)
+         command    (build-command db channel source-info scratch cfg)
         proc       (hls/start-ffmpeg command scratch)
         media-view (open-media-view! db channel source-info)]
     (swap! state update :enc-counter inc)

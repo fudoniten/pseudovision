@@ -702,7 +702,7 @@
 (def EventId   [:int {:min 1}])
 
 (def EventKind
-  [:enum "content" "pre" "mid" "post" "pad" "tail" "fallback" "offline"])
+  [:enum "content" "pre" "mid" "post" "pad" "tail" "fallback" "offline" "bumper"])
 
 (def Playout
   [:map

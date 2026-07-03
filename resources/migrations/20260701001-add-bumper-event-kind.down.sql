@@ -1,0 +1,6 @@
+-- NOTE: PostgreSQL does not support removing values from an ENUM type.
+-- To revert this change, you would need to:
+-- 1. Create a new event_kind type without 'bumper'
+-- 2. Alter all columns using the old type to use the new type
+-- 3. Drop the old type
+-- This is intentionally left as a no-op to avoid data loss.

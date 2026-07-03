@@ -244,8 +244,25 @@
 
    For duration-mode presets, when packing is enabled (opts :pack-filler?, set
    by build!), the gap is bin-packed for variety; otherwise the original
-   cursor-managed enumerator fill is used (count mode always uses it)."
+   cursor-managed enumerator fill is used (count mode always uses it).
+
+   Small tail gaps (≤ 15 seconds) are preferentially filled with auto-generated
+   bumper items when a bumper collection exists for the channel."
   [db cursor slot channel role from to playout-id opts]
+  ;; --- Bumper priority for small tail gaps ---
+  (when (and (= role :tail) to)
+    (when-let [bumper-events (filler/fill-gap-with-bumper
+                              db (:channels/id channel) from to playout-id)]
+      (let [guide   (:next-guide-group cursor)
+            slot-id (:schedule-slots/id slot)
+            events  (mapv #(assoc % :guide-group guide :slot-id slot-id)
+                          bumper-events)]
+        (log/debug "Injected bumper for small gap"
+                   {:channel (:channels/name channel)
+                    :gap-secs (t/duration->seconds (t/duration-between from to))
+                    :count (count events)})
+        [events cursor])))
+  ;; --- Regular filler ---
   (if-let [preset-ref (filler/resolve-filler-preset role slot channel)]
     (if-let [preset (filler-db/get-filler-preset db (:id preset-ref))]
       ;; Drop unplayable (zero/unknown duration) filler items up front so the

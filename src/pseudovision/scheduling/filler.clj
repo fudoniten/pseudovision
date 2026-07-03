@@ -7,8 +7,12 @@
      3. No filler (leave a gap / go offline)
 
    Filler item selection uses the same enumerator system as main content
-   so shuffle seeds are preserved across rebuilds."
-  (:require [pseudovision.scheduling.enumerators :as enum]
+   so shuffle seeds are preserved across rebuilds.
+
+   Small gaps (≤ 15 seconds) are preferentially filled with bumper items
+   when a bumper collection exists for the channel."
+  (:require [pseudovision.db.filler :as filler-db]
+            [pseudovision.scheduling.enumerators :as enum]
             [pseudovision.util.sql  :as sql-util]
             [pseudovision.util.time :as t])
   (:import [java.time Duration Instant]))
@@ -100,6 +104,65 @@
 
       :else
       {:events [] :enumerator enumerator})))
+
+;; ---------------------------------------------------------------------------
+;; Bumper gap filling (small cracks between content)
+;; ---------------------------------------------------------------------------
+
+(def ^:private max-bumper-gap-secs 15)
+(def ^:private bumper-durations [5 10 15])
+
+(defn- duration-bucket
+  "Given a target duration in seconds, return the largest standard
+   bumper bucket (5/10/15) that fits without exceeding it."
+  [target-secs]
+  (->> bumper-durations
+       (filter #(<= % target-secs))
+       last
+       (or 5)))
+
+(defn- item-duration-seconds
+  "Extract duration from a media-item row as seconds."
+  [item]
+  (let [dur (or (some-> item :media-versions/duration t/duration->seconds)
+                (some-> item :duration t/duration->seconds)
+                0)]
+    (max 0 dur)))
+
+(defn fill-gap-with-bumper
+  "Try to fill a small gap with a bumper item.
+
+   Only considers gaps ≤ max-bumper-gap-secs (15s).  Queries the channel's
+   bumper collection and picks an item whose duration matches the largest
+   standard bucket that fits the gap (5/10/15s).
+
+   Returns nil when no bumper is suitable so the caller can fall back to
+   regular filler."
+  [db channel-id from to playout-id]
+  (let [gap-secs (t/duration->seconds (t/duration-between from to))]
+    (when (and (<= gap-secs max-bumper-gap-secs)
+               (pos? gap-secs))
+      (let [bucket (duration-bucket gap-secs)
+            ;; Allow 1s tolerance so a 4.8s bumper can fill a 5s gap
+            tolerance 1.0
+            items (filler-db/find-channel-bumper-items db channel-id)
+            candidates (filterv (fn [item]
+                                   (let [dur (item-duration-seconds item)]
+                                     (and (>= dur (- bucket tolerance))
+                                          (<= dur (+ bucket tolerance)))))
+                                 items)]
+        (when (seq candidates)
+          ;; Pick randomly for variety (no enumerator state needed for bumpers)
+          (let [item (rand-nth candidates)
+                dur-secs (item-duration-seconds item)
+                dur (t/seconds->duration dur-secs)
+                finish (t/add-duration from dur)]
+            [{:playout-id    playout-id
+              :media-item-id (:media-items/id item)
+              :kind          (sql-util/->pg-enum "event_kind" "bumper")
+              :start-at      from
+              :finish-at     finish
+              :is-manual     false}]))))))
 
 (defn pad-to-boundary
   "Produces filler events from `from` up to the next multiple-of-n-minutes

@@ -42,7 +42,7 @@
 
    Returns: String array for ProcessBuilder"
   [source-url output-dir {:keys [start-position-secs segment-duration playlist-size
-                                 profile-config manager-mode?]
+                                 profile-config manager-mode? overlay-text]
                           :or   {start-position-secs 0}}]
   (let [ffmpeg-bin (resolve-ffmpeg-path)
         cfg        (profile/resolve-config (or profile-config {}))
@@ -55,7 +55,20 @@
         ;; ingests these segments, so the encoder keeps ALL of them in its scratch
         ;; playlist (hls_list_size 0) and never deletes them itself.
         list-size  (if manager-mode? 0 (or playlist-size (get-in cfg [:hls :playlist-size])))
-        vf         (profile/video-filter cfg)]
+        vf         (profile/video-filter cfg)
+        ;; Append drawtext overlay when bumper text is provided
+        vf'        (if (seq overlay-text)
+                     (let [escaped (-> overlay-text
+                                       (str/replace "\\" "\\\\\\\\")
+                                       (str/replace ":" "\\\\:")
+                                       (str/replace "'" "\\\\'")
+                                       (str/replace "%" "\\\\%"))
+                           dt (str "drawtext=text=" escaped
+                                   ":fontsize=36:fontcolor=white"
+                                   ":x=(w-text_w)/2:y=h-text_h-60"
+                                   ":borderw=2:bordercolor=black@0.5")]
+                       (if vf (str vf "," dt) dt))
+                     vf)]
     (log/debug "Using ffmpeg" {:path ffmpeg-bin :accel (:accel cfg) :initial-burst burst})
     (into-array String
       (-> [ffmpeg-bin
@@ -79,7 +92,7 @@
           ;; 0:a:0? — the trailing ? makes the audio map optional so a
           ;; video-only source does not abort the encoder.
           (into ["-map" "0:v:0" "-map" "0:a:0?" "-sn"])
-          (cond-> vf (into ["-vf" vf]))            ; Normalisation filter chain
+           (cond-> vf' (into ["-vf" vf']))         ; Normalisation + overlay filter chain
           (into (profile/video-encode-args cfg))   ; Video codec + rate control
           (into (profile/audio-encode-args cfg))   ; Audio codec + params
           (into ["-f" "hls"                         ; HLS format
