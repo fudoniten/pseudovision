@@ -166,3 +166,130 @@
           (is (not (neg? ref-idx))  "play join references season.id")
           (is (< decl-idx ref-idx)
               "season must be in scope (declared) before it is referenced"))))))
+
+;; ---------------------------------------------------------------------------
+;; Regression: category_filters must scope by SHOW, not episode
+;;
+;; Reproducer (Jul 2026): Tunarr Scheduler sends every weekly slot with
+;; category_filters=["channel:<slug>"] to scope `random:<genre>` to the
+;; channel's media pool. The slug is a show-level tag in metadata_tags.
+;; A previous version of pick-item's filter looked up tags by the episode's
+;; `:media-items/id`, which never had the show-level tag, and silently
+;; rejected every slot with "No playable items found for media_id ...". The
+;; `_top-id` carried on each resolved row points the filter at the show's
+;; metadata, so the show-level tag matches and the slot ingests.
+;; ---------------------------------------------------------------------------
+
+(deftest resolve-by-category-selects-top-id
+  (testing "random:<category> returns the show's id alongside the playable row, so category_filters can scope by top"
+    (let [captured (atom nil)]
+      (with-redefs [db-core/query (fn [_ sqlvec] (reset! captured sqlvec) [])]
+        (#'ds/resolve-by-category nil "Drama")
+        (let [[sql _params] @captured]
+          (is (re-find #"(?i)\btop\.id\b" sql)
+              "the top (show/movie) id is selected alongside play.*")
+          (is (re-find #"(?i)AS _top_id\b|AS \"_top_id\"" sql)
+              "the top id is aliased as _top_id so the Clojure layer can read it"))))))
+
+(deftest resolve-show-episodes-tags-rows-with-show-id
+  (testing "every episode row returned by resolve-show-episodes carries :_top-id == the show's id"
+    (with-redefs [db-core/query-one (fn [_ _] {:media-items/id 7})
+                  db-core/query     (fn [_ _] [{:media-items/id 100}
+                                               {:media-items/id 101}])]
+      (let [rows (#'ds/resolve-show-episodes nil "f2c639e8be1a00ff83e176aa034ee765")]
+        (is (= 2 (count rows)))
+        (is (every? #(= 7 (:_top-id %)) rows)
+            "every episode is tagged with the parent show's id")))))
+
+(deftest resolve-movie-tags-row-with-its-own-id
+  (testing "the movie row carries :_top-id == :media-items/id (top and play are the same row)"
+    (with-redefs [db-core/query-one (fn [_ sqlvec]
+                                      ;; Only the first call returns the movie.
+                                      (when (string? (first sqlvec))
+                                        {:media-items/id 99 :media-items/kind "movie"}))]
+      (let [m (#'ds/resolve-movie nil "99")]
+        (is (some? m))
+        (is (= 99 (:media-items/id m)))
+        (is (= 99 (:_top-id m))
+            "for movies _top-id equals the movie's own id")))))
+
+(deftest daily-slots-succeeds-when-show-has-category-filter-tag
+  (testing "POST .../daily-slots with a show-level category_filter ingests when the show has the tag"
+    ;; Repro of the Jul 2026 outage. Before the fix, the filter was scoped
+    ;; to episode tags, so category_filters=["channel:goldenreels"] excluded
+    ;; every match. After the fix, the filter scopes by the show's id and
+    ;; sees the tag in metadata_tags.
+    (with-redefs [channels-db/get-channel (fn [_ _] {:channels/id 1})
+                  playout-db/get-playout-for-channel (fn [_ _] {:playouts/id 1})
+                  playout-db/delete-events! (fn [& _] 0)
+                  playout-db/bulk-insert-events! (fn [& _] nil)
+                  db-core/query-one (fn [_ _] {:media-items/id 7})
+                  ;; Two DB calls inside pick-item:
+                  ;;   1) resolve-show-episodes → returns the two stub episodes
+                  ;;   2) tag lookup for the show → returns the channel tag
+                  db-core/query (fn [_ sqlvec]
+                                  (let [sql (str/lower-case (or (first sqlvec) ""))]
+                                    (cond
+                                      (str/includes? sql "from media_items")
+                                      ;; resolve-show-episodes — the two episodes of show 7
+                                      [{:media-items/id 100 :media-items/kind "episode"}
+                                       {:media-items/id 101 :media-items/kind "episode"}]
+                                      (str/includes? sql "from metadata_tags")
+                                      ;; Tag lookup scoped by top-id (show 7):
+                                      ;; the show carries channel:goldenreels, the
+                                      ;; episodes do not.
+                                      [{:metadata/media-item-id 7
+                                        :metadata-tags/name "channel:goldenreels"}]
+                                      :else [])))]
+      (let [batch [{:start-time "2026-07-04T00:00:00"
+                    :end-time   "2026-07-04T00:30:00"
+                    :media-id   "series:abc"
+                    :media-selection-strategy "specific"
+                    :category-filters ["channel:goldenreels"]
+                    :notes []}]
+            handler (make-test-handler)
+            resp    (handler (-> (mock/request :post "/api/channels/1/daily-slots")
+                                (mock/json-body batch)))]
+        (is (= 200 (:status resp)))
+        (let [body (parse-json-body resp)]
+          (is (= 1 (:ingested body))
+              "the slot ingests when the show has the requested category tag")
+          (is (= 0 (:skipped body)))
+          (is (empty? (:errors body))))))))
+
+(deftest daily-slots-skips-when-show-lacks-category-filter-tag
+  (testing "POST .../daily-slots with a show-level category_filter still rejects when the show genuinely lacks the tag"
+    ;; The fix must not turn a real "this show doesn't belong to this channel"
+    ;; into a false positive. Confirm the show-level filter still excludes
+    ;; shows that don't carry the requested tag.
+    (with-redefs [channels-db/get-channel (fn [_ _] {:channels/id 1})
+                  playout-db/get-playout-for-channel (fn [_ _] {:playouts/id 1})
+                  playout-db/delete-events! (fn [& _] 0)
+                  playout-db/bulk-insert-events! (fn [& _] nil)
+                  db-core/query-one (fn [_ _] {:media-items/id 7})
+                  db-core/query (fn [_ sqlvec]
+                                  (let [sql (str/lower-case (or (first sqlvec) ""))]
+                                    (cond
+                                      (str/includes? sql "from media_items")
+                                      [{:media-items/id 100 :media-items/kind "episode"}
+                                       {:media-items/id 101 :media-items/kind "episode"}]
+                                      (str/includes? sql "from metadata_tags")
+                                      ;; Show 7 has no tag rows — it's not a member of
+                                      ;; channel:goldenreels.
+                                      []
+                                      :else [])))]
+      (let [batch [{:start-time "2026-07-04T00:00:00"
+                    :end-time   "2026-07-04T00:30:00"
+                    :media-id   "series:abc"
+                    :media-selection-strategy "specific"
+                    :category-filters ["channel:goldenreels"]
+                    :notes []}]
+            handler (make-test-handler)
+            resp    (handler (-> (mock/request :post "/api/channels/1/daily-slots")
+                                (mock/json-body batch)))]
+        (is (= 200 (:status resp)))
+        (let [body (parse-json-body resp)]
+          (is (= 0 (:ingested body)))
+          (is (= 1 (:skipped body))
+              "the slot is skipped when the show genuinely lacks the tag")
+          (is (re-find #"(?i)no playable items" (first (:errors body)))))))))

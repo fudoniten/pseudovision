@@ -27,7 +27,10 @@
         [(subs s 0 idx) (subs s (inc idx))]))))
 
 (defn- resolve-show-episodes
-  "Returns ordered episodes for a show identified by id or remote_key."
+  "Returns ordered episodes for a show identified by id or remote_key.
+
+   Each row carries a `:_top-id` key (the show's id) so downstream
+   `category_filters` matching can look up show-level tags."
   [ds show-id-or-key]
   (let [;; Try to resolve by internal id or remote_key
         show (or (db-core/query-one ds
@@ -40,45 +43,58 @@
                     (-> (h/select :mi.id)
                         (h/from [:media-items :mi])
                         (h/where [:= :mi.remote-key show-id-or-key])
-                        sql/format)))]
+                        sql/format)))
+        show-id (:media-items/id show)]
     (if show
-      (db-core/query ds
-        (-> (h/select :mi.* [:mv.duration :duration])
-            (h/from [:media-items :mi])
-            ;; Episodes are nested under seasons (episode.parent_id → season →
-            ;; show), so join each episode's parent-as-season to reach the show.
-            ;; A direct show→episode link is also honoured for flat libraries.
-            (h/left-join [:media-items :season]
-                         [:and [:= :season.id :mi.parent-id]
-                               [:= :season.kind (sql-util/->pg-enum "media_item_kind" "season")]])
-            (h/left-join [:media-versions :mv] [:= :mv.media-item-id :mi.id])
-            (h/where [:and
-                      [:= :mi.kind (sql-util/->pg-enum "media_item_kind" "episode")]
-                      [:= :mi.state (sql-util/->pg-enum "media_item_state" "normal")]
-                      [:or [:= :mi.parent-id (:media-items/id show)]
-                           [:= :season.parent-id (:media-items/id show)]]])
-            (h/order-by :season.position :mi.position :mi.id)
-            sql/format))
+      (let [episodes (db-core/query ds
+                         (-> (h/select :mi.* [:mv.duration :duration])
+                             (h/from [:media-items :mi])
+                             ;; Episodes are nested under seasons (episode.parent_id → season →
+                             ;; show), so join each episode's parent-as-season to reach the show.
+                             ;; A direct show→episode link is also honoured for flat libraries.
+                             (h/left-join [:media-items :season]
+                                          [:and [:= :season.id :mi.parent-id]
+                                                [:= :season.kind (sql-util/->pg-enum "media_item_kind" "season")]])
+                             (h/left-join [:media-versions :mv] [:= :mv.media-item-id :mi.id])
+                             (h/where [:and
+                                       [:= :mi.kind (sql-util/->pg-enum "media_item_kind" "episode")]
+                                       [:= :mi.state (sql-util/->pg-enum "media_item_state" "normal")]
+                                       [:or [:= :mi.parent-id show-id]
+                                            [:= :season.parent-id show-id]]])
+                             (h/order-by :season.position :mi.position :mi.id)
+                             sql/format))]
+        ;; Tag every episode with its parent show id so category_filters
+        ;; matching can resolve show-level tags.
+        (mapv #(assoc % :_top-id show-id) episodes))
       [])))
 
 (defn- resolve-movie
-  "Returns a movie item by id or remote_key."
+  "Returns a movie item by id or remote_key.
+
+   The returned row carries a `:_top-id` key (the movie's own id) so
+   downstream `category_filters` matching uses a uniform lookup — for
+   movies, top and play are the same row."
   [ds movie-id-or-key]
-  (or (db-core/query-one ds
-         (-> (h/select :mi.* [:mv.duration :duration])
-             (h/from [:media-items :mi])
-             (h/left-join [:media-versions :mv] [:= :mv.media-item-id :mi.id])
-              (h/where [:and [:= :mi.id (try (Long/parseLong movie-id-or-key)
-                                             (catch Exception _ -1))]
-                             [:= :mi.kind (sql-util/->pg-enum "media_item_kind" "movie")]])
-              sql/format))
-      (db-core/query-one ds
-         (-> (h/select :mi.* [:mv.duration :duration])
-             (h/from [:media-items :mi])
-             (h/left-join [:media-versions :mv] [:= :mv.media-item-id :mi.id])
-             (h/where [:and [:= :mi.remote-key movie-id-or-key]
-                            [:= :mi.kind (sql-util/->pg-enum "media_item_kind" "movie")]])
-             sql/format))))
+  (let [;; Try to resolve by internal id or remote_key
+        movie (or (db-core/query-one ds
+                    (-> (h/select :mi.* [:mv.duration :duration])
+                        (h/from [:media-items :mi])
+                        (h/left-join [:media-versions :mv] [:= :mv.media-item-id :mi.id])
+                        (h/where [:and [:= :mi.id (try (Long/parseLong movie-id-or-key)
+                                                      (catch Exception _ -1))]
+                                       [:= :mi.kind (sql-util/->pg-enum "media_item_kind" "movie")]])
+                        sql/format))
+                 (db-core/query-one ds
+                    (-> (h/select :mi.* [:mv.duration :duration])
+                        (h/from [:media-items :mi])
+                        (h/left-join [:media-versions :mv] [:= :mv.media-item-id :mi.id])
+                        (h/where [:and [:= :mi.remote-key movie-id-or-key]
+                                       [:= :mi.kind (sql-util/->pg-enum "media_item_kind" "movie")]])
+                        sql/format)))]
+    ;; For movies the playable row IS the top-level item, so _top-id == the
+    ;; movie's own id. Carry it on the row for uniform downstream matching.
+    (cond-> movie
+      movie (assoc :_top-id (:media-items/id movie)))))
 
 (defn- resolve-by-category
   "Resolves a `random:<category>` pool to concrete *playable* items.
@@ -90,10 +106,16 @@
 
    Matching shows are expanded to their (season-nested) episodes and matching
    movies resolve to themselves, so the returned rows are always directly
-   playable items, never bare show rows."
+   playable items, never bare show rows.
+
+   Each row carries a `:_top-id` key holding the id of the top-level item it
+   was resolved from (the show for episode rows, the movie for movie rows —
+   identical in that case). Downstream `category_filters` matching uses this
+   id to look up show-level tags, which live on the top row rather than the
+   episode row."
   [ds category]
   (db-core/query ds
-    (-> (h/select-distinct :play.* [:mvp.duration :duration])
+    (-> (h/select-distinct :play.* [:mvp.duration :duration] [:top.id :_top-id])
         (h/from [:media-items :top])
         (h/join [:metadata :mtop] [:= :mtop.media-item-id :top.id])
         (h/left-join [:metadata-genres :g] [:= :g.metadata-id :mtop.id])
@@ -187,6 +209,21 @@
         ;; "random" (default)
         (nth episodes (rand-int n))))))
 
+(defn- top-id-of
+  "The id of the top-level media-item (show or movie) that an item was
+   resolved from. Show-level filters — `channel:<slug>`, `time-slot:*`,
+   `audience:*`, `freshness:*` — live on this row in `metadata_tags`, not on
+   the episode row, so `category_filters` matching must scope by top id
+   rather than the playable row's id.
+
+   For movies, top and play are the same row and `:_top-id` equals
+   `:media-items/id`. For episodes, `:_top-id` is the parent show's id (set
+   by `resolve-show-episodes` / `resolve-by-category`); for any row that
+   hasn't been tagged with `:_top-id` we fall back to the row's own id so
+   the call site is uniform."
+  [item]
+  (or (:_top-id item) (:media-items/id item)))
+
 (defn- pick-item
   "Resolves a DailySlot's media_id to a concrete media-item row.
    Returns [item error-message] or [nil error]."
@@ -199,16 +236,21 @@
                   "movie"  (when-let [m (resolve-movie ds id)] [m])
                   "random" (resolve-by-category ds id)
                   [])]
-      ;; Apply category_filters (tag filters) if provided
+      ;; Apply category_filters (tag filters) if provided. Filters are
+      ;; evaluated against the top-level item's tags (the show or movie),
+      ;; because show-level tags like `channel:goldenreels` live there, not
+      ;; on the episode row. Bug: a previous version scoped by `:media-items/id`
+      ;; (the episode's id) which excluded every match for show-level tags,
+      ;; silently rejecting slots with "No playable items found".
       (let [filtered (if (seq category-filters)
-                        (let [item-ids (map :media-items/id items)
-                              ;; Bulk-fetch tags for these items
-                              tag-rows (when (seq item-ids)
+                        (let [top-ids (distinct (map top-id-of items))
+                              ;; Bulk-fetch tags for these top-level items
+                              tag-rows (when (seq top-ids)
                                          (db-core/query ds
                                            (-> (h/select :m.media-item-id :mt.name)
                                                (h/from [:metadata-tags :mt])
                                                (h/join [:metadata :m] [:= :m.id :mt.metadata-id])
-                                               (h/where [:in :m.media-item-id item-ids])
+                                               (h/where [:in :m.media-item-id top-ids])
                                                sql/format)))
                               item-tags (group-by :metadata/media-item-id
                                                   (map (fn [r]
@@ -216,7 +258,7 @@
                                                           :tag (:metadata-tags/name r)})
                                                        tag-rows))]
                           (filterv (fn [item]
-                                     (let [tags (set (map :tag (get item-tags (:media-items/id item))))]
+                                     (let [tags (set (map :tag (get item-tags (top-id-of item))))]
                                        (every? #(contains? tags %) category-filters)))
                                    items))
                         items)]
