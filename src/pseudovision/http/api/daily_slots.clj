@@ -99,13 +99,39 @@
     (cond-> movie
       movie (assoc :_top-id (:media-items/id movie)))))
 
+(defn- kebab-case
+  "Lowercase, replace `&` with `and`, replace runs of non-alphanumerics with
+   a single `-`, and trim leading/trailing `-`. Matches the dimension
+   naming convention used by the tag-curation pipeline: spaces and
+   punctuation collapse to hyphens, `&` becomes the word `and`.
+
+   `Sci-Fi & Fantasy`   -> `sci-fi-and-fantasy`
+   `Action & Adventure` -> `action-and-adventure`
+   `Sci-Fi`             -> `sci-fi`
+   `Comedy`             -> `comedy`
+   `Random`             -> `random`"
+  [s]
+  (when s
+    (-> s
+        str/lower-case
+        (str/replace "&" "and")
+        (str/replace #"[^a-z0-9]+" "-")
+        (str/replace #"(^-+)|(-+$)" ""))))
+
 (defn- resolve-by-category
   "Resolves a `random:<category>` pool to concrete *playable* items.
 
    `category` is matched against the metadata of top-level items (shows and
    movies) — exactly the dimension space the catalog aggregate emits — against:
      - genres   (metadata_genres.name, e.g. \"Mystery\", \"Sci-Fi & Fantasy\")
-     - tags     (metadata_tags.name), including the `genre:<name>` convention.
+     - tags     (metadata_tags.name), including the `genre:<name>` convention
+                (e.g. `genre:mystery`, `genre:sci-fi-and-fantasy`)
+
+   Matches are case-insensitive on tags (Postgres `lower(t.name)`) so the
+   legacy \"Mystery\" form matches the canonical \"mystery\" storage, AND
+   we also try the kebab-cased form so LLM-generated overrides like
+   `random:Sci-Fi & Fantasy` (with `&` and spaces) hit the canonical
+   `genre:sci-fi-and-fantasy` tag.
 
    Matching shows are expanded to their (season-nested) episodes and matching
    movies resolve to themselves, so the returned rows are always directly
@@ -153,7 +179,9 @@
                                   (sql-util/->pg-enum "media_item_kind" "movie")]]
                   [:or [:= :g.name category]
                        [:= [:lower :t.name] (str/lower-case category)]
-                       [:= [:lower :t.name] (str "genre:" (str/lower-case category))]]])
+                       [:= [:lower :t.name] (str "genre:" (str/lower-case category))]
+                       [:= [:lower :t.name] (kebab-case category)]
+                       [:= [:lower :t.name] (str "genre:" (kebab-case category))]])
         (h/order-by :play.id)
         sql/format)))
 

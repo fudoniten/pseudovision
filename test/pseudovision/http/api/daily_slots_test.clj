@@ -146,6 +146,42 @@
            (is (some #{"genre:mystery"} params)
                "honours the genre:<name> tag convention"))))))
 
+(deftest kebab-case-normalizes-special-characters
+  (testing "the kebab-case helper produces the canonical tag form"
+    (is (= "sci-fi-and-fantasy"   (#'ds/kebab-case "Sci-Fi & Fantasy"))
+        "& becomes 'and' and spaces collapse to hyphens")
+    (is (= "action-and-adventure" (#'ds/kebab-case "Action & Adventure")))
+    (is (= "sci-fi"               (#'ds/kebab-case "Sci-Fi"))
+        "non-alphanumerics become a single hyphen")
+    (is (= "comedy"               (#'ds/kebab-case "Comedy"))
+        "lowercase pass-through for the simple case")
+    (is (= "comedy"               (#'ds/kebab-case "comedy"))
+        "already-kebab inputs are unchanged")
+    (is (= ""                     (#'ds/kebab-case nil))
+        "nil input is safe (returns nil-ish empty string)")
+    (is (= "drama"                (#'ds/kebab-case "  Drama  "))
+        "leading/trailing whitespace is trimmed")))
+
+(deftest resolve-by-category-matches-kebab-cased-input
+  (testing "random:<category> with `&` and spaces hits the kebab-cased `genre:` tag too"
+    ;; Repro of the 2026-07-03 outage. Tunabrain emits `random:Sci-Fi & Fantasy`
+    ;; (human-readable, with `&` and spaces). Storage holds `genre:sci-fi-and-fantasy`
+    ;; (kebab-case, the post-DIMENSION_CLEANUP canonical form). The query must
+    ;; bind both `genre:sci-fi-and-fantasy` and the bare `sci-fi-and-fantasy` kebab
+    ;; form so LLM-generated overrides resolve cleanly.
+    (let [captured (atom nil)]
+      (with-redefs [db-core/query (fn [_ sqlvec] (reset! captured sqlvec) [])]
+        (#'ds/resolve-by-category nil "Sci-Fi & Fantasy")
+        (let [[_sql & params] @captured]
+          (is (some #{"sci-fi-and-fantasy"} params)
+              "binds the kebab-cased bare form (no prefix)")
+          (is (some #{"genre:sci-fi-and-fantasy"} params)
+              "binds the kebab-cased `genre:` form (the canonical post-migration tag)")
+          (is (some #{"sci-fi & fantasy"} params)
+              "still binds the raw lowercased form (legacy metadata_tags rows that pre-date the kebab migration)")
+          (is (some #{"genre:sci-fi & fantasy"} params)
+              "still binds the raw lowercased form with `genre:` prefix (legacy row)"))))))
+
 (deftest resolve-by-category-declares-season-join-before-it-is-referenced
   (testing "the season join is emitted before the play join that references season.id"
     ;; HoneySQL renders every inner :join ahead of every :left-join regardless
