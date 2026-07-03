@@ -91,6 +91,10 @@ Filler presets bridge gaps. Each preset has:
 - **role** — where it plays (`pre`, `mid`, `post`, `tail`, `fallback`)
 - **category** — what it is (`commercial`, `bumper`, `short`, `documentary`, `promo`, `trailer`, etc.)
 - **mode** — how much to play (`duration`, `count`, `random_count`, `pad_to_minute`)
+- **content source** — a local collection, a single media item, **or Grout**
+  (`grout_tags`). A preset with `grout_tags` set pulls its clips from the
+  [Grout](docs/grout-integration.md) filler service at build time instead of a
+  local collection. See the doc for setup.
 
 ---
 

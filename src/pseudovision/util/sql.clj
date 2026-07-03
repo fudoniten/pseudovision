@@ -55,6 +55,17 @@
     v))
 
 ;; ---------------------------------------------------------------------------
+;; Array coercion (Clojure seq -> PostgreSQL array)
+;; ---------------------------------------------------------------------------
+
+(defn ->pg-array
+  "Returns a HoneySQL `ARRAY[...]` expression for a Clojure seq, so it binds as a
+   PostgreSQL array (e.g. TEXT[]).  Returns nil for a nil/empty seq, which stores
+   SQL NULL — plain Clojure vectors are NOT safe to pass through as array values."
+  [coll]
+  (when (seq coll) [:array (vec coll)]))
+
+;; ---------------------------------------------------------------------------
 ;; Interval coercion (PostgreSQL INTERVAL <-> java.time.Duration)
 ;; ---------------------------------------------------------------------------
 

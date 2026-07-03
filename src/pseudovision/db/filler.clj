@@ -60,9 +60,10 @@
 
 (defn create-filler-preset! [ds attrs]
   (let [prepared (cond-> attrs
-                   (:role attrs)     (update :role     #(sql-util/->pg-enum "filler_role"     %))
-                   (:mode attrs)     (update :mode     #(sql-util/->pg-enum "filler_mode"     %))
-                   (:category attrs) (update :category #(sql-util/->pg-enum "filler_category" %)))
+                   (:role attrs)       (update :role     #(sql-util/->pg-enum "filler_role"     %))
+                   (:mode attrs)       (update :mode     #(sql-util/->pg-enum "filler_mode"     %))
+                   (:category attrs)   (update :category #(sql-util/->pg-enum "filler_category" %))
+                   (:grout-tags attrs) (update :grout-tags sql-util/->pg-array))
         result   (db/execute-one! ds (-> (h/insert-into :filler-presets)
                                          (h/values [prepared])
                                          (h/returning :*)
@@ -73,9 +74,10 @@
 (defn update-filler-preset! [ds id attrs]
   (db/execute-one! ds (-> (h/update :filler-presets)
                            (h/set (cond-> attrs
-                                    (:role attrs)     (update :role     #(sql-util/->pg-enum "filler_role"     %))
-                                    (:mode attrs)     (update :mode     #(sql-util/->pg-enum "filler_mode"     %))
-                                    (:category attrs) (update :category #(sql-util/->pg-enum "filler_category" %))))
+                                    (:role attrs)       (update :role     #(sql-util/->pg-enum "filler_role"     %))
+                                    (:mode attrs)       (update :mode     #(sql-util/->pg-enum "filler_mode"     %))
+                                    (:category attrs)   (update :category #(sql-util/->pg-enum "filler_category" %))
+                                    (:grout-tags attrs) (update :grout-tags sql-util/->pg-array)))
                            (h/where [:= :id id])
                            sql/format)))
 

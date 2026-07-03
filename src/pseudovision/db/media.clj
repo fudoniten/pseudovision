@@ -349,6 +349,22 @@
                        (h/where (item-ref-match :mi.id :mi.remote-key id))
                        sql/format)))
 
+(defn get-media-file-path
+  "Returns the absolute filesystem path backing a media item (its first version's
+   first file), or nil. Used to stream co-mounted local media (e.g. Grout clips)
+   directly, without a remote server URL. `id` may be the internal integer id or
+   a remote_key."
+  [ds id]
+  (:media-files/path
+   (db/query-one ds (-> (h/select :mf.path)
+                        (h/from [:media-items :mi])
+                        (h/join [:media-versions :mv] [:= :mv.media-item-id :mi.id])
+                        (h/join [:media-files    :mf] [:= :mf.media-version-id :mv.id])
+                        (h/where (item-ref-match :mi.id :mi.remote-key id))
+                        (h/order-by :mv.id :mf.id)
+                        (h/limit 1)
+                        sql/format))))
+
 (defn list-items-for-library-path [ds library-path-id]
   (db/query ds (-> (h/select :*)
                    (h/from :media-items)
