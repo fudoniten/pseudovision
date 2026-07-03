@@ -4,6 +4,7 @@
             [pseudovision.http.core      :as http]
             [pseudovision.cleanup        :as cleanup]
             [pseudovision.jobs.runner    :as jobs]
+            [pseudovision.media.grout    :as grout]
             [pseudovision.streaming.manager :as stream-mgr]
             [pseudovision.streaming.segment-store :as store]
             [taoensso.timbre             :as log])
@@ -20,7 +21,7 @@
     :else            :info))
 
 (defn ->system-config
-  [{:keys [log-level server database ffmpeg media scheduling streaming]}]
+  [{:keys [log-level server database ffmpeg media scheduling streaming grout]}]
   (letfn [(parse-int [i] (if (string? i) (Integer/parseInt i) i))]
     {:pseudovision/logger    {:level     (parse-log-level (or log-level :info))}
      :pseudovision/db        {:jdbc-url  (:jdbc-url database)
@@ -36,6 +37,7 @@
                                      scheduling)
      :pseudovision/streaming (merge {:db (ig/ref :pseudovision/db)}
                                     streaming)
+      :pseudovision/grout     (or grout {})
       :pseudovision/jobs      {}
       :pseudovision/cleanup   {:db (ig/ref :pseudovision/db)}
       :pseudovision/http      {:port        (or (some-> server :port (parse-int)) 8080)
@@ -44,6 +46,7 @@
                                :media       (ig/ref :pseudovision/media)
                                :scheduling  (ig/ref :pseudovision/scheduling)
                                :streams     (ig/ref :pseudovision/streaming)
+                               :grout       (ig/ref :pseudovision/grout)
                                :jobs        (ig/ref :pseudovision/jobs)}}))
 
 ;; ---------------------------------------------------------------------------
@@ -116,6 +119,19 @@
   (when reaper (.shutdownNow ^java.util.concurrent.ScheduledExecutorService reaper))
   (stream-mgr/shutdown-all! manager)
   (log/info "Channel Stream Manager stopped"))
+
+;; ---------------------------------------------------------------------------
+;; Grout filler source (optional; nil when GROUT_URL is unset)
+;; ---------------------------------------------------------------------------
+
+(defmethod ig/init-key :pseudovision/grout [_ config]
+  (let [client (grout/client config)]
+    (log/info "Grout filler source"
+              {:enabled  (grout/enabled? client)
+               :base-url (:base-url client)})
+    client))
+
+(defmethod ig/halt-key! :pseudovision/grout [_ _] nil)
 
 ;; ---------------------------------------------------------------------------
 ;; Async job runner

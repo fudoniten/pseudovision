@@ -16,19 +16,42 @@
 ;; Source resolution
 ;; ---------------------------------------------------------------------------
 
-(defn get-jellyfin-stream-url
-  "Resolves a Jellyfin direct-stream URL for a media item, or nil."
+(defn- jellyfin-stream-url
+  "Builds a Jellyfin direct-stream URL from a media-item-with-source row, or nil."
+  [row media-item-id]
+  (let [conn-config (:media-sources/connection-config row)
+        base-url    (conn/active-uri (:connections conn-config))
+        api-key     (:api-key conn-config)
+        item-id     (or (:media-items/remote-key row) (:remote-key row))]
+    (when (and base-url api-key item-id)
+      (let [url (str base-url "/Videos/" item-id "/stream?static=true&api_key=" api-key)]
+        (log/info "Resolved Jellyfin stream URL"
+                  {:media-item-id media-item-id :remote-key item-id :base-url base-url})
+        url))))
+
+(defn resolve-stream-source
+  "Resolves the ffmpeg input for a media item's source:
+     * remote sources (Jellyfin) → a direct-stream URL
+     * local sources (filesystem scans, Grout-ingested clips on the shared mount)
+       → the absolute file path, which ffmpeg reads directly
+   Returns nil when unresolvable."
   [db media-item-id]
   (when-let [row (db-media/get-media-item-with-source db media-item-id)]
-    (let [conn-config (:media-sources/connection-config row)
-          base-url    (conn/active-uri (:connections conn-config))
-          api-key     (:api-key conn-config)
-          item-id     (or (:media-items/remote-key row) (:remote-key row))]
-      (when (and base-url api-key item-id)
-        (let [url (str base-url "/Videos/" item-id "/stream?static=true&api_key=" api-key)]
-          (log/info "Resolved Jellyfin stream URL"
-                    {:media-item-id media-item-id :remote-key item-id :base-url base-url})
-          url)))))
+    (if (= "jellyfin" (:media-sources/kind row))
+      (jellyfin-stream-url row media-item-id)
+      ;; local (and any other co-mounted source): stream the file off the mount
+      (if-let [path (db-media/get-media-file-path db media-item-id)]
+        (do (log/info "Resolved local stream path"
+                      {:media-item-id media-item-id :path path})
+            path)
+        (log/warn "No local file path for media item"
+                  {:media-item-id media-item-id :source-kind (:media-sources/kind row)})))))
+
+(defn get-jellyfin-stream-url
+  "Deprecated alias for `resolve-stream-source`, retained for callers/tests that
+   still refer to it. Resolves any source kind, not just Jellyfin."
+  [db media-item-id]
+  (resolve-stream-source db media-item-id))
 
 (defn calculate-start-position
   "FFmpeg start position (seconds) for a playout event: time elapsed since the
@@ -63,7 +86,7 @@
    if resolvable, otherwise a generated slate carrying the upcoming-events list."
   [db channel playout-id]
   (if-let [filler-id (:channels/fallback-filler-id channel)]
-    (if-let [url (get-jellyfin-stream-url db filler-id)]
+    (if-let [url (resolve-stream-source db filler-id)]
       {:source-url url :start-position 0 :type :fallback-filler :media-item-id filler-id}
       (do (log/warn "Fallback filler unavailable - using generated slate"
                     {:channel-id (:channels/id channel) :filler-id filler-id})
@@ -84,7 +107,7 @@
              current-event (db-playouts/get-current-event db playout-id at)]
          (if current-event
            (let [media-item-id (:playout-events/media-item-id current-event)
-                 source-url    (get-jellyfin-stream-url db media-item-id)]
+                 source-url    (resolve-stream-source db media-item-id)]
              (if source-url
                {:source-url     source-url
                 :start-position (calculate-start-position current-event at)

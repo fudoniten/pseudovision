@@ -393,7 +393,8 @@
    [:allow-watermarks      {:optional true} :boolean]
    [:use-chapters-as-items {:optional true} :boolean]
    [:collection-id         {:optional true} [:maybe :int]]
-   [:media-item-id         {:optional true} [:maybe :int]]])
+   [:media-item-id         {:optional true} [:maybe :int]]
+   [:grout-tags            {:optional true} [:maybe [:vector :string]]]])
 
 (def PaginatedFillerPresets
   [:map
@@ -412,7 +413,8 @@
    [:allow-watermarks      {:optional true} :boolean]
    [:use-chapters-as-items {:optional true} :boolean]
    [:collection-id         {:optional true} :int]
-   [:media-item-id         {:optional true} MediaItemRef]])
+   [:media-item-id         {:optional true} MediaItemRef]
+   [:grout-tags            {:optional true} [:vector :string]]])
 
 (def FillerPresetUpdate
   [:map
@@ -426,7 +428,8 @@
    [:allow-watermarks      {:optional true} :boolean]
    [:use-chapters-as-items {:optional true} :boolean]
    [:collection-id         {:optional true} [:maybe :int]]
-   [:media-item-id         {:optional true} [:maybe MediaItemRef]]])
+   [:media-item-id         {:optional true} [:maybe MediaItemRef]]
+   [:grout-tags            {:optional true} [:maybe [:vector :string]]]])
 
 ;; ---------------------------------------------------------------------------
 ;; Slot reorder

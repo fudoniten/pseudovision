@@ -39,4 +39,13 @@
   ;; (so any pod can serve any channel's segments) while scratch-dir stays
   ;; local emptyDir (fast ephemeral I/O for the active encoders on this pod).
   :streaming {:streams-dir #or [#env PSEUDOVISION_STREAMS_DIR "/tmp/pseudovision/streams"]
-              :scratch-dir #or [#env PSEUDOVISION_SCRATCH_DIR "/tmp/pseudovision/scratch"]}}
+              :scratch-dir #or [#env PSEUDOVISION_SCRATCH_DIR "/tmp/pseudovision/scratch"]}
+
+  ;; Grout filler source (optional).  When GROUT_URL is set, filler presets that
+  ;; carry `grout_tags` draw their clips from Grout (queried by channel + tags +
+  ;; gap duration at playout-build time) instead of a local collection.  Grout
+  ;; shares `media-dir` with Pseudovision, so ingested clips stream directly off
+  ;; the mount.  Leave GROUT_URL unset to disable Grout entirely.
+  :grout {:base-url   #env GROUT_URL
+          :media-dir  #or [#env GROUT_MEDIA_DIR "/data/media/grout"]
+          :timeout-ms 5000}}

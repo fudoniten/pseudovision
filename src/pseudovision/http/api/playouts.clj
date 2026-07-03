@@ -35,13 +35,14 @@
    asynchronous job rather than blocking the request. Returns 202 with the
    initial job record; poll `GET /api/jobs/:job-id` for progress and the final
    `:result` ({:events-generated N :horizon-days D :from \"now\"|\"horizon\"})."
-  [{:keys [db jobs]}]
+  [{:keys [db jobs grout]}]
   (fn [req]
     (let [channel-id   (resolve-channel-id db (get-in req [:parameters :path :channel-id]))
           playout      (and channel-id (db/get-playout-for-channel db channel-id))
           qp           (get-in req [:parameters :query])
           from         (or (:from qp) "now")
-          horizon-days (or (:horizon qp) 14)]
+          horizon-days (or (:horizon qp) 14)
+          sched-opts   {:grout grout}]
       (if playout
         (let [playout-id (:playouts/id playout)
               job (runner/submit!
@@ -52,9 +53,9 @@
                                 :horizon-days horizon-days}}
                     (fn [_report-progress]
                       (let [count (case from
-                                    "now"     (sched/rebuild-from-now! db playout-id horizon-days)
-                                    "horizon" (sched/rebuild-horizon! db playout-id 7 horizon-days)
-                                    (sched/rebuild-from-now! db playout-id horizon-days))]
+                                    "now"     (sched/rebuild-from-now! db playout-id horizon-days sched-opts)
+                                    "horizon" (sched/rebuild-horizon! db playout-id 7 horizon-days sched-opts)
+                                    (sched/rebuild-from-now! db playout-id horizon-days sched-opts))]
                         {:message          "Rebuild complete"
                          :events-generated count
                          :horizon-days     horizon-days

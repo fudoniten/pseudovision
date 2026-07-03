@@ -27,6 +27,7 @@
             [pseudovision.db.playouts  :as playout-db]
             [pseudovision.db.schedules :as schedules-db]
             [pseudovision.db.collections :as col-db]
+            [pseudovision.media.grout-source :as grout-source]
             [pseudovision.scheduling.cursor      :as cursor]
             [pseudovision.scheduling.enumerators :as enum]
             [pseudovision.scheduling.filler      :as filler]
@@ -250,10 +251,18 @@
       ;; Drop unplayable (zero/unknown duration) filler items up front so the
       ;; enumerator and fill-gap below share the same item vector and the
       ;; duration-mode fill loop can't spin on a zero-length item.
-      (let [items (filterv playable? (filler-db/load-filler-items db preset))
-            until (if (#{:pre :mid :post} role)
+      (let [until (if (#{:pre :mid :post} role)
                     (point-filler-window preset from to)
-                    to)]
+                    to)
+            ;; A preset carrying grout-tags draws its candidates from Grout
+            ;; (queried by channel + tags + the gap duration), ingested on the
+            ;; fly as local-path media items; otherwise use its local collection
+            ;; / media item.  Both paths yield the same candidate shape, so the
+            ;; packer / enumerator below are unchanged.
+            items (filterv playable?
+                           (if (seq (:filler-presets/grout-tags preset))
+                             (grout-source/grout-filler-items db (:grout opts) channel from until preset)
+                             (filler-db/load-filler-items db preset)))]
         (if (and (:pack-filler? opts)
                  (= "duration" (:filler-presets/mode preset)))
           (pack-filler cursor slot role from until items playout-id opts)
@@ -778,22 +787,29 @@
    the previous build left off (typically the old horizon), leaving a gap
    between now and that point.
 
+   `opts` (optional) is merged into the build options — notably :grout, the
+   Grout client used to resolve Grout-backed filler presets.
+
    Returns number of events generated."
-  [ds playout-id horizon-days]
-  (let [playout (playout-db/get-playout ds playout-id)]
-    (if playout
-      (let [result (build! ds {:lookahead-hours (* horizon-days 24)
-                               :reset-cursor?   true} playout)]
-        (if (= result :no-schedule) 0 result))
-      0)))
+  ([ds playout-id horizon-days] (rebuild-from-now! ds playout-id horizon-days nil))
+  ([ds playout-id horizon-days opts]
+   (let [playout (playout-db/get-playout ds playout-id)]
+     (if playout
+       (let [result (build! ds (merge opts {:lookahead-hours (* horizon-days 24)
+                                            :reset-cursor?   true}) playout)]
+         (if (= result :no-schedule) 0 result))
+       0))))
 
 (defn rebuild-horizon!
   "Generate events for days beyond current horizon (daily rebuild).
    Builds from current-horizon-days out to new-horizon-days.
+   `opts` (optional) is merged into the build options (see rebuild-from-now!).
    Returns number of events generated."
-  [ds playout-id current-horizon-days new-horizon-days]
-  (let [playout (playout-db/get-playout ds playout-id)]
-    (if playout
-      (let [result (build! ds {:lookahead-hours (* new-horizon-days 24)} playout)]
-        (if (= result :no-schedule) 0 result))
-      0)))
+  ([ds playout-id current-horizon-days new-horizon-days]
+   (rebuild-horizon! ds playout-id current-horizon-days new-horizon-days nil))
+  ([ds playout-id _current-horizon-days new-horizon-days opts]
+   (let [playout (playout-db/get-playout ds playout-id)]
+     (if playout
+       (let [result (build! ds (merge opts {:lookahead-hours (* new-horizon-days 24)}) playout)]
+         (if (= result :no-schedule) 0 result))
+       0))))
