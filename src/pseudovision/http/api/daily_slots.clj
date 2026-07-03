@@ -3,6 +3,7 @@
     Tunarr Scheduler's deterministic expander. Resolves media_id +
     media_selection_strategy into concrete playout events."
   (:require [clojure.string                :as str]
+            [clojure.set                   :as set]
             [pseudovision.db.playouts      :as playout-db]
             [pseudovision.db.channels      :as channels-db]
             [pseudovision.db.core          :as db-core]
@@ -63,8 +64,10 @@
                                             [:= :season.parent-id show-id]]])
                              (h/order-by :season.position :mi.position :mi.id)
                              sql/format))]
-        ;; Tag every episode with its parent show id so category_filters
-        ;; matching can resolve show-level tags.
+        ;; Tag every episode with its parent show id so downstream
+        ;; `category_filters` matching (via `top-id-of`) can resolve
+        ;; show-level tags that live on the show's metadata, not the
+        ;; episode's.
         (mapv #(assoc % :_top-id show-id) episodes))
       [])))
 
@@ -149,8 +152,8 @@
                   [:in :top.kind [(sql-util/->pg-enum "media_item_kind" "show")
                                   (sql-util/->pg-enum "media_item_kind" "movie")]]
                   [:or [:= :g.name category]
-                       [:= :t.name category]
-                       [:= :t.name (str "genre:" category)]]])
+                       [:= [:lower :t.name] (str/lower-case category)]
+                       [:= [:lower :t.name] (str "genre:" (str/lower-case category))]]])
         (h/order-by :play.id)
         sql/format)))
 
@@ -192,14 +195,19 @@
 
 (defn- pick-episode
   "Selects an episode from `episodes` based on `strategy`.
-   `playout-id` and `show-id` are used for sequential tracking."
-  [ds playout-id show-id episodes strategy]
+   `playout-id` and `show-id` are used for sequential tracking.
+   `tracker` is a mutable atom ({show-id -> {:last-idx N}}) that records
+   in-memory state for the current batch so multiple slots for the same
+   show in one ingest do not all resolve to the same episode."
+  [ds playout-id show-id episodes strategy tracker]
   (let [n (count episodes)]
     (when (pos? n)
       (case strategy
         "sequential"
-        (let [last-idx (last-aired-episode-index ds playout-id show-id)
+        (let [last-idx (or (get-in @tracker [:series show-id :last-idx])
+                           (last-aired-episode-index ds playout-id show-id))
               next-idx (if (nil? last-idx) 0 (mod (inc last-idx) n))]
+          (swap! tracker assoc-in [:series show-id] {:last-idx next-idx})
           (nth episodes next-idx))
 
         "specific"
@@ -207,7 +215,34 @@
         (first episodes)
 
         ;; "random" (default)
-        (nth episodes (rand-int n))))))
+        (let [last-idx (or (get-in @tracker [:series show-id :last-idx]) -1)
+              next-idx (mod (inc last-idx) n)]
+          (swap! tracker assoc-in [:series show-id] {:last-idx next-idx})
+          (nth episodes next-idx))))))
+
+(defn- pick-from-pool
+  "Picks an item from `items` according to `strategy`, using `tracker` to
+   avoid duplicates within a single ingest batch.
+
+   For `random` we shuffle the pool once per batch and cycle through it,
+   so the same item never airs twice until every item has been used once."
+  [pool-key items strategy tracker]
+  (let [n (count items)]
+    (when (pos? n)
+      (case strategy
+        "random"
+        (let [state   (get-in @tracker [:random pool-key])
+              pool    (or (:pool state) (shuffle items))
+              last-idx (or (:last-idx state) -1)
+              next-idx (mod (inc last-idx) n)]
+          (swap! tracker assoc-in [:random pool-key] {:pool pool :last-idx next-idx})
+          (nth pool next-idx))
+
+        "specific"
+        (first items)
+
+        ;; default (sequential for non-series)
+        (first items)))))
 
 (defn- top-id-of
   "The id of the top-level media-item (show or movie) that an item was
@@ -227,7 +262,7 @@
 (defn- pick-item
   "Resolves a DailySlot's media_id to a concrete media-item row.
    Returns [item error-message] or [nil error]."
-  [ds playout-id media-id strategy category-filters]
+  [ds playout-id media-id strategy category-filters tracker]
   (if-let [parsed (parse-media-id media-id)]
     (let [type (first parsed)
           id   (second parsed)
@@ -236,46 +271,82 @@
                   "movie"  (when-let [m (resolve-movie ds id)] [m])
                   "random" (resolve-by-category ds id)
                   [])]
-      ;; Apply category_filters (tag filters) if provided. Filters are
-      ;; evaluated against the top-level item's tags (the show or movie),
-      ;; because show-level tags like `channel:goldenreels` live there, not
-      ;; on the episode row. Bug: a previous version scoped by `:media-items/id`
-      ;; (the episode's id) which excluded every match for show-level tags,
-      ;; silently rejecting slots with "No playable items found".
+      (when (seq items)
+        (log/info "pick-item debug" {:media-id media-id
+                                      :item-count (count items)
+                                      :first-id (:media-items/id (first items))
+                                      :first-top-id (top-id-of (first items))}))
+      ;; Apply category_filters (tag filters) if provided. Two semantics in
+      ;; play here, so we describe both:
+      ;;
+      ;;   * Scope goes to the TOP-level item (the show or movie), because
+      ;;     show-level tags like `channel:goldenreels` live on the show's
+      ;;     metadata, not on the episode row. A previous version scoped by
+      ;;     the playable row's `:media-items/id`, which excluded every match
+      ;;     for show-level tags and silently rejected slots with
+      ;;     "No playable items found".
+      ;;
+      ;;   * Episodes inherit their parent show's tags, so we union the
+      ;;     playable row's tag set with the parent show's tag set before
+      ;;     matching. Movies resolve to themselves, so playable and top ids
+      ;;     are the same and the union collapses to a single set.
+      ;;
+      ;; A filter value `foo` matches if either `foo` or `genre:foo` appears
+      ;; in the unioned tag set. `resolve-by-category` already lowercases the
+      ;; metadata_tags binding side, so accepting both forms keeps the filter
+      ;; robust against the casing the scheduler happened to emit.
       (let [filtered (if (seq category-filters)
-                        (let [top-ids (distinct (map top-id-of items))
-                              ;; Bulk-fetch tags for these top-level items
-                              tag-rows (when (seq top-ids)
-                                         (db-core/query ds
-                                           (-> (h/select :m.media-item-id :mt.name)
-                                               (h/from [:metadata-tags :mt])
-                                               (h/join [:metadata :m] [:= :m.id :mt.metadata-id])
-                                               (h/where [:in :m.media-item-id top-ids])
-                                               sql/format)))
-                              item-tags (group-by :metadata/media-item-id
-                                                  (map (fn [r]
-                                                         {:item-id (:metadata/media-item-id r)
-                                                          :tag (:metadata-tags/name r)})
-                                                       tag-rows))]
-                          (filterv (fn [item]
-                                     (let [tags (set (map :tag (get item-tags (top-id-of item))))]
-                                       (every? #(contains? tags %) category-filters)))
-                                   items))
-                        items)]
+                       (let [item-ids (map :media-items/id items)
+                             top-ids  (distinct (map top-id-of items))
+                             all-ids  (vec (distinct (concat item-ids top-ids)))
+                             ;; Bulk-fetch tags for playable rows AND their parent shows.
+                             tag-rows (when (seq all-ids)
+                                        (db-core/query ds
+                                          (-> (h/select :m.media-item-id :mt.name)
+                                              (h/from [:metadata-tags :mt])
+                                              (h/join [:metadata :m] [:= :m.id :mt.metadata-id])
+                                              (h/where [:in :m.media-item-id all-ids])
+                                              sql/format)))
+                             ;; next.jdbc returns kebab-case keys qualified by
+                             ;; the *table* name, not the SQL alias, so columns
+                             ;; `m.media_item_id, mt.name` come back as
+                             ;; `:metadata/media-item-id, :metadata-tags/name`
+                             ;; (matching the project's other reads at, e.g.,
+                             ;; pseudovision.scheduling.core/get-item-tags).
+                             item-tags (group-by :item-id
+                                                 (map (fn [r]
+                                                        {:item-id (:metadata/media-item-id r)
+                                                         :tag      (:metadata-tags/name r)})
+                                                      tag-rows))
+                             passing   (filterv (fn [item]
+                                                  (let [own-tags  (set (map :tag (get item-tags (:media-items/id item))))
+                                                        show-tags (set (map :tag (get item-tags (top-id-of item))))
+                                                        tags      (set/union own-tags show-tags)]
+                                                    (every? #(or (contains? tags %)
+                                                                 (contains? tags (str "genre:" %)))
+                                                           category-filters)))
+                                                items)]
+                         (log/info "pick-item filter debug"
+                                   {:media-id media-id
+                                    :category-filters category-filters
+                                    :filtered-count (count passing)
+                                    :first-passing-id (:media-items/id (first passing))
+                                    :first-passing-tags (when (seq passing)
+                                                         (let [it (first passing)
+                                                               sid (top-id-of it)]
+                                                           (map :tag (get item-tags sid))))})
+                          passing)
+                       items)]
         (if (seq filtered)
           (case type
-            "series" (if-let [ep (pick-episode ds playout-id
-                                                (try (Long/parseLong id)
-                                                     (catch Exception _ -1))
-                                                filtered strategy)]
-                       [ep nil]
-                       [nil (str "No episode selected for series " id)])
-            (let [pick (case strategy
-                         "random" (nth filtered (rand-int (count filtered)))
-                         "specific" (first filtered)
-                         ;; sequential for non-series means pick first
-                         (first filtered))]
-              [pick nil]))
+            "series" (let [show-id (try (Long/parseLong id)
+                                        (catch Exception _ -1))]
+                       (if-let [ep (pick-episode ds playout-id show-id filtered strategy tracker)]
+                         [ep nil]
+                         [nil (str "No episode selected for series " id)]))
+            (if-let [pick (pick-from-pool media-id filtered strategy tracker)]
+              [pick nil]
+              [nil (str "No playable items found for media_id " media-id)]))
           [nil (str "No playable items found for media_id " media-id)])))
     [nil (str "Invalid media_id format: " media-id)]))
 
@@ -315,7 +386,7 @@
 
 (defn- create-event-from-slot
   "Creates a playout_event map from a DailySlot. Returns [event error] or [nil nil]."
-  [ds playout-id slot guide-group]
+  [ds playout-id slot guide-group tracker]
   (let [raw-start (:start-time slot)
         raw-end   (:end-time slot)
         start (->instant raw-start)
@@ -330,7 +401,7 @@
       (nil? end)   [nil (str "Invalid end_time: " raw-end)]
       (nil? media-id) [nil "Missing media_id"]
       :else
-      (let [[item err] (pick-item ds playout-id media-id strategy filters)]
+      (let [[item err] (pick-item ds playout-id media-id strategy filters tracker)]
         (if item
           [{:playout-id     playout-id
             :media-item-id  (:media-items/id item)
@@ -390,11 +461,13 @@
                                        {:keep-manual? true
                                         :from from
                                         :to   to}))
-          ;; Create events
-          (let [results (doall (map-indexed
+          ;; Create events with an in-memory tracker so sequential series and
+          ;; random pools do not repeat the same item within a single batch.
+          (let [tracker (atom {})
+                results (doall (map-indexed
                                  (fn [idx slot]
                                    (let [gg idx
-                                         [event err] (create-event-from-slot db playout-id slot gg)]
+                                         [event err] (create-event-from-slot db playout-id slot gg tracker)]
                                      (if event
                                        {:ok event}
                                        {:error err})))

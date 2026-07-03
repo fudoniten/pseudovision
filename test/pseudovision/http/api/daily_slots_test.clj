@@ -143,8 +143,8 @@
               "selects a distinct playable row (episode/movie), not the show")
           (is (some #{"Mystery"} params)
               "binds the requested category verbatim")
-          (is (some #{"genre:Mystery"} params)
-              "honours the genre:<name> tag convention"))))))
+           (is (some #{"genre:mystery"} params)
+               "honours the genre:<name> tag convention"))))))
 
 (deftest resolve-by-category-declares-season-join-before-it-is-referenced
   (testing "the season join is emitted before the play join that references season.id"
