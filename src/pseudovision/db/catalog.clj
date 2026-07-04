@@ -70,23 +70,24 @@
 ;; Show / movie profiles
 ;; ---------------------------------------------------------------------------
 
-;; DEPRECATED: Hardcoded metadata_genres table. Genres are dimensions now.
-;; Use show-tags or tag-based queries instead.
-;; See TS DIMENSION_CLEANUP.md for the full migration plan.
 (defn- show-genres
   "Returns a map {show-id -> [genre-name ...]} for the given show ids.
 
-  DEPRECATED: Queries the hardcoded metadata_genres table. Genres are a
-  dimension now and should be read from metadata_tags as 'genre:NAME'.
-  Use show-tags instead."
+   Reads from `metadata_tags` filtered to the `genre:` prefix (the canonical
+   post-DIMENSION_CLEANUP storage). The `genre:` prefix is stripped from the
+   returned values so the result shape stays consistent with the legacy
+   `metadata_genres` column."
   [ds show-ids]
   (if (seq show-ids)
     (let [rows (db/query-unqualified ds
-                  (-> (h/select :m.media-item-id :mg.name)
-                      (h/from [:metadata-genres :mg])
-                      (h/join [:metadata :m] [:= :m.id :mg.metadata-id])
-                      (h/where [:in :m.media-item-id show-ids])
-                      (h/order-by :m.media-item-id :mg.name)
+                  (-> (h/select :m.media-item-id
+                                [[:raw "regexp_replace(mt.name, '^genre:', '')"] :name])
+                      (h/from [:metadata-tags :mt])
+                      (h/join [:metadata :m] [:= :m.id :mt.metadata-id])
+                      (h/where [:and
+                                [:in :m.media-item-id show-ids]
+                                [:like :mt.name "genre:%"]])
+                      (h/order-by :m.media-item-id :mt.name)
                       sql/format))]
       (reduce (fn [acc r]
                 (update acc (:media-item-id r)
@@ -193,43 +194,44 @@
 ;; Genre aggregates
 ;; ---------------------------------------------------------------------------
 
-;; DEPRECATED: Hardcoded metadata_genres table. Genres are dimensions now.
-;; Use list-tag-aggregates or tag-based queries instead.
-;; See TS DIMENSION_CLEANUP.md for the full migration plan.
 (defn list-genre-aggregates
-  "DEPRECATED: Returns a seq of {:genre, :show_count, :episode_count}.
-   Queries the hardcoded metadata_genres table. Genres are dimensions now
-   and should be read from metadata_tags as 'genre:NAME'.
+  "Returns a seq of {:genre, :show_count, :episode_count}.
+
+   Reads from `metadata_tags` filtered to the `genre:` prefix (the canonical
+   post-DIMENSION_CLEANUP storage). The `genre:` prefix is stripped from the
+   returned values so the result shape stays consistent with the legacy
+   `metadata_genres` column.
 
    Optional `tag-filter` limits to items with that tag.
    A show is counted for a genre if its metadata carries that genre.
    Episodes are counted as children of those shows."
   [ds tag-filter]
   (let [query
-        (-> (h/select [:mg.name :genre]
+        (-> (h/select [[:raw "regexp_replace(mt.name, '^genre:', '')"] :genre]
                      [[:count [:distinct :mi.id]] :show_count]
                       [[:raw "SUM(e.count)::int"] :episode_count])
-            (h/from [:metadata-genres :mg])
-            (h/join [:metadata :m] [:= :m.id :mg.metadata-id])
+            (h/from [:metadata-tags :mt])
+            (h/join [:metadata :m] [:= :m.id :mt.metadata-id])
             (h/join [:media-items :mi] [:= :mi.id :m.media-item-id])
              (h/left-join [[:lateral
                             {:select [[:%count.* :count]]
                              :from   [[:media-items :e2]]
                              :where  [:and [:= :e2.kind (sql-util/->pg-enum "media_item_kind" "episode")]
-                                           [:or [:= :e2.parent-id :mi.id]
-                                                [:in :e2.parent-id {:select [:season.id]
-                                                                    :from   [[:media-items :season]]
-                                                                    :where  [:and [:= :season.parent-id :mi.id]
-                                                                                  [:= :season.kind (sql-util/->pg-enum "media_item_kind" "season")]]}]]]}]
+                                          [:or [:= :e2.parent-id :mi.id]
+                                               [:in :e2.parent-id {:select [:season.id]
+                                                                   :from   [[:media-items :season]]
+                                                                   :where  [:and [:= :season.parent-id :mi.id]
+                                                                                 [:= :season.kind (sql-util/->pg-enum "media_item_kind" "season")]]}]]]}]
                            :e]
                           [:= 1 1])
              (h/where [:and [:= :mi.state (sql-util/->pg-enum "media_item_state" "normal")]
                             [:in :mi.kind [(sql-util/->pg-enum "media_item_kind" "show")
-                                           (sql-util/->pg-enum "media_item_kind" "movie")]]])
+                                           (sql-util/->pg-enum "media_item_kind" "movie")]]
+                            [:like :mt.name "genre:%"]])
             (cond->
               tag-filter (h/where (tag-filter-clause tag-filter)))
-            (h/group-by :mg.name)
-            (h/order-by :mg.name))
+            (h/group-by :mt.name)
+            (h/order-by :mt.name))
         rows (db/query-unqualified ds (sql/format query))]
     (->> rows
          (mapv (fn [r]

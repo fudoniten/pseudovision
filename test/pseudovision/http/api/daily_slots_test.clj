@@ -113,8 +113,10 @@
 ;; space that GET /api/catalog/aggregate emits:
 ;;   - series:<id> episodes are nested show -> season -> episode, so the lookup
 ;;     must traverse seasons (not only direct children of the show);
-;;   - random:<category> matches metadata_genres (the genre names the aggregate
-;;     returns) and tags, expanding shows to playable episodes.
+;;   - random:<category> matches the `genre:` tag dimension the aggregate
+;;     emits (post-DIMENSION_CLEANUP; the legacy metadata_genres table was
+;;     dropped in migration 20260703-001), expanding shows to playable
+;;     episodes.
 ;; ---------------------------------------------------------------------------
 
 (deftest resolve-show-episodes-traverses-seasons
@@ -129,20 +131,20 @@
           (is (re-find #"(?i)parent_id" sql)
               "links episodes to the show via parent_id"))))))
 
-(deftest resolve-by-category-matches-genres-and-expands-playables
-  (testing "random:<category> reads the genre table the aggregate emits and resolves to playable items"
+(deftest resolve-by-category-matches-tags-and-expands-playables
+  (testing "random:<category> reads the `genre:` tag dimension the aggregate emits and resolves to playable items"
     (let [captured (atom nil)]
       (with-redefs [db-core/query (fn [_ sqlvec] (reset! captured sqlvec) [])]
         (#'ds/resolve-by-category nil "Mystery")
         (let [[sql & params] @captured]
-          (is (re-find #"(?i)metadata_genres" sql)
-              "matches against the genre dimension the aggregate emits")
+          (is (not (re-find #"(?i)metadata_genres|metadata-genres" sql))
+              "the legacy `metadata_genres` table is no longer queried (dropped in 20260703-001)")
           (is (re-find #"(?i)metadata_tags" sql)
-              "also honours the tag dimension")
+              "matches against the `genre:` tag dimension the aggregate emits")
           (is (re-find #"(?i) play\b|AS play" sql)
               "selects a distinct playable row (episode/movie), not the show")
           (is (some #{"Mystery"} params)
-              "binds the requested category verbatim")
+              "binds the requested category verbatim (legacy case)")
            (is (some #{"genre:mystery"} params)
                "honours the genre:<name> tag convention"))))))
 

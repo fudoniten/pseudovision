@@ -12,6 +12,7 @@
   (:require [clj-http.client              :as http]
             [clojure.string              :as str]
             [camel-snake-kebab.core      :as csk]
+            [pseudovision.util.tags      :as tags]
             [next.jdbc                   :as jdbc]
             [honey.sql                   :as sql]
             [honey.sql.helpers           :as h]
@@ -363,18 +364,25 @@
                  :title (:Name item)
                  :year (:ProductionYear item)
                  :kind (name kind)})
-      ;; Genres
+      ;; Genres — written as `genre:<kebab>` rows in `metadata_tags`
+      ;; (the canonical post-DIMENSION_CLEANUP storage). The `metadata_genres`
+      ;; table was dropped in migration 20260703-001.
       (when (seq (:Genres item))
         (jdbc/execute-one! tx
                            (sql/format
-                            (-> (h/delete-from :metadata-genres)
-                                (h/where [:= :metadata-id meta-id]))))
+                            (-> (h/delete-from :metadata-tags)
+                                (h/where [:and
+                                          [:= :metadata-id meta-id]
+                                          [:like :name "genre:%"]]))))
         (jdbc/execute! tx
                        (sql/format
-                        (-> (h/insert-into :metadata-genres)
-                            (h/values (mapv (fn [g] {:metadata-id meta-id :name g})
-                                            (:Genres item))))))
-        (log/info "Added metadata genres"
+                        (-> (h/insert-into :metadata-tags)
+                            (h/values
+                             (mapv (fn [g]
+                                     {:metadata-id meta-id
+                                      :name (str "genre:" (tags/kebab-case g))})
+                                   (:Genres item))))))
+        (log/info "Added metadata genre tags"
                   {:metadata-id meta-id
                    :genre-count (count (:Genres item))
                    :genres (:Genres item)}))
