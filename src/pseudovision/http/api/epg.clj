@@ -59,8 +59,10 @@
            (str "<episode-num system=\"onscreen\">E" 
                 (format "%02d" episode-number) "</episode-num>"))
          
-         ;; Categories/Genres - TODO: Query from metadata_genres table
-         ;; (currently genres are in a separate table, not included in this query)
+         ;; Categories/Genres - TODO: Derive from metadata_tags with the
+         ;; `genre:` prefix (genre rows are now stored as `genre:<kebab>`
+         ;; in metadata_tags; the legacy `metadata_genres` table was dropped
+         ;; in migration 20260703-001).
          
          ;; Content rating
          (when content-rating

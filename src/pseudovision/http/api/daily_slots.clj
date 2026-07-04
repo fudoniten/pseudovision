@@ -8,6 +8,7 @@
             [pseudovision.db.channels      :as channels-db]
             [pseudovision.db.core          :as db-core]
             [pseudovision.util.sql         :as sql-util]
+            [pseudovision.util.tags        :as tags]
             [pseudovision.util.time        :as time]
             [honey.sql.helpers :as h]
             [honey.sql :as sql]
@@ -100,32 +101,21 @@
       movie (assoc :_top-id (:media-items/id movie)))))
 
 (defn- kebab-case
-  "Lowercase, replace `&` with `and`, replace runs of non-alphanumerics with
-   a single `-`, and trim leading/trailing `-`. Matches the dimension
-   naming convention used by the tag-curation pipeline: spaces and
-   punctuation collapse to hyphens, `&` becomes the word `and`.
-
-   `Sci-Fi & Fantasy`   -> `sci-fi-and-fantasy`
-   `Action & Adventure` -> `action-and-adventure`
-   `Sci-Fi`             -> `sci-fi`
-   `Comedy`             -> `comedy`
-   `Random`             -> `random`"
+  "DEPRECATED: Use `pseudovision.util.tags/kebab-case` instead. Kept as a
+   private alias so the existing #ds/kebab-case test reference keeps working
+   without a separate rename PR."
   [s]
-  (when s
-    (-> s
-        str/lower-case
-        (str/replace "&" "and")
-        (str/replace #"[^a-z0-9]+" "-")
-        (str/replace #"(^-+)|(-+$)" ""))))
+  (tags/kebab-case s))
 
 (defn- resolve-by-category
   "Resolves a `random:<category>` pool to concrete *playable* items.
 
    `category` is matched against the metadata of top-level items (shows and
-   movies) — exactly the dimension space the catalog aggregate emits — against:
-     - genres   (metadata_genres.name, e.g. \"Mystery\", \"Sci-Fi & Fantasy\")
-     - tags     (metadata_tags.name), including the `genre:<name>` convention
-                (e.g. `genre:mystery`, `genre:sci-fi-and-fantasy`)
+   movies) — exactly the dimension space the catalog aggregate emits — via
+   the canonical `genre:` rows in `metadata_tags` (e.g. `genre:mystery`,
+   `genre:sci-fi-and-fantasy`). All categorisation lives in `metadata_tags`
+   alongside `channel:<slug>`, `time-slot:*`, `audience:*`, and the other
+   dimensions; the legacy `metadata_genres` table is gone.
 
    Matches are case-insensitive on tags (Postgres `lower(t.name)`) so the
    legacy \"Mystery\" form matches the canonical \"mystery\" storage, AND
@@ -147,8 +137,7 @@
     (-> (h/select-distinct :play.* [:mvp.duration :duration] [:top.id :_top-id])
         (h/from [:media-items :top])
         (h/join [:metadata :mtop] [:= :mtop.media-item-id :top.id])
-        (h/left-join [:metadata-genres :g] [:= :g.metadata-id :mtop.id])
-        (h/left-join [:metadata-tags :t]   [:= :t.metadata-id :mtop.id])
+        (h/left-join [:metadata-tags :t] [:= :t.metadata-id :mtop.id])
         ;; Seasons of matching shows, so we can reach their episodes.
         (h/left-join [:media-items :season]
                      [:and [:= :season.parent-id :top.id]
@@ -177,8 +166,7 @@
                   [:= :play.state (sql-util/->pg-enum "media_item_state" "normal")]
                   [:in :top.kind [(sql-util/->pg-enum "media_item_kind" "show")
                                   (sql-util/->pg-enum "media_item_kind" "movie")]]
-                  [:or [:= :g.name category]
-                       [:= [:lower :t.name] (str/lower-case category)]
+                  [:or [:= [:lower :t.name] (str/lower-case category)]
                        [:= [:lower :t.name] (str "genre:" (str/lower-case category))]
                        [:= [:lower :t.name] (kebab-case category)]
                        [:= [:lower :t.name] (str "genre:" (kebab-case category))]])
