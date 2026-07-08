@@ -169,7 +169,7 @@
                   [:or [:= [:lower :t.name] (str/lower-case category)]
                        [:= [:lower :t.name] (str "genre:" (str/lower-case category))]
                        [:= [:lower :t.name] (kebab-case category)]
-                       [:= [:lower :t.name] (str "genre:" (kebab-case category))]])
+                       [:= [:lower :t.name] (str "genre:" (kebab-case category))]]])
         (h/order-by :play.id)
         sql/format)))
 
