@@ -285,17 +285,27 @@
               :vaapi (cond-> []
                        rc      (into ["-rc_mode" (str/upper-case rc)])
                        bitrate (into ["-b:v" bitrate])
-                       gop     (into ["-g" gop]))
+                       ;; gop must be stringified here: this vector is
+                       ;; spliced into the ffmpeg arg sequence that
+                       ;; build-hls-command wraps in (into-array String …)
+                       ;; in hls.clj. A bare integer gop causes
+                       ;; "IllegalArgumentException: array element type
+                       ;; mismatch" at process spawn and the encoder is
+                       ;; never started (the stream manager retries every
+                       ;; 500ms — see 5da1350 for the gop introduction and
+                       ;; the 2026-07-08 503-on-every-NVENC-stream incident
+                       ;; for the failure mode).
+                       gop     (into ["-g" (str gop)]))
               :nvenc (cond-> []
                        preset  (into ["-preset" preset])
                        rc      (into ["-rc" rc])
                        bitrate (into ["-b:v" bitrate])
-                       gop     (into ["-g" gop]))
+                       gop     (into ["-g" (str gop)]))
               ;; software / libx264
               (cond-> []
                 preset  (into ["-preset" preset])
                 bitrate (into ["-b:v" bitrate])
-                gop     (into ["-g" gop "-keyint_min" gop])))))))
+                gop     (into ["-g" (str gop) "-keyint_min" (str gop)])))))))
 
 (defn audio-encode-args
   "Audio encoder selection and stream parameters."

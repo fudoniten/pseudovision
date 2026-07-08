@@ -400,3 +400,84 @@
                     {:profile-config {:video-codec "libx264" :hls {:initial-burst 0}}}))]
       (is (= "1" (nth cmd (inc (.indexOf cmd "-readrate")))))
       (is (not (some #{"-readrate_initial_burst"} cmd))))))
+
+;; ---------------------------------------------------------------------------
+;; Regression: gop must be stringified so build-hls-command can materialise
+;; the arg sequence to a String[] for ProcessBuilder.
+;;
+;; 2026-07-08 incident: NVENC streams returned HTTP 503 to VLC. Logs showed
+;; java.lang.IllegalArgumentException: array element type mismatch at
+;; clojure.core/into-array, raised by pseudovision.ffmpeg.hls/build-hls-command.
+;; Root cause: video-encode-args spliced the integer :video.gop (introduced in
+;; 5da1350) into the ffmpeg arg vector as ["-g" <Long>], and hls.clj wraps the
+;; final sequence in (into-array String …), which rejects non-String elements.
+;; The stream manager retried every 500ms; the encoder was never spawned.
+;;
+;; The existing per-encoder tests above (nvenc-encode-args-emits-gop et al.)
+;; walked the seq with `some` and never materialised to String[], so the
+;; mismatch went uncaught. These tests assert the full materialisation.
+;; ---------------------------------------------------------------------------
+
+(deftest build-hls-command-materialises-to-string-array-nvenc
+  (testing "NVENC + gop → arg vector must be a String[] (no Integer leakage)"
+    (with-redefs [profile/available-accels (constantly #{:none :nvenc})]
+      (let [cmd (hls/build-hls-command
+                 "http://example/stream" "/tmp/out"
+                 {:profile-config {:accel "nvenc" :decode "hardware"
+                                   :video {:codec "h264" :bitrate "4000k"
+                                           :preset "p4" :rate-control "vbr"
+                                           :gop 60}}})]
+        ;; This is the assertion the existing tests were missing: materialising
+        ;; to a String[] is what trips the IllegalArgumentException. Before
+        ;; the fix, `cmd` was an Object[] containing Long values, and any
+        ;; downstream caller using it as a String[] would crash.
+        (is (instance? (Class/forName "[Ljava.lang.String;") cmd)
+            "build-hls-command must return a String[]")
+        (is (every? string? cmd) "every element must be a String")
+        (is (some #(= "-g" %) cmd) "-g flag emitted")
+        (is (some #(= "60" %) cmd) "gop is stringified, not an integer")
+        (is (some #(= "h264_nvenc" %) cmd) "NVENC encoder selected"))))
+
+  (testing "VAAPI + gop → String[]"
+    (with-redefs [profile/available-accels (constantly #{:none :vaapi})]
+      (let [cmd (hls/build-hls-command
+                 "http://example/stream" "/tmp/out"
+                 {:profile-config {:accel "vaapi" :decode "hardware"
+                                   :device "/dev/dri/renderD128"
+                                   :video {:codec "h264" :bitrate "4000k"
+                                           :rate-control "vbr" :gop 60}}})]
+        (is (instance? (Class/forName "[Ljava.lang.String;") cmd))
+        (is (every? string? cmd))
+        (is (some #(= "60" %) cmd) "VAAPI gop is stringified"))))
+
+  (testing "libx264 + gop → String[] (the gop case is doubled: -g and -keyint_min)"
+    (let [cmd (hls/build-hls-command
+               "http://example/stream" "/tmp/out"
+               {:profile-config {:accel "none"
+                                 :video {:codec "h264" :bitrate "2000k"
+                                         :preset "veryfast" :gop 60}}})]
+      (is (instance? (Class/forName "[Ljava.lang.String;") cmd))
+      (is (every? string? cmd))
+      (is (some #(= "-g" %) cmd))
+      (is (some #(= "-keyint_min" %) cmd))
+      ;; Both -g and -keyint_min must point at the stringified gop
+      (is (= "60" (nth cmd (inc (.indexOf cmd "-g"))))
+          "-g value is \"60\"")
+      (is (= "60" (nth cmd (inc (.indexOf cmd "-keyint_min"))))
+          "-keyint_min value is \"60\""))))
+
+(deftest video-encode-args-emits-string-gop
+  (testing "every encoder backend that supports gop emits a String, not a Long"
+    (let [nvenc (profile/video-encode-args
+                 {:accel :nvenc :video {:codec "h264" :bitrate "4000k"
+                                        :rate-control :vbr :preset "p4" :gop 60}})
+          vaapi (profile/video-encode-args
+                 {:accel :vaapi :video {:codec "h264" :bitrate "4000k"
+                                        :rate-control :vbr :gop 60}})
+          sw    (profile/video-encode-args
+                 {:accel :none :video {:codec "h264" :bitrate "2000k"
+                                       :preset "veryfast" :gop 60}})]
+      (doseq [[label args] [["NVENC" nvenc] ["VAAPI" vaapi] ["libx264" sw]]]
+        (is (every? string? args) (str label ": every arg is a String"))
+        (is (some #(= "60" %) args) (str label ": gop value is the string \"60\""))
+        (is (not-any? #(= 60 %) args) (str label ": integer 60 must NOT appear"))))))
