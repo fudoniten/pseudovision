@@ -448,17 +448,32 @@
                                                            (map :tag (get item-tags sid))))})
                           passing)
                        items)
-            ;; Drop items with no probed (positive) duration — the event
-            ;; below is stamped with the item's REAL runtime, so an unknown
-            ;; length can't be scheduled truthfully.
+            ;; Prefer items with a known, positive probed duration: the event
+            ;; below can then be stamped with the item's REAL runtime and, for
+            ;; pools, duration-fitted to the slot.
             playable (filterv playable-item? filtered)
-            ;; For pooled categories, narrow further to items whose runtime
-            ;; plausibly belongs in this slot. series:/movie: selection is
-            ;; unaffected (a specific id, or episode order, isn't up for
-            ;; renegotiation here).
-            fit-ready (if (= type "random")
+            ;; But NEVER blackout a slot just because its resolved items were
+            ;; never probed — an unprobed file still plays fine at stream time
+            ;; (ffmpeg reads the real file), and failing every slot leaves the
+            ;; channel with zero playout events, which streams as HTTP 503.
+            ;; When nothing in the tag-filtered set has a usable duration we
+            ;; fall back to the whole set and let create-event-from-slot stamp
+            ;; finish_at from the slot's nominal length (the behaviour before
+            ;; duration-fit landed).
+            base     (if (seq playable)
+                       playable
+                       (do (when (seq filtered)
+                             (log/warn "No probed-duration items in pool; scheduling on nominal slot length"
+                                       {:media-id media-id :pool-size (count filtered)}))
+                           filtered))
+            ;; For pooled categories with probed durations, narrow further to
+            ;; items whose runtime plausibly belongs in this slot. series:/
+            ;; movie: selection is unaffected (a specific id, or episode order,
+            ;; isn't up for renegotiation here), and the unprobed fallback has
+            ;; no runtime to fit by.
+            fit-ready (if (and (= type "random") (seq playable))
                         (select-fitting-items playable target-secs tolerance-secs)
-                        playable)]
+                        base)]
         (if (seq fit-ready)
           (case type
             "series" (let [show-id (try (Long/parseLong id)
@@ -551,7 +566,16 @@
                                 cursor
                                 nominal-start)
                 ^Duration dur (:duration item)
-                actual-end   (.plus ^Instant actual-start dur)]
+                ;; A picked item usually carries a probed, positive runtime, so
+                ;; the event finishes when the item really does. An unprobed
+                ;; item (scheduled via pick-item's nominal fallback) has no
+                ;; trustworthy runtime — fall back to the slot's nominal length
+                ;; (matching pre-duration-fit behaviour) instead of NPEing on a
+                ;; nil duration.
+                span         (if (and dur (pos? (.getSeconds dur)))
+                               dur
+                               (Duration/between nominal-start nominal-end))
+                actual-end   (.plus ^Instant actual-start span)]
             [{:playout-id     playout-id
               :media-item-id  (:media-items/id item)
               :kind           (sql-util/->pg-enum "event_kind" "content")

@@ -72,6 +72,36 @@
           (is (= 1 (:ingested body)))
           (is (= 0 (:skipped body))))))))
 
+(deftest daily-slots-schedules-unprobed-items
+  (testing "a random:<category> slot whose resolved items carry no probed
+            duration still ingests (stamped with the slot's nominal length)
+            rather than being skipped as 'No playable items found'.
+
+            Regression: the duration-aware overlap fix dropped every item
+            without a positive probed duration, so a channel whose content was
+            not yet probed lost ALL its playout events and its stream 503'd."
+    (with-redefs [channels-db/get-channel (fn [_ _] {:channels/id 1})
+                  playout-db/get-playout-for-channel (fn [_ _] {:playouts/id 1})
+                  playout-db/delete-events! (fn [& _] 0)
+                  playout-db/bulk-insert-events! (fn [& _] nil)
+                  db-core/query-one (fn [_ _] nil)
+                  ;; Resolved pool item carries NO :duration (never probed).
+                  db-core/query (fn [_ _] [{:media-items/id 42
+                                            :media-items/kind "episode"}])]
+      (let [handler (make-test-handler)
+            resp    (handler (-> (mock/request :post "/api/channels/1/daily-slots")
+                                (mock/json-body [{:start-time "2026-01-10T10:00:00"
+                                                  :end-time   "2026-01-10T11:00:00"
+                                                  :media-id   "random:comedy"
+                                                  :media-selection-strategy "random"
+                                                  :category-filters []
+                                                  :notes []}])))]
+        (is (= 200 (:status resp)))
+        (let [body (parse-json-body resp)]
+          (is (= 1 (:ingested body)))
+          (is (= 0 (:skipped body)))
+          (is (empty? (:errors body))))))))
+
 (deftest daily-slots-accepts-naive-datetimes
   (testing "POST .../daily-slots ingests a batch of naive-ISO slots (no Z/offset)"
     ;; The Tunarr-Scheduler expander emits naive local wall-clock datetimes
