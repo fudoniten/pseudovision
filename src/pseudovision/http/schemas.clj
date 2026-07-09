@@ -946,6 +946,14 @@
    [:max_minutes [:maybe :int]]
    [:item_count  :int]])
 
+(def TagRuntimeHistogram
+  "Runtime distribution for one tag (e.g. 'genre:movie' or 'genre:sitcom'),
+   for slot-fit reasoning within a specific random:<category> pool rather than
+   the catalog as a whole. See `list-tag-runtime-histogram`."
+  [:map
+   [:tag     :string]
+   [:buckets [:vector RuntimeBucket]]])
+
 ;; DEPRECATED: Includes :channel_scope (hardcoded channel concept) and
 ;; :genres (hardcoded genre aggregates). Both are legacy first-class fields.
 ;; In the dimension model, channels and genres are just tags in :tag_aggregates
@@ -968,6 +976,7 @@
    [:genres             [:vector GenreProfile]]
    [:tag_aggregates     {:optional true} [:vector TagAggregate]]
    [:runtime_histogram  [:vector RuntimeBucket]]
+   [:tag_runtime_histograms {:optional true} [:vector TagRuntimeHistogram]]
    [:generated_at       {:optional true} [:maybe :string]]])
 
 ;; ---------------------------------------------------------------------------

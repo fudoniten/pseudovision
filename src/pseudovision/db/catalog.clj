@@ -244,41 +244,48 @@
 ;; Runtime histogram
 ;; ---------------------------------------------------------------------------
 
+;; 15-minute buckets from 0 to 210 minutes, then an open-ended top bucket.
+;; Matches the tolerance granularity `pseudovision.http.api.daily-slots` uses
+;; at air time (`default-fit-tolerance-minutes`) and the bucket width the
+;; feasibility duration-fit check (tunarr-scheduler) reasons in, so a "tight"
+;; finding upstream and a "closest available" fallback at air time describe
+;; the same boundary. Bumping past the old scheme's `60-90min`/`90+min` top
+;; (which lumped a 91-minute film with a 3-hour epic together) was the whole
+;; point of dimensioning this per-category — see DURATION_AWARE_SCHEDULING.md
+;; (tunarr-scheduler) §3.2.
+(def ^:private bucket-width-minutes 15)
+(def ^:private bucket-ceiling-minutes 210)
+
+(def ^:private bucket-bounds
+  "[[lo hi] ...] for every closed bucket below the ceiling, e.g. [0 15] [15 30]
+   ... [195 210]. The open-ended top bucket (`210+min`) is handled separately."
+  (mapv (fn [lo] [lo (+ lo bucket-width-minutes)])
+        (range 0 bucket-ceiling-minutes bucket-width-minutes)))
+
+(defn- bucket-label [lo hi]
+  (if hi (str lo "-" hi "min") (str lo "+min")))
+
 (defn- runtime-bucket-clause
   "Returns a CASE expression that buckets durations into human-readable labels.
    Durations are measured in minutes (from EXTRACT(EPOCH FROM duration)/60)."
   []
-  [:case
-   [:<= [:raw "EXTRACT(EPOCH FROM mv.duration) / 60"] [:raw "10"]]
-   [:raw "'0-10min'"]
-   [:<= [:raw "EXTRACT(EPOCH FROM mv.duration) / 60"] [:raw "20"]]
-   [:raw "'10-20min'"]
-   [:<= [:raw "EXTRACT(EPOCH FROM mv.duration) / 60"] [:raw "30"]]
-   [:raw "'20-30min'"]
-   [:<= [:raw "EXTRACT(EPOCH FROM mv.duration) / 60"] [:raw "40"]]
-   [:raw "'30-40min'"]
-   [:<= [:raw "EXTRACT(EPOCH FROM mv.duration) / 60"] [:raw "50"]]
-   [:raw "'40-50min'"]
-   [:<= [:raw "EXTRACT(EPOCH FROM mv.duration) / 60"] [:raw "60"]]
-   [:raw "'50-60min'"]
-   [:<= [:raw "EXTRACT(EPOCH FROM mv.duration) / 60"] [:raw "90"]]
-   [:raw "'60-90min'"]
-   :else
-   [:raw "'90+min'"]])
+  (into [:case]
+        (concat
+         (mapcat (fn [[lo hi]]
+                   [[:<= [:raw "EXTRACT(EPOCH FROM mv.duration) / 60"] [:raw (str hi)]]
+                    [:raw (str "'" (bucket-label lo hi) "'")]])
+                 bucket-bounds)
+         [:else [:raw (str "'" (bucket-label bucket-ceiling-minutes nil) "'")]])))
+
+(def ^:private bucket-label->min-max
+  (into {(bucket-label bucket-ceiling-minutes nil) [bucket-ceiling-minutes nil]}
+        (map (fn [[lo hi]] [(bucket-label lo hi) [lo hi]]))
+        bucket-bounds))
 
 (defn- bucket->min-max
   "Map a bucket label to [min max] for the RuntimeBucket shape."
   [label]
-  (case label
-    "0-10min"   [0 10]
-    "10-20min"  [10 20]
-    "20-30min"  [20 30]
-    "30-40min"  [30 40]
-    "40-50min"  [40 50]
-    "50-60min"  [50 60]
-    "60-90min"  [60 90]
-    "90+min"    [90 999]
-    [0 nil]))
+  (get bucket-label->min-max label [0 nil]))
 
 (defn list-runtime-histogram
   "Returns a seq of {:label, :min_minutes, :max_minutes, :item_count}.
@@ -304,6 +311,85 @@
                :max_minutes max
                :item_count  (or (:item-count r) 0)}))
           rows)))
+
+(defn list-tag-runtime-histogram
+  "Returns a seq of {:tag, :label, :min_minutes, :max_minutes, :item_count}.
+
+   The per-category counterpart to `list-runtime-histogram`: buckets runtime
+   by *tag* (the same `metadata_tags` dimension `random:<category>` slots
+   resolve against — see `daily-slots.clj`'s `resolve-by-category`), not just
+   globally. A `random:movie` strip and a `random:sitcom` strip can have
+   wildly different runtime distributions; this is what lets a feasibility
+   check (or a future slot-authoring step) ask 'does *this* category have
+   content at *this* length', not just 'does the catalog as a whole'.
+
+   Tags live on the top-level item (show or movie); this expands each tagged
+   show to its (season-nested) episodes so the bucket reflects actual
+   playable runtime, not the show's own (nonexistent) duration. A movie's tag
+   and its runtime are on the same row. Optional `tag-filter` further limits
+   to items ALSO carrying that tag (e.g. channel scoping), independent of the
+   per-row `:tag` this groups by.
+
+   Only counts items with a positive (probed) duration."
+  [ds tag-filter]
+  (let [query
+        (-> (h/select [:t.name :tag]
+                      [(runtime-bucket-clause) :label]
+                      [:%count.* :item_count])
+            (h/from [:metadata-tags :t])
+            (h/join [:metadata :m] [:= :m.id :t.metadata-id])
+            (h/join [:media-items :mi] [:= :mi.id :m.media-item-id])
+            (h/left-join [:media-items :season]
+                         [:and [:= :season.parent-id :mi.id]
+                               [:= :season.kind (sql-util/->pg-enum "media_item_kind" "season")]])
+            ;; :play and :mv are LEFT JOINs (not inner) purely to dodge
+            ;; HoneySQL's join-emission order — every inner join is rendered
+            ;; before every left join regardless of thread order, so an inner
+            ;; :play here would render ahead of the :season LEFT JOIN its ON
+            ;; clause references ("missing FROM-clause entry for table
+            ;; season"). The WHERE clause below (`play.state = normal`,
+            ;; `mv.duration > 0`) drops the unmatched NULL rows, so this
+            ;; behaves like an inner join in effect — same pattern as
+            ;; daily-slots.clj's `resolve-by-category`.
+            (h/left-join [:media-items :play]
+                         [:or
+                          [:and [:= :mi.kind (sql-util/->pg-enum "media_item_kind" "movie")]
+                                [:= :play.id :mi.id]]
+                          [:and [:= :mi.kind (sql-util/->pg-enum "media_item_kind" "show")]
+                                [:= :play.kind (sql-util/->pg-enum "media_item_kind" "episode")]
+                                [:or [:= :play.parent-id :mi.id]
+                                     [:= :play.parent-id :season.id]]]])
+            (h/left-join [:media-versions :mv] [:= :mv.media-item-id :play.id])
+            (h/where [:and
+                      [:= :mi.state (sql-util/->pg-enum "media_item_state" "normal")]
+                      [:= :play.state (sql-util/->pg-enum "media_item_state" "normal")]
+                      [:in :mi.kind [(sql-util/->pg-enum "media_item_kind" "show")
+                                     (sql-util/->pg-enum "media_item_kind" "movie")]]
+                      [:> :mv.duration [:raw "INTERVAL '0'"]]])
+            (cond->
+              tag-filter (h/where (tag-filter-clause tag-filter)))
+            (h/group-by :t.name [(runtime-bucket-clause)])
+            (h/order-by :t.name [(runtime-bucket-clause)]))
+        rows (db/query-unqualified ds (sql/format query))
+        buckets (mapv (fn [r]
+                        (let [label (:label r)
+                              [min max] (bucket->min-max label)]
+                          {:tag         (:tag r)
+                           :label       label
+                           :min_minutes min
+                           :max_minutes max
+                           :item_count  (or (:item-count r) 0)}))
+                      rows)]
+    ;; Wire shape is {:tag ... :buckets [RuntimeBucket ...]} — one entry per
+    ;; tag — rather than the flat per-(tag,bucket) rows the query returns, so
+    ;; group here rather than push that reshaping onto every caller.
+    (->> buckets
+         (group-by :tag)
+         (mapv (fn [[tag tag-buckets]]
+                 {:tag     tag
+                  :buckets (mapv #(dissoc % :tag) tag-buckets)}))
+         (sort-by :tag)
+         vec)))
 
 ;; ---------------------------------------------------------------------------
 ;; Tag aggregates
@@ -374,7 +460,8 @@
         shows    (list-show-profiles ds tag-filter)
         genres   (list-genre-aggregates ds tag-filter)
         tags     (list-tag-aggregates ds tag-filter)
-        histo    (list-runtime-histogram ds tag-filter)]
+        histo    (list-runtime-histogram ds tag-filter)
+        tag-histo (list-tag-runtime-histogram ds tag-filter)]
     {:channel_scope    channel-name
      :total_items      (or (:total_items counts) 0)
      :total_episodes   (or (:total_episodes counts) 0)
@@ -383,4 +470,5 @@
      :genres           genres
      :tag_aggregates   tags
      :runtime_histogram histo
+     :tag_runtime_histograms tag-histo
      :generated_at     (str (java.time.Instant/now))}))
