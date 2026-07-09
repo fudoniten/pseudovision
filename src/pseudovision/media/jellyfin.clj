@@ -272,18 +272,6 @@
                                 [:= :remote-key parent-jf-id]])
                       sql/format))))
 
-(defn- item-unchanged?
-  "Returns true if the item already exists with the same etag."
-  [tx library-path-id jf-id etag]
-  (let [existing (db-core/query-one tx
-                                    (-> (h/select :id :remote-etag)
-                                        (h/from :media-items)
-                                        (h/where [:and
-                                                  [:= :library-path-id library-path-id]
-                                                  [:= :remote-key jf-id]])
-                                   sql/format))]
-    (and existing (= (:media-items/remote-etag existing) etag))))
-
 (defn- upsert-version-and-file!
   "Upserts a media version and its backing file for an item with a physical path."
   [tx item-id item]
@@ -408,7 +396,14 @@
 
 (defn- upsert-item!
   "Upserts a single Jellyfin item into the database.
-   Returns the upserted media_items row, or nil if skipped."
+   Returns the upserted media_items row, or nil if skipped.
+
+   Every scan re-runs the version+metadata upserts for every item, so
+   `media-versions.duration` (and any other field that depends on the
+   latest Jellyfin response, like `RunTimeTicks`) stays in sync. The
+   previous etag-based early-exit caused items to keep their
+   never-probed `duration = INTERVAL '0'` indefinitely, which broke
+   downstream scheduling (`playable-item?` rejected them all)."
   [db library-path-id item]
   (let [jf-id   (:Id item)
         jf-type (:Type item)
@@ -416,36 +411,35 @@
         etag    (or (:Etag item) (str (:DateLastSaved item)))]
     (when kind
       (jdbc/with-transaction [tx db]
-        (when-not (item-unchanged? tx library-path-id jf-id etag)
-          ;; Resolve parent for hierarchical items
-          (let [parent-jf-id (item-parent-jf-id item kind)
-                parent-row   (when (needs-parent? kind)
-                               (find-parent-item tx library-path-id parent-jf-id))
-                parent-id    (or (:media-items/id parent-row) (:id parent-row))]
-            (if (and (needs-parent? kind) (nil? parent-id))
-              ;; Parent not yet synced — skip for now
-              (do (log/debug "Skipping item — parent not yet synced"
-                             {:id           jf-id
-                              :type         jf-type
-                              :parent-jf-id parent-jf-id
-                              :parent-row   parent-row})
-                  nil)
-              (let [item-row (db/upsert-media-item! tx
-                                                    (cond-> {:kind             (name kind)
-                                                             :state            "normal"
-                                                             :library-path-id  library-path-id
-                                                             :remote-key       jf-id
-                                                             :remote-etag      etag}
-                                                      parent-id
-                                                      (assoc :parent-id parent-id)
+        ;; Resolve parent for hierarchical items
+        (let [parent-jf-id (item-parent-jf-id item kind)
+              parent-row   (when (needs-parent? kind)
+                             (find-parent-item tx library-path-id parent-jf-id))
+              parent-id    (or (:media-items/id parent-row) (:id parent-row))]
+          (if (and (needs-parent? kind) (nil? parent-id))
+            ;; Parent not yet synced — skip for now
+            (do (log/debug "Skipping item — parent not yet synced"
+                           {:id           jf-id
+                            :type         jf-type
+                            :parent-jf-id parent-jf-id
+                            :parent-row   parent-row})
+                nil)
+            (let [item-row (db/upsert-media-item! tx
+                                                  (cond-> {:kind             (name kind)
+                                                           :state            "normal"
+                                                           :library-path-id  library-path-id
+                                                           :remote-key       jf-id
+                                                           :remote-etag      etag}
+                                                    parent-id
+                                                    (assoc :parent-id parent-id)
 
-                                                      (some? (:IndexNumber item))
-                                                      (assoc :position (:IndexNumber item))))
-                    item-id  (:id item-row)]
-                (when item-id
-                  (upsert-version-and-file! tx item-id item)
-                  (upsert-metadata! tx item-id item kind))
-                item-row))))))))
+                                                    (some? (:IndexNumber item))
+                                                    (assoc :position (:IndexNumber item))))
+                  item-id  (:id item-row)]
+              (when item-id
+                (upsert-version-and-file! tx item-id item)
+                (upsert-metadata! tx item-id item kind))
+              item-row)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Library discovery
