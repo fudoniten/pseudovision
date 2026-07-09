@@ -13,7 +13,7 @@
             [honey.sql.helpers :as h]
             [honey.sql :as sql]
             [taoensso.timbre :as log])
-  (:import [java.time Instant LocalDateTime OffsetDateTime]))
+  (:import [java.time Duration Instant LocalDateTime OffsetDateTime]))
 
 ;; ---------------------------------------------------------------------------
 ;; Media resolution
@@ -236,6 +236,24 @@
           (swap! tracker assoc-in [:series show-id] {:last-idx next-idx})
           (nth episodes next-idx))))))
 
+(defn- pool-cache-key
+  "A tracker key for a `random:<category>` pool that changes whenever the
+   candidate SET does, not just the media_id.
+
+   Before duration-fit narrowing, every slot referencing the same media_id
+   within a batch saw the identical (tag-filtered) item set, so caching a
+   shuffled rotation under `media-id` alone was safe. Now `select-fitting-
+   items` can hand different slots a different subset of the same category
+   (a 30-minute bucket vs. a 2-hour bucket), so `pick-from-pool`'s cached
+   `:pool` (a literal shuffled array, indexed by a count computed from
+   whatever `items` the CURRENT call passed) would otherwise be read with an
+   index bound to the wrong array — safe when the new set is smaller, an
+   IndexOutOfBoundsException when it's larger. Folding the candidate ids into
+   the key means a different subset simply starts its own independent
+   rotation instead of reusing another subset's stale array."
+  [media-id items]
+  (str media-id "#" (hash (sort (map :media-items/id items)))))
+
 (defn- pick-from-pool
   "Picks an item from `items` according to `strategy`, using `tracker` to
    avoid duplicates within a single ingest batch.
@@ -275,10 +293,87 @@
   [item]
   (or (:_top-id item) (:media-items/id item)))
 
+;; ---------------------------------------------------------------------------
+;; Duration-aware fit selection
+;;
+;; The expanded DailySlot stream describes a slot's WALL-CLOCK window (e.g. a
+;; 1-hour block for `random:movie`), but a `random:<category>` pool typically
+;; spans wildly different runtimes (a 22-minute sitcom, a 3-hour epic). Picking
+;; blindly from the whole pool routinely lands an item that overruns the slot,
+;; which used to silently overlap the next slot's event (the event's finish_at
+;; was stamped from the slot boundary, not the item's actual runtime).
+;;
+;; `select-fitting-items` narrows the pool to items whose runtime plausibly
+;; belongs in the slot before the existing pick-from-pool/pick-episode
+;; rotation logic runs, so variety and no-repeat rotation are preserved WITHIN
+;; the fitting subset. `create-event-from-slot` then stamps the event with the
+;; item's real duration and lets a later slot's start drift forward when an
+;; item still overflows — see its docstring.
+;; ---------------------------------------------------------------------------
+
+(def ^:private default-fit-tolerance-minutes
+  "Slack allowed between a slot's nominal duration and a candidate item's
+   runtime when picking from a random:<category> pool. An item up to this many
+   minutes under the slot's length is a perfect fit; an item up to this many
+   minutes OVER is tolerated too (the next slot simply starts a little late).
+   Only when nothing in the pool is within this window do we fall back to
+   whatever is closest, so a thin pool never fails a slot outright."
+  15)
+
+(defn- playable-item?
+  "True when `item` carries a known, positive runtime. Mirrors
+   pseudovision.scheduling.core/playable? — an item with no probed duration
+   can't be stamped with a truthful finish_at, so it can't be scheduled here."
+  [item]
+  (when-let [^Duration d (:duration item)]
+    (pos? (.getSeconds d))))
+
+(defn- duration-secs ^long [item]
+  (.getSeconds ^Duration (:duration item)))
+
+(defn- closest-first [target-secs items]
+  (sort-by #(Math/abs (- (duration-secs %) target-secs)) items))
+
+(def ^:private fallback-pool-cap
+  "When nothing in a pool is within tolerance of the target, how many of the
+   closest-runtime items to still offer to the rotation logic, rather than
+   handing over the whole (possibly wildly mismatched) pool."
+  8)
+
+(defn- select-fitting-items
+  "Narrows `items` (already tag-filtered and playable) to those whose runtime
+   best matches a `target-secs`-long slot, within `tolerance-secs` slack.
+   Prefers items that fit without overflowing; tolerates a small overflow
+   next; falls back to the closest-runtime items overall (bounded to
+   `fallback-pool-cap`) only when nothing is within tolerance."
+  [items target-secs tolerance-secs]
+  (let [lo    (- target-secs tolerance-secs)
+        hi    (+ target-secs tolerance-secs)
+        under (filterv #(<= lo (duration-secs %) target-secs) items)
+        over  (filterv #(< target-secs (duration-secs %) hi) items)]
+    (cond
+      (seq under) under
+      (seq over)  over
+      (seq items) (do
+                    (log/warn "No pool item within fit tolerance; falling back to closest runtime"
+                              {:target-secs target-secs
+                               :tolerance-secs tolerance-secs
+                               :pool-size (count items)})
+                    (vec (take fallback-pool-cap (closest-first target-secs items))))
+      :else       [])))
+
 (defn- pick-item
   "Resolves a DailySlot's media_id to a concrete media-item row.
+
+   `target-secs`/`tolerance-secs` describe the slot's nominal duration and how
+   much runtime slack is acceptable; for `random:<category>` pools the
+   candidate set is narrowed to items that plausibly fit before the existing
+   rotation logic (pick-from-pool) picks among them. `series:`/`movie:` slots
+   are unaffected — a specific movie id or a show's episode order is not
+   something duration-fit can second-guess.
+
    Returns [item error-message] or [nil error]."
-  [ds playout-id media-id strategy category-filters tracker]
+  [ds playout-id media-id strategy category-filters tracker target-secs tolerance-secs]
   (if-let [parsed (parse-media-id media-id)]
     (let [type (first parsed)
           id   (second parsed)
@@ -352,15 +447,26 @@
                                                                sid (top-id-of it)]
                                                            (map :tag (get item-tags sid))))})
                           passing)
-                       items)]
-        (if (seq filtered)
+                       items)
+            ;; Drop items with no probed (positive) duration — the event
+            ;; below is stamped with the item's REAL runtime, so an unknown
+            ;; length can't be scheduled truthfully.
+            playable (filterv playable-item? filtered)
+            ;; For pooled categories, narrow further to items whose runtime
+            ;; plausibly belongs in this slot. series:/movie: selection is
+            ;; unaffected (a specific id, or episode order, isn't up for
+            ;; renegotiation here).
+            fit-ready (if (= type "random")
+                        (select-fitting-items playable target-secs tolerance-secs)
+                        playable)]
+        (if (seq fit-ready)
           (case type
             "series" (let [show-id (try (Long/parseLong id)
                                         (catch Exception _ -1))]
-                       (if-let [ep (pick-episode ds playout-id show-id filtered strategy tracker)]
+                       (if-let [ep (pick-episode ds playout-id show-id fit-ready strategy tracker)]
                          [ep nil]
                          [nil (str "No episode selected for series " id)]))
-            (if-let [pick (pick-from-pool media-id filtered strategy tracker)]
+            (if-let [pick (pick-from-pool (pool-cache-key media-id fit-ready) fit-ready strategy tracker)]
               [pick nil]
               [nil (str "No playable items found for media_id " media-id)]))
           [nil (str "No playable items found for media_id " media-id)])))
@@ -401,36 +507,64 @@
     :else x))
 
 (defn- create-event-from-slot
-  "Creates a playout_event map from a DailySlot. Returns [event error] or [nil nil]."
-  [ds playout-id slot guide-group tracker]
+  "Creates a playout_event map from a DailySlot.
+
+   Two things used to make this unsafe for content that doesn't divide evenly
+   into its slot (almost every movie in a 1-hour `random:movie` slot):
+
+     1. `finish_at` was stamped from the slot's own `end_time`, not the picked
+        item's actual runtime — a 2h movie in a 1h slot was recorded as if it
+        finished on time, so the next slot's event started on top of it.
+     2. Item selection ignored the slot's duration entirely.
+
+   `pick-item` now narrows `random:<category>` pools to runtime-appropriate
+   candidates (see `select-fitting-items`), and this function stamps the
+   event with the item's REAL duration. `cursor` is the actual instant the
+   previous slot in this batch finished at (nil for the first slot): when the
+   previous item overran its slot, this slot's start shifts forward to begin
+   right after it — no overlap, at the cost of occasionally starting a few
+   minutes late. When the previous item finished at or before this slot's own
+   nominal start (including a genuine gap, e.g. a day boundary), this slot
+   starts at its own nominal time and any drift settles back to zero.
+
+   Returns [event-or-nil error-or-nil next-cursor]."
+  [ds playout-id slot guide-group tracker cursor tolerance-secs]
   (let [raw-start (:start-time slot)
         raw-end   (:end-time slot)
-        start (->instant raw-start)
-        end   (->instant raw-end)
+        nominal-start (->instant raw-start)
+        nominal-end   (->instant raw-end)
         media-id (:media-id slot)
         strategy (or (:media-selection-strategy slot) "random")
         filters  (:category-filters slot)]
     (cond
-      (str/blank? (str raw-start)) [nil "Missing start_time"]
-      (nil? start) [nil (str "Invalid start_time: " raw-start)]
-      (str/blank? (str raw-end))   [nil "Missing end_time"]
-      (nil? end)   [nil (str "Invalid end_time: " raw-end)]
-      (nil? media-id) [nil "Missing media_id"]
+      (str/blank? (str raw-start)) [nil "Missing start_time" cursor]
+      (nil? nominal-start) [nil (str "Invalid start_time: " raw-start) cursor]
+      (str/blank? (str raw-end))   [nil "Missing end_time" cursor]
+      (nil? nominal-end)   [nil (str "Invalid end_time: " raw-end) cursor]
+      (nil? media-id) [nil "Missing media_id" cursor]
       :else
-      (let [[item err] (pick-item ds playout-id media-id strategy filters tracker)]
+      (let [target-secs (max 1 (.getSeconds (Duration/between nominal-start nominal-end)))
+            [item err] (pick-item ds playout-id media-id strategy filters tracker
+                                   target-secs tolerance-secs)]
         (if item
-          [{:playout-id     playout-id
-            :media-item-id  (:media-items/id item)
-            :kind           (sql-util/->pg-enum "event_kind" "content")
-            :start-at       start
-            :finish-at      end
-            :guide-group    guide-group
-            :slot-id        nil
-            :is-manual      false
-            :custom-title   (when (seq (:notes slot))
-                              (str/join "; " (:notes slot)))}
-           nil]
-          [nil err])))))
+          (let [actual-start (if (and cursor (.isAfter ^Instant cursor nominal-start))
+                                cursor
+                                nominal-start)
+                ^Duration dur (:duration item)
+                actual-end   (.plus ^Instant actual-start dur)]
+            [{:playout-id     playout-id
+              :media-item-id  (:media-items/id item)
+              :kind           (sql-util/->pg-enum "event_kind" "content")
+              :start-at       actual-start
+              :finish-at      actual-end
+              :guide-group    guide-group
+              :slot-id        nil
+              :is-manual      false
+              :custom-title   (when (seq (:notes slot))
+                                (str/join "; " (:notes slot)))}
+             nil
+             actual-end])
+          [nil err cursor])))))
 
 ;; ---------------------------------------------------------------------------
 ;; Public handler
@@ -479,15 +613,27 @@
                                         :to   to}))
           ;; Create events with an in-memory tracker so sequential series and
           ;; random pools do not repeat the same item within a single batch.
-          (let [tracker (atom {})
-                results (doall (map-indexed
-                                 (fn [idx slot]
-                                   (let [gg idx
-                                         [event err] (create-event-from-slot db playout-id slot gg tracker)]
-                                     (if event
-                                       {:ok event}
-                                       {:error err})))
-                                 slots))
+          ;; Slots are processed in start_time order — required for the
+          ;; cursor threaded below (see create-event-from-slot): each slot's
+          ;; actual start depends on where the PREVIOUS slot's event actually
+          ;; finished, so an out-of-order batch would shift things
+          ;; nonsensically. The expander already emits slots sorted by start,
+          ;; but sort defensively rather than assume it.
+          (let [tracker        (atom {})
+                tolerance-secs (* 60 default-fit-tolerance-minutes)
+                sorted-slots   (sort-by #(some-> (:start-time %) ->instant .getEpochSecond) slots)
+                results        (loop [remaining (seq sorted-slots)
+                                       idx       0
+                                       cursor    nil
+                                       acc       []]
+                                 (if-not remaining
+                                   acc
+                                   (let [slot (first remaining)
+                                         [event err next-cursor]
+                                         (create-event-from-slot db playout-id slot idx tracker
+                                                                  cursor tolerance-secs)]
+                                     (recur (next remaining) (inc idx) next-cursor
+                                            (conj acc (if event {:ok event} {:error err}))))))
                 ok-events (keep :ok results)
                 errors    (keep :error results)]
             (when (seq ok-events)
