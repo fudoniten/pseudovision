@@ -1,1065 +1,564 @@
 # Pseudovision Scheduling System - Architecture & Design
 
-**Status:** 📋 Design Complete, Implementation Pending  
-**Last Updated:** 2026-04-18  
-**Design Session:** Architecture discussion with requirements analysis
+**Status:** ✅ Implemented (two tracks — see §0). Originally written 2026-04-18
+as a pre-implementation design; this revision (2026-07-09) corrects it against
+the actual shipped code, since the original had drifted significantly from
+what was built. Where the two disagree, **the code is authoritative** —
+sections below cite the real file/table/column names so drift is easier to
+catch next time.
+
+---
+
+## 0. Two scheduling tracks
+
+Pseudovision has **two independent ways a channel's timeline gets built**,
+and the original version of this document conflated them. Keep them
+separate:
+
+1. **Local schedule engine** (`schedules` / `schedule_slots` / `playouts` →
+   `playout_events`, built by `pseudovision.scheduling.core/build!`). A
+   schedule is a named, reusable template of slots; a playout attaches one to
+   a channel and the build engine walks it forward, advancing a JSONB cursor,
+   to produce concrete `playout_events`. This is what §1–§6 below describe,
+   and it's fully implemented.
+
+2. **Tunarr Scheduler integration** (`POST /api/channels/:channel-id/daily-slots`,
+   handled by `pseudovision.http.api.daily-slots`). Tunarr Scheduler owns a
+   *frozen weekly Grid* + sparse *Overrides*, deterministically expands them
+   into a `DailySlot[]` stream (concrete dated windows + a `media_id` +
+   selection strategy), and pushes that stream here. Pseudovision's job is
+   only to resolve each `media_id` to a concrete item and create
+   `playout_events` — **no schedule/slot/override rows are involved in this
+   path at all.** See §7 for the current, accurate description; the original
+   §7 ("Integration with tunarr-scheduler") described a push-based
+   schedule/slot/override-creation flow that was **never how the integration
+   shipped** and has been rewritten below.
+
+The `schedules`/`schedule_slots` API (track 1) remains available for
+manually-authored, non-Tunarr channels; it is not being deprecated by track 2.
 
 ---
 
 ## Overview
 
-Pseudovision's scheduling system is designed to support sophisticated IPTV channel programming with:
-- Tag-based content selection
+Pseudovision's scheduling system supports:
+- Tag-based content selection (via the dimension/tag model — see §1)
 - Mixed fixed/sequential scheduling
 - Intelligent gap filling with filler content
-- Special event overrides
-- Semi-sequential playback patterns
-- Integration with external schedulers (tunarr-scheduler)
+- Day-of-week-scoped slots (e.g. different programming Mon–Fri vs. weekends)
+- Integration with Tunarr Scheduler's deterministic `DailySlot` stream (§7)
 
-This document captures the complete architecture, design decisions, and implementation plan.
+Two things proposed in the original design were **never built** and are
+called out explicitly below rather than silently dropped: **schedule
+overrides** (a `schedule_overrides` table for special events) and
+**semi-sequential playback** (`playback_order = 'semi_sequential'`). Both are
+addressed by other parts of the system today — see §1.7 and the playback
+order list in §1.4 — so revisiting them as local features should be a
+deliberate decision, not an oversight.
 
 ---
 
-## Building Blocks
+## 1. Building Blocks
 
-### 1. **Media Tags** (Foundation for Content Selection)
+### 1.1 Media Tags (via the dimension model)
 
-**Purpose:** Enable flexible content queries like `(#child-friendly #daytime #mystery #channel-name)`
+**Storage:** `metadata_tags` (joined through `metadata` on `media_item_id`),
+**not** a standalone `media_tags` table as originally drafted. This is
+deliberate, not a naming accident: per `DIMENSION_CLEANUP.md`, all
+categorization — genre, channel assignment, age-suitability, time-slot,
+freshness, and free-form tags — lives in one place as prefixed strings
+(`genre:mystery`, `channel:goldenreels`, `age-suitability:child`, ...) rather
+than as separate hardcoded columns/tables. "Tags" in the scheduling sense are
+just dimension values with no prefix, or any prefix a caller wants.
 
-**Schema:**
+**API** (`pseudovision.http.api.tags`, real routes):
+- `POST /api/media-items/:id/tags` — bulk add, `{tags: [...], source: "..."}`
+- `GET /api/media-items/:id/tags` — list tags for an item
+- `GET /api/tags` — list all unique tags with counts
+- `DELETE /api/media-items/:id/tags/:tag` — remove one tag
+
+This matches the original design's shape closely. One correction: the
+`source` field is accepted by the API but not actually persisted or used for
+anything downstream (no `source` column exists on `metadata_tags`) — the
+"source tracking for debugging" design principle was aspirational and isn't
+implemented.
+
+**Tag query semantics — corrected.** The original design described tags as a
+*third, alternative* content source ranked below collection/specific-item.
+That's not how `schedule_slots.required_tags`/`excluded_tags` actually work:
+they're an **AND-filter layered on top of** whichever source (collection or
+specific item) is chosen, not an independent source of their own. See §1.4.
+
+**Tag inheritance — implemented in one path, not the other.** The daily-slots
+path (`daily-slots.clj`'s `pick-item`) unions an episode's own tags with its
+parent show's tags before matching `category_filters` — an episode
+effectively inherits its show's tags. The local schedule engine's
+`matches-tag-filters?` (`scheduling/core.clj`) does **not** do this; it only
+looks at the exact item's own tags. This is a real, currently-unaddressed
+inconsistency between the two tracks, not a design choice — worth fixing if
+the local engine ever needs to filter episodes by a show-level tag.
+
+---
+
+### 1.2 Collections
+
+Unchanged from the original design and still accurate: collections link to
+Jellyfin collections or custom groups via `media_items.collection_id`, and
+`col-db/resolve-collection` expands a collection to its concrete items at
+build time.
+
+---
+
+### 1.3 Schedules
+
+Table `schedules` — named, reusable templates. Columns (real):
+`fixed_start_time_behavior` ('skip' | 'play'), `shuffle_slots`,
+`random_start_point`, `keep_multi_part_together`, `treat_collections_as_shows`.
+Matches the original design.
+
+---
+
+### 1.4 Schedule Slots
+
+Table `schedule_slots` — real columns, corrected from the original's
+"proposed enhancement" (most of which shipped, in a slightly different shape
+than drafted):
+
 ```sql
-CREATE TABLE media_tags (
-    id            SERIAL PRIMARY KEY,
-    media_item_id INTEGER NOT NULL REFERENCES media_items(id) ON DELETE CASCADE,
-    tag           TEXT NOT NULL,
-    source        TEXT DEFAULT 'manual',  -- 'manual', 'jellyfin', 'tunabrain', 'tunarr-scheduler'
-    created_at    TIMESTAMPTZ DEFAULT NOW(),
-    UNIQUE (media_item_id, tag)
-);
+-- anchor / timing
+anchor         slot_anchor     -- 'fixed' | 'sequential'
+start_time     INTERVAL        -- required when anchor = 'fixed'
+days_of_week   INTEGER         -- bitmask, default 127 (every day); see below
 
-CREATE INDEX ix_media_tags_tag ON media_tags(tag);
-CREATE INDEX ix_media_tags_item ON media_tags(media_item_id);
+-- fill mode
+fill_mode      slot_fill_mode  -- 'once' | 'count' | 'block' | 'flood'
+item_count     INTEGER         -- fill_mode = 'count'
+block_duration INTERVAL        -- fill_mode = 'block'
+tail_mode      TEXT            -- 'none' | 'filler' | 'offline' (fill_mode = 'block' overflow)
+discard_to_fill_attempts INTEGER  -- accepted by the API; not read anywhere in
+                                  -- the build engine today (schema-only)
+
+-- content source: exactly one of these two
+collection_id  INTEGER
+media_item_id  INTEGER
+-- tags: an ADDITIONAL AND-filter over whichever source above is used —
+-- not a third, independent content source (see §1.1 correction)
+required_tags  TEXT[]
+excluded_tags  TEXT[]
+
+-- playback order
+playback_order pb_order        -- see full enum below
+marathon_group_by, marathon_shuffle_groups, marathon_shuffle_items, marathon_batch_size
+
+-- filler overrides (NULL = inherit from channel; channel only defines fallback — see §2)
+pre_filler_id, mid_filler_id, post_filler_id, tail_filler_id, fallback_filler_id
 ```
 
-**API:**
-- `POST /api/media-items/:id/tags` - Bulk add tags `{tags: ["mystery", "drama"]}`
-- `GET /api/media-items/:id/tags` - List tags for item
-- `GET /api/tags` - List all unique tags with counts
-- `DELETE /api/media-items/:id/tags/:tag` - Remove specific tag
+**`days_of_week` bitmask** (added after the original design was written,
+migration `20260428001`): Mon=1, Tue=2, Wed=4, Thu=8, Fri=16, Sat=32, Sun=64;
+default 127 = every day. This directly answers the original design's Open
+Question #3 ("should schedules support different programming Monday vs.
+weekend?") — yes, per-slot, and it's shipped.
 
-**Design Principles:**
-- ✅ One-way sync from external tools (tunarr-scheduler can push tags)
-- ✅ Manual tag editing supported via API/UI
-- ✅ Source tracking for debugging
-- ✅ Agnostic to caller - no tight coupling
+**Playback orders — the real enum** (`CREATE TYPE playback_order`):
+`chronological`, `random`, `shuffle`, `shuffle_in_order`,
+`multi_episode_shuffle`, `season_episode`, `random_rotation`, `marathon`.
 
-**Tag Query Strategy:**
-- **Phase 1:** Simple array intersection (media must have ALL required_tags, NONE of excluded_tags)
-- **Phase 2:** Could extend to JSONB query DSL if needed:
-  ```json
-  {"all": ["mystery"], "any": ["1990s", "2000s"], "none": ["explicit"]}
-  ```
+Two corrections against the original list:
+- `shuffle_in_order`, `multi_episode_shuffle`, `season_episode` shipped but
+  were never documented here.
+- **`semi_sequential` was never implemented.** It's not in the enum, there's
+  no `semi_seq_batch_size`/`semi_seq_jump_mode` column, and no code
+  implements the "play N sequentially, jump, repeat" algorithm the original
+  design specified in detail (Example 3, Decision 3, "Phase 3A"). If this is
+  still wanted, it needs to be built from scratch — nothing here to build on
+  top of.
 
----
-
-### 2. **Collections** (Content Libraries)
-
-**Current Implementation:** ✅ Already exists
-- Links to Jellyfin collections or custom groups
-- Queried via `media_items.collection_id`
-
-**Future Enhancement:** Tag-based "virtual collections"
-- Instead of static collections, define dynamic queries
-- Example: "All media with tags (#child-friendly AND #mystery)"
+**Content selection priority — corrected.** `scheduling/core.clj`'s
+`load-items` picks a source as `collection_id` → else `media_item_id` → else
+empty (exactly one of the first two should be set), then applies
+`required_tags`/`excluded_tags` as a filter over *that* source's items. The
+original design's "1. specific item, 2. tag query, 3. collection, checked in
+that order" implied tags were a rankable alternative source; they aren't —
+they narrow whichever source was picked.
 
 ---
 
-### 3. **Schedules** (The Template)
+### 1.5 Playouts
 
-**Current Implementation:** ✅ Already exists
-- Named templates containing ordered slots
-- Reusable across channels
-- Settings:
-  - `shuffle_slots` - Randomize slot order
-  - `random_start_point` - Start at random position
-  - `keep_multi_part_together` - Keep multi-part episodes together
-  - `treat_collections_as_shows` - Group collection items
-  - `fixed_start_time_behavior` - "skip" or "play" when fixed time is past
+Table `playouts` — real columns differ from the original's proposed
+enhancement:
 
----
-
-### 4. **Schedule Slots** (Time Blocks)
-
-**Current Implementation:** ✅ Schema exists, engine not implemented
-
-**Proposed Enhancement:**
 ```sql
-ALTER TABLE schedule_slots
-  -- Tag-based content selection
-  ADD COLUMN required_tags TEXT[],         -- ALL tags must match
-  ADD COLUMN excluded_tags TEXT[],         -- NONE of these tags
-  
-  -- Time-based tag injection (for daytime/nighttime variants)
-  ADD COLUMN daytime_tags TEXT[],          -- Additional tags during daytime hours
-  ADD COLUMN nighttime_tags TEXT[],        -- Additional tags during nighttime hours
-  
-  -- Semi-sequential playback
-  ADD COLUMN semi_seq_batch_size INTEGER,  -- Play N items sequentially before jumping
-  ADD COLUMN semi_seq_jump_mode TEXT,      -- 'random' | 'forward'
-  
-  -- Gap filling control
-  ADD COLUMN disable_auto_gap_fill BOOLEAN DEFAULT FALSE;
+seed                INTEGER      -- for reproducible shuffles
+daily_rebuild_time  INTERVAL     -- time-of-day for the scheduled rebuild job
+cursor              JSONB        -- opaque build-engine resume state
+last_built_at       TIMESTAMPTZ
+build_success       BOOLEAN
+build_message       TEXT         -- populated on failure (e.g. "Build stalled: ...")
 ```
 
-**Slot Types:**
+No `generation_horizon`, `auto_fill_gaps`, or `last_rebuild_at` columns as
+originally proposed — horizon is a **call-time parameter**
+(`:lookahead-hours`, default 72) to `build!`/`rebuild-horizon!`, not stored
+per-playout, and gap-filling is always attempted (there's no per-playout
+opt-out flag; a per-slot equivalent doesn't exist either).
 
-**Anchor Types:**
-- `'fixed'` - Starts at wall-clock time (e.g., 8:00 PM daily)
-  - Requires: `start_time` (INTERVAL like '20:00:00')
-  - Creates "appointment TV"
-  
-- `'sequential'` - Starts when previous slot ends
-  - Continuous flow programming
+**Real rebuild API** (also corrected — the original's
+`POST /playout/rebuild?from=now|horizon` was never the actual route shape):
+- `POST /api/channels/:channel-id/playout` — starts an **async job** (returns
+  202 + a job record; poll `GET /api/jobs/:job-id`), not a synchronous call.
+  Internally dispatches to `rebuild-from-now!` (config change: discards the
+  saved cursor, regenerates from the currently-airing event's finish time
+  forward so nothing already on screen gets cut off) or `rebuild-horizon!`
+  (daily job: extends the timeline to a new horizon, keeping the existing
+  cursor and everything already generated untouched).
+- `DELETE /api/channels/:channel-id/playout` — clears the whole timeline and
+  resets the cursor.
+- `GET /api/channels/:channel-id/playout/events[/:id]` — cursor-paginated
+  event listing.
 
-**Fill Modes:**
-- `'once'` - Play exactly 1 item
-- `'count'` - Play exactly N items (set `item_count`)
-- `'block'` - Fill specific duration (set `block_duration`)
-  - If content doesn't fit exactly, use `tail_mode`:
-    - 'none' - Leave gap
-    - 'filler' - Use tail_filler_id
-    - 'offline' - Show offline slate
-- `'flood'` - Fill until next fixed slot or horizon
-
-**Playback Orders:**
-- `'chronological'` - Play in order (by release date, episode number, etc.)
-- `'random'` - Pick randomly each time (can repeat)
-- `'shuffle'` - Shuffle once, play in that order, reshuffle when done
-- `'random_rotation'` - Random but cycle through all before repeating
-- `'marathon'` - Special marathon mode with grouping
-- `'semi_sequential'` ⭐ **NEW** - Play N sequentially, jump, repeat
-
-**Content Selection Priority:**
-1. Specific `media_item_id` (if set) - highest priority
-2. Tag query (`required_tags` + `excluded_tags`) - medium priority
-3. Collection (`collection_id`) - lowest priority
-
-Only one should be set per slot, checked in that order.
+**Build-stall safety net** (not in the original design at all): if a full
+pass over every slot leaves the timeline cursor exactly where it started —
+e.g. every slot resolves to no schedulable content — `build!` aborts rather
+than looping forever, and records `build_success = false` with a message.
+Worth knowing about since it changes what "the rebuild silently did nothing"
+looks like operationally: check `build_message`, not just whether the job
+returned 200.
 
 ---
 
-### 5. **Playouts** (The Instance)
+### 1.6 Playout Events
 
-**Current Implementation:** ✅ Exists
-- One playout per channel
-- Links schedule to channel
-- Contains generation cursor (JSONB state)
+Table `playout_events` — matches the original design closely. One correction:
+`event_kind` enum is `content`, `pre`, `mid`, `post`, **`pad`** (padding to a
+minute boundary — omitted from the original list), `tail`, `fallback`,
+`offline`.
 
-**Proposed Enhancement:**
+`is_manual` (not mentioned in the original) is worth calling out: user-injected
+or user-edited events are flagged so rebuilds preserve them instead of
+overwriting them — the mechanism behind "add a bumper" / "swap an episode"
+without a full playout reset.
+
+---
+
+### 1.7 Schedule Overrides — not implemented
+
+The original design's §7 (`schedule_overrides` table, priority-based special
+events, "James Bond Weekend" example) **was never built.** There is no
+`schedule_overrides` table, no `override_start`/`override_end` columns
+anywhere, and no `/api/playouts/:id/overrides` route.
+
+The reason this hasn't been revisited: the same problem — "special
+programming for a bounded date range without touching the base schedule" —
+is now solved **one layer up**, in Tunarr Scheduler's `Override` model (a
+sparse, higher-precedence delta layered over its frozen `Grid`, expanded
+deterministically alongside the base grid and pushed here as ordinary
+`DailySlot`s — see §7). For any channel driven by the Tunarr Scheduler
+integration, a local `schedule_overrides` table would duplicate that
+mechanism. It would still be a gap for a *locally-authored, non-Tunarr*
+channel that wants a temporary special event — if that's a real use case,
+it's worth scoping as new work rather than assuming the original design here
+already covers it.
+
+---
+
+## 2. Filler System Architecture
+
+The original design's three-tier **channel-level** hierarchy (a
+`filler_collection_id` for short gaps, a `background_collection_id` for long
+gaps, a `fallback_filler_id` as last resort) was not built as drafted. The
+`channels` table has exactly one filler-related column:
+
 ```sql
-ALTER TABLE playouts
-  ADD COLUMN generation_horizon INTERVAL DEFAULT '14 days',  -- How far ahead to generate
-  ADD COLUMN last_rebuild_at TIMESTAMPTZ,                    -- Track when last rebuilt
-  ADD COLUMN auto_fill_gaps BOOLEAN DEFAULT TRUE;            -- Automatically fill gaps between fixed slots
+fallback_filler_id  INTEGER REFERENCES filler_presets(id)
 ```
 
-**Rebuild Behavior:**
-- **Daily rebuild (scheduled):** Generate events for days 8-14, keep days 1-7 untouched
-- **Manual rebuild (config change):** Delete all future events (from NOW forward), regenerate
-- **Never modify:** Past events or currently-airing events
+What *is* richer than the original design: **slot-level** filler is a
+five-role system (`pre_filler_id`, `mid_filler_id`, `post_filler_id`,
+`tail_filler_id`, `fallback_filler_id` on `schedule_slots`, each nullable —
+null inherits the channel's `fallback_filler_id` for the `fallback` role
+specifically; the other four roles have no channel-level fallback to inherit
+from and are simply absent if unset). This maps onto `event_kind`'s `pre` /
+`mid` / `post` / `tail` / `fallback` values. `filler_presets` (a real,
+implemented table, distinct from `filler_collection_id`/
+`background_collection_id`) specifies a collection or item to draw from, a
+`mode` (`duration` or `count`), and role.
+
+### Role resolution (`scheduling.filler/resolve-filler-preset`)
+
+For a given role: slot override, if set → else, for the `fallback` role only,
+the channel's `fallback_filler_id` → else no filler for that role (a gap, or
+in `tail_mode = 'offline'`, an explicit offline segment).
+
+### Gap filling — corrected from the original decision tree
+
+The original's size-tiered decision tree (< 10s black, 10s–30min packed
+filler with an "Up Next" slate for small remainders, 30+min background
+collection) doesn't match the real implementation. What's actually there
+(`scheduling/filler.clj`, `scheduling/core.clj`'s `apply-filler`):
+
+1. **Small tail gaps (≤ 15 seconds)** get first crack at a **bumper**:
+   `fill-gap-with-bumper` picks an item from the channel's bumper collection
+   whose duration matches the largest standard bucket (5/10/15s) that fits,
+   with ±1s tolerance. Falls through to regular filler if no bumper collection
+   or no matching-duration bumper exists.
+2. **Everything else** resolves the role's preset (above) and, if the preset
+   is `mode = "duration"` and the build has `:pack-filler? true` (the
+   default), bin-packs the gap via `scheduling.packing/pack` — see below.
+   Otherwise (or for `mode = "count"`), falls back to sequential enumerator
+   fill (`filler/fill-gap`): draw items in enumerator order until the gap is
+   filled or the next item would overflow it.
+3. There is **no "Up Next" slate tied to remainder size** as the original
+   design specified. A "Coming Up" overlay does exist, but at the streaming
+   layer (`ffmpeg/hls.clj`, `streaming/manager.clj`) as part of the fallback
+   stream source generally — it's not a scheduling-engine decision keyed to
+   gap size.
+4. `tail_mode = 'offline'` on a `block` slot produces an explicit `offline`
+   event rather than any filler/slate.
+
+### Filler packing — corrected from the original greedy pseudocode
+
+The original's `pack-filler` pseudocode (fit the single best-matching item
+repeatedly, special-case remainders under 20s/2min) is not what's
+implemented. The real packer, `scheduling.packing/pack`, is a
+**variety-optimizing randomized packer**, not a greedy one:
+
+- Draws `k` (default 12) candidate playlists via seeded-random greedy fills,
+  each weighted at each step toward less-recently-played items (a caller-
+  supplied `recency` penalty map, not baked into the packer itself).
+- Keeps the candidate that fills the gap most tightly (within a `tolerance`),
+  then breaks ties by lowest total recency cost.
+- **This directly answers the original design's Open Question #1** ("should
+  the system track recently-played filler to avoid repeats?") — yes:
+  `scheduling.core/pack-filler` seeds `recency` from a build-wide
+  `filler-airings-atom` tracking every filler airing across **all channels**
+  in the current build window (not just the current channel or gap), decaying
+  linearly over a configurable window (default 4 hours). Same item back-to-back
+  or across channels in the same window is actively discouraged, not just
+  "possible future work."
+- Deterministic given the same seed + recency state, so rebuilds are stable;
+  the seed is `channel seed XOR gap start epoch second`, so different gaps
+  vary independently.
+
+### Slot-specific (deliberate) filler
+
+This part of the original design is accurate as drafted: pre/mid/post/tail/
+fallback filler on a slot is deliberate programming design (station IDs,
+commercial breaks, outros, block padding), distinct from the automatic
+gap-filling above, which only fires in the *absence* of a scheduled
+programming gap plan. Difference preserved as originally stated.
 
 ---
 
-### 6. **Playout Events** (The Timeline)
+## 3. Use Case Examples
 
-**Current Implementation:** ✅ Exists
-- Concrete scheduled events generated by engine
-- What's actually playing and when
+Examples 1 and 2 from the original design (daytime/evening tag split; random
+TV + fixed primetime block + random movies) are still representative of what
+the real slot shape supports (`fixed`/`sequential` anchors,
+`flood`/`block`/`count` fill modes, `collection_id`, `required_tags`/
+`excluded_tags`, `playback_order`) and are left as illustrative examples,
+not verbatim-tested code.
 
-**Fields Used:**
-- `media_item_id` - What to play
-- `start_at` / `finish_at` - When to play
-- `kind` - 'content', 'pre', 'mid', 'post', 'tail', 'fallback', 'offline'
-- `guide_group` - Group multi-part content in EPG
-- `custom_title` - Override EPG title
-
----
-
-### 7. **Schedule Overrides** ⭐ **NEW TABLE**
-
-**Purpose:** Special events without modifying base schedule
-
-**Schema:**
-```sql
-CREATE TABLE schedule_overrides (
-    id                    SERIAL PRIMARY KEY,
-    playout_id            INTEGER NOT NULL REFERENCES playouts(id) ON DELETE CASCADE,
-    name                  TEXT NOT NULL,  -- "James Bond Marathon", "Shark Week"
-    description           TEXT,
-    
-    -- When this override is active
-    override_start        TIMESTAMPTZ NOT NULL,
-    override_end          TIMESTAMPTZ NOT NULL,
-    
-    -- What to play during override
-    override_schedule_id  INTEGER REFERENCES schedules(id),  -- Use different schedule
-    
-    -- OR specify directly:
-    collection_id         INTEGER REFERENCES collections(id),
-    required_tags         TEXT[],
-    playback_order        playback_order DEFAULT 'chronological',
-    
-    -- Priority for overlapping overrides (higher wins)
-    priority              INTEGER NOT NULL DEFAULT 0,
-    
-    -- Metadata
-    created_at            TIMESTAMPTZ DEFAULT NOW(),
-    created_by            TEXT
-);
-
-CREATE INDEX ix_schedule_overrides_playout ON schedule_overrides(playout_id);
-CREATE INDEX ix_schedule_overrides_dates ON schedule_overrides(override_start, override_end);
-```
-
-**Example:** Weekend James Bond marathon
-```sql
-INSERT INTO schedule_overrides (playout_id, name, override_start, override_end, required_tags, playback_order)
-VALUES (1, 'James Bond Weekend', '2026-04-19 00:00:00', '2026-04-21 00:00:00', 
-        ARRAY['james-bond'], 'chronological');
-```
-
-**API:**
-- `POST /api/playouts/:id/overrides` - Create override
-- `GET /api/playouts/:id/overrides` - List overrides
-- `DELETE /api/overrides/:id` - Delete override
+**Example 3 (semi-sequential binge pattern) and Example 4 (schedule
+override) described features that were never built** — see §1.4 and §1.7.
+Removed here rather than left as if they were working examples; if either
+becomes real work, it deserves its own design pass grounded in what actually
+shipped since (particularly the Tunarr Scheduler `Override` layer, which
+covers Example 4's use case already — see §7).
 
 ---
 
-## Filler System Architecture
+## 4. Scheduling Engine Architecture
 
-### **The Filler Hierarchy**
+The original design's pseudocode (`generate-playout-events!`,
+`select-slot-content`, `execute-fill-mode`, `apply-playback-order`) was
+illustrative and doesn't correspond to the real function boundaries — not
+wrong so much as a different shape than what got built. The actual engine
+lives in `pseudovision.scheduling.core`:
 
-Pseudovision distinguishes three types of filler:
+- **`build!`** — the entry point. Loads the schedule's slots, resumes from
+  the playout's saved cursor (or starts fresh on `:reset-cursor?`), then loops
+  `process-slot` across slots until the horizon or a stall is hit (see the
+  build-stall safety net in §1.5), inserting events and saving the cursor
+  transactionally.
+- **`process-slot`** — dispatches by `fill_mode` to one of four functions,
+  each of which inlines its own content loading (`load-items`), enumerator
+  based ordering (`scheduling.enumerators`, keyed per collection/media-item so
+  position is tracked independently per source), and filler injection:
+  - **`emit-once`** — one item, advance.
+  - **`emit-count`** — exactly N items, with pre/mid/post filler around them.
+  - **`emit-block`** — fill a fixed duration; on overflow, respects
+    `tail_mode` (`filler` pads the remainder, `offline` emits an offline
+    event, `none` trims the overflowing item to the block boundary and
+    replays it in full at the next block start); on underflow (content
+    exhausted early), post-roll then tail filler pad to the boundary.
+  - **`emit-flood`** — fill from now until the next fixed-anchor slot (or a
+    2-hour default if there isn't one); stops cleanly at the boundary, or
+    fills the tail with fallback filler if content runs out first.
+- **`rebuild-from-now!`** / **`rebuild-horizon!`** — the two async-job entry
+  points described in §1.5.
 
-1. **Filler Collection** (10s - 30 mins)
-   - Ads, bumpers, short clips, station IDs
-   - Used for filling short gaps
-   - Should vary to avoid repetition
-   - Example content: 15s, 30s, 60s commercials
-
-2. **Background Collection** (30+ mins)
-   - Evergreen content for large gaps
-   - Music videos, public domain content, documentaries
-   - Plays in shuffle mode
-   - Keeps channel "alive" during programming gaps
-
-3. **Fallback Filler** (any duration)
-   - Single media item that loops
-   - Last resort when no collection available
-   - Example: Channel branding video
-
-4. **Generated Slate** (ultimate fallback)
-   - FFmpeg-generated slate with channel info
-   - Shows "Coming Up" with next scheduled content
-   - No media required - always available
-
-### **Gap Filling Decision Tree**
-
-```
-Gap Duration?
-    │
-    ├─ < 10 seconds
-    │   └─> Black screen (silence)
-    │
-    ├─ 10 seconds to 30 minutes
-    │   ├─> Has filler_collection_id?
-    │   │   ├─ YES: Pack filler items
-    │   │   │   ├─> Perfect fit or <20s remainder
-    │   │   │   │   └─> Use packed items + "Up Next" slate for remainder
-    │   │   │   ├─> 20s-2min remainder (within max_shift)
-    │   │   │   │   └─> Shift next slot, pack more filler
-    │   │   │   └─> >2min remainder
-    │   │   │       └─> Use packed items + generated slate for remainder
-    │   │   └─ NO: Generated slate (with "Coming Up" info)
-    │   
-    └─ 30+ minutes
-        ├─> Has background_collection_id?
-        │   ├─ YES: Play from background collection (shuffle mode)
-        │   └─ NO: Try fallback_filler_id
-        │       ├─ YES: Loop fallback filler
-        │       └─ NO: Generated slate (offline mode)
-```
-
-### **Filler Packing Algorithm**
-
-**Greedy Pack with Remainder Handling:**
-
-```clojure
-(defn pack-filler [items target-duration channel-config]
-  (let [max-shift (:filler-max-time-shift channel-config 120)
-        allow-overhang? (:filler-allow-overhang channel-config false)]
-    
-    ;; Shuffle to avoid playing same ads in same order
-    (loop [remaining target-duration
-           packed []
-           available (shuffle items)]
-      
-      (let [fitting (filter #(<= (:duration %) remaining) available)]
-        
-        (cond
-          ;; Perfect pack or very close
-          (< remaining 1)
-          {:items packed :remainder 0 :shift 0}
-          
-          ;; Can't fit anything, check remainder size
-          (empty? fitting)
-          (cond
-            ;; Tiny remainder - show "Up Next" or black
-            (< remaining 20)
-            {:items packed 
-             :remainder remaining 
-             :shift 0
-             :remainder-type (if (> remaining 5) :up-next-slate :black)}
-            
-            ;; Medium remainder - try shifting schedule
-            (<= remaining max-shift)
-            {:items packed
-             :remainder remaining
-             :shift remaining  ; Shift next slot by this amount
-             :can-repack true} ; Caller should try packing with new duration
-            
-            ;; Large remainder - use slate
-            :else
-            {:items packed
-             :remainder remaining
-             :shift 0
-             :remainder-type :generated-slate})
-          
-          ;; Pick best-fitting item and continue
-          :else
-          (let [best (apply min-key #(- remaining (:duration %)) fitting)]
-            (recur (- remaining (:duration best))
-                   (conj packed best)
-                   (remove #{best} available))))))))
-```
-
-**Key Features:**
-- ✅ Shuffles filler to avoid repetition
-- ✅ Tries to fit as much as possible
-- ✅ Suggests schedule shifts for better packing
-- ✅ Different handling for small (<20s) vs large remainders
-- ✅ "Up Next" slate for <20s gaps shows next scheduled content
+Playback-order handling isn't a separate `apply-playback-order` function —
+each fill-mode function pulls the next item from an enumerator
+(`scheduling.enumerators/next-item`) that was constructed with the slot's
+`playback_order` and a per-source cursor-tracked position, so ordering state
+naturally persists across builds via the same JSONB cursor everything else
+uses.
 
 ---
 
-### **Slot-Specific Filler (Deliberate Ads/Bumpers)**
+## 5. Design Decisions & Rationale
 
-Separate from automatic gap filling, slots can have deliberate filler:
+Decisions 1, 2, 5, and 6 from the original design are still accurate
+rationale for what shipped (normalized tag storage, array-intersection tag
+queries, auto gap-filling on by default, the daily-rebuild-window strategy) —
+kept as-is below, with table names corrected. Decisions 3 and 4 described
+features that were never built; marked accordingly rather than removed
+outright, since the reasoning may still be useful if either is revisited.
+
+### Decision 1: Normalized tag storage
+**Choice:** tags live in `metadata_tags` (part of the broader dimension
+model — see §1.1), not a JSONB array.
+**Why:** clean tag management (rename/delete/count), GIN-indexable,
+extensible without a schema change.
+
+### Decision 2: Array intersection for tag queries
+**Choice:** native PostgreSQL array operators over the tag set.
+**Why:** fast with GIN indexes, simple, extensible.
+Query shape as originally drafted is still representative, modulo the
+`metadata_tags`/`metadata` join instead of a flat `media_tags` table.
+
+### Decision 3: Deterministic semi-sequential — ❌ not implemented
+The stateless seed+date algorithm described in the original design was never
+built (see §1.4). The rationale given (reproducible without stored state,
+works with the daily-rebuild model) is sound and would still apply if this
+is revisited.
+
+### Decision 4: Schedule overrides table — ❌ not implemented locally
+See §1.7 — the same problem is solved at the Tunarr Scheduler layer today for
+Tunarr-driven channels.
+
+### Decision 5: Auto gap-filling, default on
+Unchanged: `playout` behavior always attempts gap-filling; there's no stored
+per-playout opt-out flag as the original draft proposed (see §1.5's
+correction), so this is closer to "always on" than "on by default."
+
+### Decision 6: Daily rebuild strategy
+Unchanged in spirit: `rebuild-horizon!` extends the timeline to a new horizon
+without touching what's already generated; `rebuild-from-now!` handles config
+changes by discarding the cursor and regenerating from the in-progress
+event's finish time forward (added precision the original design didn't
+have: the reset explicitly avoids cutting off whatever's currently on air).
+
+---
+
+## 6. Open Questions from the original design — resolved or still open
+
+1. **Filler avoidance (recently-played tracking):** ✅ resolved — implemented,
+   see §2's packing section (`scheduling.packing/airing-penalties`, a
+   build-wide, cross-channel recency penalty).
+2. **Time zones for fixed `start_time`:** partially resolved. There's a
+   single application-wide default zone (`pseudovision.util.time/default-zone`,
+   read from the `TZ` env var, UTC fallback) that all fixed-time calculations
+   use — not a per-channel timezone as the question implied. If multiple
+   channels need different local wall-clock zones, that's still open.
+3. **Multi-day schedules (different Monday vs. weekend programming):**
+   ✅ resolved — the `days_of_week` bitmask (§1.4) does exactly this, per slot.
+4. **Tag inheritance (episodes from their series):** partially resolved — see
+   the §1.1 correction. Implemented in the Tunarr Scheduler `daily-slots`
+   ingestion path, not in the local schedule engine's tag filter. Worth
+   reconciling if the local engine ever needs it.
+
+---
+
+## 7. Integration with Tunarr Scheduler — corrected
+
+The original design's integration section (push-based
+`POST /api/schedules` → `POST /api/schedules/:id/slots` →
+`POST /api/channels/:id/playout` → `POST /api/playouts/:id/overrides` flow)
+describes an approach that **was never how this integration shipped.** The
+real architecture is a layered, mostly-deterministic pipeline owned by Tunarr
+Scheduler, with Pseudovision as a thin resolver at the bottom. Authoritative
+detail lives in tunarr-scheduler's `SCHEDULING.md`/`ROADMAP.md` and
+tunabrain's `docs/scheduling-grid-spec.md` / `docs/handoff-tunarr-pseudovision.md`
+— this section is a Pseudovision-side summary, not the source of truth.
 
 ```
-Slot Filler Types:
-├─ pre_filler_id      - Plays BEFORE content starts (station ID, bumper)
-├─ mid_filler_id      - Plays DURING content (commercial breaks)
-├─ post_filler_id     - Plays AFTER content ends (outro)
-├─ tail_filler_id     - Pads END of block slots to hit exact duration
-└─ fallback_filler_id - When slot's content is unavailable
+Pseudovision                 Tunarr Scheduler (stateful)         Tunabrain (stateless LLM)
+────────────                 ────────────────────────────        ─────────────────────────
+GET /api/catalog/aggregate ─► CatalogProfile ───────────────────► propose-quarterly-grid
+                                                                   (dayparting + strip-fill)
+                              feasibility check ◄── Grid ◄──────────────┘
+                                    │ shortfalls
+                                    └─► repair-quarterly-grid ──► revised Grid
+                              freeze + store Grid
+                              (monthly) ───────────────────────► propose-monthly-overrides
+                                                                  ◄── Override[] ──┘
+                              store Overrides
+                              (weekly) expand(grid, overrides, week) → DailySlot[]
+                                    │  (no Tunabrain call — pure function)
+POST /api/channels/:id/daily-slots ◄┘
+  (daily-slots.clj resolves each
+   DailySlot's media_id → concrete
+   item, creates playout_events)
 ```
 
-These reference `filler_presets` table which can specify:
-- Collection to pull from
-- Number of items or duration
-- Playback mode
+**What Pseudovision actually owns in this flow:**
 
-**Difference:**
-- **Gap filling:** Automatic, fills unscheduled time between slots
-- **Slot filler:** Deliberate, part of the programming design
+1. **`GET /api/catalog/aggregate`** (`http/api/catalog.clj`,
+   `db/catalog.clj`) — produces the `CatalogProfile` Tunarr Scheduler feeds
+   to Tunabrain: per-show rollups, tag aggregates, and a runtime histogram.
+   Sized to the *shape* of the library, never raw media.
+2. **`POST /api/channels/:channel-id/daily-slots`** (`http/api/daily-slots.clj`)
+   — the only ingestion point. Body is a `DailySlot[]`: each has a concrete
+   `[start_time, end_time)` window, a `media_id` (`series:<id>` |
+   `movie:<id>` | `random:<category>`), a `media_selection_strategy`, and
+   optional `category_filters`. For each slot, `pick-item` resolves
+   `media_id` to a concrete episode/movie/pool item (honoring
+   `category_filters` scoped to the show/movie's own tags — this is the path
+   where tag inheritance from §1.1/§6.4 lives), then creates a
+   `playout_event`. Existing non-manual events in the batch's date range are
+   cleared first, so a re-push always wins.
 
----
+**Duration-aware selection (added since the original design, not present in
+it at all):** a `random:<category>` slot doesn't pick blindly from the whole
+category pool — `select-fitting-items` narrows candidates to items whose
+runtime plausibly fits the slot (within a 15-minute tolerance) before the
+existing rotation logic (`pick-from-pool`) picks among them, and the created
+event's `finish_at` reflects the picked item's **actual** duration, not the
+slot's nominal boundary. When an item still overflows its slot, later slots
+in the same batch shift forward to start right after it rather than
+overlapping (slots are processed in `start_time` order with a threaded
+cursor that resets to nominal timing whenever a slot finishes on time or
+there's a genuine gap). Shipped in
+[pseudovision#119](https://github.com/fudoniten/pseudovision/pull/119); see
+tunarr-scheduler's `DURATION_AWARE_SCHEDULING.md` for the upstream half of
+this work (a per-category runtime histogram and a feasibility check that
+catches a duration mismatch at grid-authoring time, before it ever reaches
+this endpoint).
 
-## Use Case Examples
-
-### **Example 1: Daytime Kids / Evening Adults**
-
-**Requirements:**
-- 6 AM - 9 PM: Child-friendly content
-- 9 PM - 6 AM: Adult content
-- No explicit collections, just tags
-
-**Schedule:**
-```clojure
-{:name "Family-Friendly Channel"
- :slots [
-   {:slot-index 0
-    :anchor "fixed"
-    :start-time "06:00:00"
-    :fill-mode "flood"
-    :required-tags ["child-friendly" "channel-family"]
-    :playback-order "random"}
-   
-   {:slot-index 1
-    :anchor "fixed"
-    :start-time "21:00:00"  ; 9 PM
-    :fill-mode "flood"
-    :required-tags ["channel-family"]  ; All content, not just child-friendly
-    :excluded-tags ["child-only"]      ; But exclude kids shows
-    :playback-order "random"}]}
-```
-
-**How it works:**
-- At 6 AM: Start playing content tagged `#child-friendly #channel-family`
-- Flood continues until 9 PM
-- At 9 PM: Switch to content tagged `#channel-family` but NOT `#child-only`
-- Flood continues until 6 AM next day
-- Repeat daily
-
----
-
-### **Example 2: Random TV + Fixed Primetime + Random Movies**
-
-**Requirements:**
-- 6 AM - 3 PM: Random TV shows
-- 3 PM - 9 PM: Fixed sequence of specific episodes/movies
-- 9 PM - 6 AM: Random movies
-- Fill gaps with ads
-
-**Schedule:**
-```clojure
-{:name "Mixed Programming"
- :slots [
-   {:slot-index 0
-    :anchor "fixed"
-    :start-time "06:00:00"
-    :fill-mode "flood"
-    :collection-id 5  ; "TV Shows"
-    :playback-order "random"}
-   
-   {:slot-index 1
-    :anchor "fixed"
-    :start-time "15:00:00"  ; 3 PM
-    :fill-mode "block"
-    :block-duration "6 hours"
-    :collection-id 8  ; "Primetime Lineup" (specific episodes)
-    :playback-order "chronological"
-    :tail-mode "filler"}
-   
-   {:slot-index 2
-    :anchor "sequential"  ; Starts after primetime block ends
-    :fill-mode "flood"
-    :collection-id 12  ; "Movies"
-    :playback-order "random"}]}
-
-;; Channel config
-{:filler-collection-id 20  ; "Commercials and Ads"
- :filler-min-gap "10 seconds"
- :filler-max-time-shift "2 minutes"}
-```
-
-**How it works:**
-- 6:00 AM: Random TV shows until 3 PM
-- Auto-fills any gaps with commercials (if random show ends at 2:57 PM, fill 3min with ads)
-- 3:00 PM: Specific primetime lineup for 6 hours
-- If primetime ends at 8:55 PM, tail filler fills remaining 5 minutes
-- 9:00 PM: Random movies until 6 AM
-- Gaps between movies filled with commercials
-- Daily repeat
+**What's explicitly NOT part of this flow, contrary to the original design:**
+- No `POST /api/schedules`-style calls from Tunarr Scheduler — it never
+  creates `schedules`/`schedule_slots` rows. Those tables are exclusively for
+  locally-authored channels (§0, track 1).
+- No `/api/playouts/:id/overrides` calls — Tunarr Scheduler's `Override`
+  concept is expanded into ordinary `DailySlot`s before it ever reaches
+  Pseudovision; Pseudovision has no override concept of its own in this path
+  (see §1.7).
+- Tag *sync* (Tunarr Scheduler pushing tags via
+  `POST /api/media-items/:id/tags`) is real and unchanged from the original
+  design's description — that part was accurate.
 
 ---
 
-### **Example 3: Semi-Sequential Binge Pattern**
-
-**Requirements:**
-- Play 5 episodes of a show sequentially
-- Jump to random point in series
-- Repeat (gives "connectivity" without strict sequence)
-
-**Schedule:**
-```clojure
-{:name "Semi-Sequential Sitcoms"
- :slots [
-   {:slot-index 0
-    :anchor "sequential"
-    :fill-mode "flood"
-    :collection-id 15  ; "Classic Sitcoms"
-    :playback-order "semi_sequential"
-    :semi-seq-batch-size 5
-    :semi-seq-jump-mode "random"}]}
-```
-
-**Deterministic Algorithm:**
-```clojure
-(defn semi-sequential-position [items batch-size seed day-offset within-batch-index]
-  "Deterministic position calculation for reproducible schedules."
-  (let [total (count items)
-        batch-number (quot day-offset (quot 24 (:avg-episode-hours)))  ; Rough batch count
-        rng (java.util.Random. (+ seed batch-number))
-        batch-start (.nextInt rng total)
-        position (mod (+ batch-start within-batch-index) total)]
-    (nth items position)))
-```
-
-**How it works:**
-- Day 1: Episodes 47, 48, 49, 50, 51
-- Day 2: Jump to episodes 123, 124, 125, 126, 127
-- Day 3: Jump to episodes 8, 9, 10, 11, 12
-- Deterministic: Same seed + same date = same episodes
-
----
-
-### **Example 4: Special Event Override**
-
-**Requirements:**
-- Regular schedule plays normally
-- Weekend "James Bond Marathon" replaces everything
-- Automatic activation/deactivation
-
-**Base Schedule:**
-```clojure
-{:name "Regular Programming"
- :slots [{:anchor "sequential" :fill-mode "flood" :collection-id 10}]}
-```
-
-**Override:**
-```sql
-INSERT INTO schedule_overrides 
-  (playout_id, name, override_start, override_end, required_tags, playback_order)
-VALUES 
-  (1, 'James Bond Weekend', 
-   '2026-04-19 00:00:00', '2026-04-21 00:00:00',
-   ARRAY['james-bond'], 'chronological');
-```
-
-**How it works:**
-- Mon-Fri: Regular programming from base schedule
-- Sat 12 AM - Sun 11:59 PM: All James Bond movies in chronological order
-- Mon 12 AM: Back to regular programming
-- Override automatically activates/deactivates based on timestamps
-
----
-
-## Scheduling Engine Architecture
-
-### **High-Level Algorithm**
-
-```clojure
-(defn generate-playout-events! [db playout-id start-time horizon]
-  "Generate playout events from schedule for given time window."
-  
-  ;; 1. Check for active override
-  (if-let [override (get-active-override db playout-id start-time)]
-    (generate-from-override! db playout-id override start-time horizon)
-    
-    ;; 2. Load base schedule and slots
-    (let [playout (get-playout db playout-id)
-          schedule (get-schedule db (:schedule-id playout))
-          slots (list-slots db (:schedule-id playout))
-          cursor (:cursor playout)  ; JSONB state
-          seed (:seed playout)]
-      
-      ;; 3. Process each slot in order
-      (loop [current-time start-time
-             slot-idx (:slot-index cursor 0)
-             events []
-             new-cursor cursor]
-        
-        (if (or (>= current-time horizon) (>= slot-idx (count slots)))
-          ;; Done - insert events and save cursor
-          (do
-            (insert-playout-events! db playout-id events)
-            (update-playout-cursor! db playout-id new-cursor)
-            events)
-          
-          (let [slot (nth slots slot-idx)
-                next-slot (when (< (inc slot-idx) (count slots))
-                           (nth slots (inc slot-idx)))]
-            
-            ;; Calculate slot start time
-            (let [slot-start (if (= (:anchor slot) "fixed")
-                              (calculate-next-fixed-time (:start-time slot) current-time)
-                              current-time)
-                  
-                  ;; Fill gap before slot (if auto-fill enabled)
-                  gap-events (when (and (> slot-start current-time)
-                                       (:auto-fill-gaps playout true)
-                                       (not (:disable-auto-gap-fill slot)))
-                              (fill-gap db playout slot-start current-time))
-                  
-                  ;; Generate content for this slot
-                  slot-events (generate-slot-events db playout slot seed slot-start next-slot horizon)
-                  
-                  ;; Update time and cursor
-                  slot-end (:finish-at (last slot-events))
-                  next-cursor (update-cursor new-cursor slot slot-events)]
-              
-              (recur slot-end
-                     (inc slot-idx)
-                     (concat events gap-events slot-events)
-                     next-cursor))))))))
-```
-
-### **Key Functions**
-
-#### **Content Selection**
-```clojure
-(defn select-slot-content [db slot seed]
-  "Query content for slot based on tags, collection, or specific item."
-  (cond
-    ;; Specific item takes priority
-    (:media-item-id slot)
-    [(get-media-item db (:media-item-id slot))]
-    
-    ;; Tag-based selection
-    (seq (:required-tags slot))
-    (query-media-by-tags db 
-                        (:required-tags slot)
-                        (:excluded-tags slot))
-    
-    ;; Collection-based selection
-    (:collection-id slot)
-    (query-collection db (:collection-id slot))
-    
-    ;; No content specified!
-    :else
-    (throw (ex-info "Slot has no content source" {:slot slot}))))
-```
-
-#### **Fill Mode Execution**
-```clojure
-(defn execute-fill-mode [items fill-mode slot current-time next-slot-time]
-  (case fill-mode
-    "once"
-    (take 1 items)
-    
-    "count"
-    (take (:item-count slot) items)
-    
-    "block"
-    (let [duration (:block-duration slot)
-          packed (pack-items-to-duration items duration)]
-      (if (< (:total-duration packed) duration)
-        ;; Add tail filler for remainder
-        (concat (:items packed)
-                (generate-tail-filler slot (- duration (:total-duration packed))))
-        (:items packed)))
-    
-    "flood"
-    (let [end-time (or next-slot-time horizon)]
-      (pack-items-until items current-time end-time))))
-```
-
-#### **Playback Order**
-```clojure
-(defn apply-playback-order [items order slot seed cursor]
-  (case order
-    "chronological"
-    (sort-by (juxt :release-date :title) items)
-    
-    "random"
-    (shuffle-with-seed items seed)
-    
-    "shuffle"
-    (if-let [shuffled (:shuffled-order cursor)]
-      (reorder items shuffled)
-      (let [shuffled (shuffle-with-seed items seed)]
-        (update-cursor! cursor :shuffled-order shuffled)
-        shuffled))
-    
-    "random_rotation"
-    (let [used (:used-ids cursor #{})
-          unused (remove #(contains? used (:id %)) items)]
-      (if (seq unused)
-        (shuffle-with-seed unused seed)
-        ;; All used - reset and start over
-        (do (update-cursor! cursor :used-ids #{})
-            (shuffle-with-seed items seed))))
-    
-    "semi_sequential"
-    (semi-sequential-select items 
-                           (:semi-seq-batch-size slot)
-                           seed
-                           (:batch-offset cursor)
-                           (:within-batch-index cursor))))
-```
-
----
-
-## Implementation Phases
-
-### **Phase 1: Foundation (2-3 days)**
-
-**1A. Tag System**
-- Create `media_tags` table
-- Add tag CRUD APIs
-- Update `schedule_slots` with `required_tags` / `excluded_tags`
-- Implement tag-based media queries
-
-**1B. Filler Collections**
-- Add filler/background collection columns to `channels`
-- Add filler configuration fields (thresholds, behavior)
-- Implement filler packing algorithm
-- Create "Up Next" slate variant
-
-**Deliverable:** Can tag media, query by tags, configure filler collections
-
----
-
-### **Phase 2: Basic Scheduling Engine (3-4 days)**
-
-**2A. Core Engine**
-- Implement slot iterator
-- Content selection (tags > collection > specific item)
-- Fill mode execution (once, count, block, flood)
-- Cursor management for stateful iteration
-
-**2B. Fixed Slot Support**
-- Calculate next occurrence of fixed-time slots
-- Handle `fixed_start_time_behavior` (skip vs play)
-- Timezone support for wall-clock times
-
-**2C. Gap Filling**
-- Detect gaps between fixed slots
-- Apply filler hierarchy (filler → background → fallback → slate)
-- Insert gap-fill events with `kind` = 'pre', 'tail', 'fallback'
-
-**Deliverable:** Can generate playout timeline from schedule
-
----
-
-### **Phase 3: Advanced Features (2-3 days)**
-
-**3A. Semi-Sequential Playback**
-- Implement deterministic batch selection
-- Add `semi_sequential` to `playback_order` enum
-- Cursor tracking for batch position
-
-**3B. Schedule Overrides**
-- Create `schedule_overrides` table
-- Check for active overrides before base schedule
-- Priority-based conflict resolution
-
-**3C. Daily Rebuild**
-- Background job at `daily_rebuild_time`
-- Generate events for horizon window (keep existing events untouched)
-- Manual rebuild API for config changes
-
-**Deliverable:** Full scheduling system with overrides and auto-rebuild
-
----
-
-### **Phase 4: Marathon Mode & Advanced Orders (1-2 days)**
-
-**4A. Marathon Playback**
-- Group items by `marathon_group_by` field
-- Shuffle groups if `marathon_shuffle_groups`
-- Play `marathon_batch_size` from each group before switching
-
-**4B. Random Rotation**
-- Track used items in cursor
-- Ensure all items play before repeating
-- Reset when exhausted
-
-**Deliverable:** All playback modes fully functional
-
----
-
-## Integration with tunarr-scheduler
-
-### **Architecture**
-
-```
-┌─────────────────────┐
-│  tunarr-scheduler   │  - Owns tag catalog
-│  (External Tool)    │  - Manages tag normalization
-└──────────┬──────────┘  - Builds scheduling logic
-           │
-           │ HTTP API
-           │
-┌──────────▼──────────┐
-│   Pseudovision      │  - Stores tags (media_tags table)
-│   (IPTV Server)     │  - Executes schedules
-└─────────────────────┘  - Generates playout events
-                         - Streams content
-```
-
-### **Integration Points**
-
-**1. Tag Sync** (tunarr-scheduler → Pseudovision)
-```clojure
-;; In tunarr-scheduler
-(defn sync-tags-to-pseudovision! [catalog pseudovision-api]
-  (doseq [media (get-media catalog)]
-    (let [tags (get-media-tags catalog (:id media))]
-      (http/post (str pseudovision-api "/api/media-items/" (:id media) "/tags")
-                 {:body {:tags (vec tags)
-                         :source "tunarr-scheduler"}}))))
-```
-
-**2. Schedule Creation** (tunarr-scheduler → Pseudovision)
-```clojure
-;; In tunarr-scheduler
-(defn create-channel-schedule! [pseudovision-api channel-spec]
-  ;; Create schedule
-  (let [schedule (http/post (str pseudovision-api "/api/schedules")
-                           {:body {:name (:name channel-spec)
-                                  :shuffle-slots false}})
-        schedule-id (:id schedule)]
-    
-    ;; Create slots
-    (doseq [slot (:slots channel-spec)]
-      (http/post (str pseudovision-api "/api/schedules/" schedule-id "/slots")
-                {:body slot}))
-    
-    ;; Attach to playout
-    (http/post (str pseudovision-api "/api/channels/" (:channel-id channel-spec) "/playout")
-              {:body {:schedule-id schedule-id
-                     :seed (rand-int 1000000)}})
-    
-    ;; Trigger rebuild
-    (http/post (str pseudovision-api "/api/channels/" (:channel-id channel-spec) "/playout/rebuild"))))
-```
-
-**3. Override Creation** (tunarr-scheduler → Pseudovision)
-```clojure
-;; Create "Shark Week" override
-(http/post (str pseudovision-api "/api/playouts/" playout-id "/overrides")
-          {:body {:name "Shark Week"
-                 :override-start "2026-08-01T00:00:00Z"
-                 :override-end "2026-08-08T00:00:00Z"
-                 :required-tags ["shark" "documentary"]
-                 :playback-order "chronological"}})
-```
-
----
-
-## Design Decisions & Rationale
-
-### **Decision 1: Normalized Tag Table**
-**Choice:** Separate `media_tags` table  
-**Why:**
-- Clean separation of concerns
-- Easy tag management (rename, delete, count)
-- Performant with proper indexes
-- Can add JSONB cache layer later if needed
-
-**Alternative Considered:** JSONB array in metadata table  
-**Rejected Because:** Harder to manage tags, list unique tags, count usage
-
----
-
-### **Decision 2: Array Intersection for Tag Queries**
-**Choice:** Simple PostgreSQL array operators  
-**Why:**
-- Native PostgreSQL support
-- Fast with GIN indexes
-- Simple to understand and debug
-- Extensible (can add complex queries later)
-
-**SQL Example:**
-```sql
--- Find all media with tags [mystery, drama] but not [explicit]
-SELECT mi.* FROM media_items mi
-WHERE EXISTS (
-  SELECT 1 FROM media_tags mt
-  WHERE mt.media_item_id = mi.id
-    AND mt.tag = ANY(ARRAY['mystery', 'drama'])
-  GROUP BY mt.media_item_id
-  HAVING COUNT(DISTINCT mt.tag) = 2  -- Must have both
-)
-AND NOT EXISTS (
-  SELECT 1 FROM media_tags mt2
-  WHERE mt2.media_item_id = mi.id
-    AND mt2.tag = ANY(ARRAY['explicit'])
-);
-```
-
-**Future:** Can add JSONB query DSL without changing table structure
-
----
-
-### **Decision 3: Deterministic Semi-Sequential**
-**Choice:** Stateless algorithm using seed + date  
-**Why:**
-- Reproducible schedules (same seed = same output)
-- No state in database (easier to rebuild)
-- Works with daily rebuild model
-- Can "preview" future schedule without generating it
-
-**Alternative Considered:** Stateful cursor tracking  
-**Rejected Because:** Complicates rebuilds, harder to debug
-
----
-
-### **Decision 4: Schedule Overrides Table**
-**Choice:** Separate table with date ranges and priority  
-**Why:**
-- Clean separation from base schedule
-- Automatic activation based on dates
-- Can overlap (priority resolves conflicts)
-- Easy to list/manage special events
-
-**Alternative Considered:** Conditional slots in base schedule  
-**Rejected Because:** Clutters base schedule, harder to manage
-
----
-
-### **Decision 5: Auto Gap Filling (Default On)**
-**Choice:** `playout.auto_fill_gaps = true` by default  
-**Why:**
-- User-friendly - no manual gap management
-- Mimics traditional TV (dead air is bad)
-- Can be disabled per-playout or per-slot if needed
-
-**Implementation:**
-- Engine detects gaps between fixed slots
-- Applies filler hierarchy automatically
-- Inserts filler events with appropriate `kind`
-
----
-
-### **Decision 6: Daily Rebuild Strategy**
-**Choice:** Generate 8-14 days ahead, keep 1-7 days untouched  
-**Why:**
-- EPG clients typically want 7-14 days of data
-- Generating too far ahead wastes resources
-- Keeping near-term events stable prevents "schedule drift"
-- Manual rebuild handles config changes
-
-**Rebuild Triggers:**
-- **Daily scheduled:** Background job at `daily_rebuild_time`
-- **Manual:** API call to `/api/playouts/:id/rebuild`
-  - Config change: Delete from NOW forward
-  - Daily job: Only generate missing days 8-14
-
----
-
-## Filler Design Details
-
-### **Three-Tier Filler System**
-
-**Why three types?**
-1. **Filler collection** - High-frequency, short content (ads vary each time)
-2. **Background collection** - Low-frequency, long content (don't want same backgrounds repeating)
-3. **Fallback filler** - Emergency fallback (reliable, always available)
-
-**Configuration per channel:**
-```sql
-channels.filler_collection_id      -- Ads, 15-60s clips
-channels.background_collection_id  -- Movies, shows, 30min-2hr content
-channels.fallback_filler_id        -- Single looping video
-```
-
-### **Packing Strategy: Greedy with Schedule Shift**
-
-**Why greedy instead of optimal?**
-- Fast: O(n log n) vs O(n × duration)
-- Good enough: Gets within 95% of optimal
-- Predictable: Easy to understand behavior
-- Flexible: Can shuffle to avoid repetition
-
-**Why allow schedule shifts?**
-- Mimics real TV (shows start 1-2 minutes late all the time)
-- Better filler utilization (fewer gaps)
-- Configurable max_shift prevents abuse
-
-**Why shuffle filler?**
-- Prevents same ad order every time
-- Better user experience
-- Still deterministic (seeded shuffle)
-
-### **Remainder Handling**
-
-| Remainder | Action | Rationale |
-|-----------|--------|-----------|
-| 0-1s | Nothing (perfect fit) | Imperceptible |
-| 1-5s | Black screen | Too short for content |
-| 5-20s | "Up Next" slate | Shows what's coming, feels intentional |
-| 20s-2min | Shift schedule, repack | Get better fit |
-| 2min+ | Generated slate | Gap too large, show channel info |
-
----
-
-## Technical Implementation Notes
-
-### **Cursor State (JSONB)**
-
-```json
-{
-  "slot_index": 3,
-  "next_start": "2026-04-19T08:00:00Z",
-  
-  "shuffle_state": {
-    "slot_2_shuffled_order": [45, 23, 67, 12, 89],
-    "slot_2_current_index": 2
-  },
-  
-  "rotation_state": {
-    "slot_3_used_ids": [123, 456, 789]
-  },
-  
-  "semi_seq_state": {
-    "slot_4_batch_offset": 5,
-    "slot_4_within_batch": 3
-  }
-}
-```
-
-### **Event Generation Performance**
-
-**Optimization strategies:**
-- Generate events in batches (don't query DB for each event)
-- Preload collections/tags once per slot
-- Use prepared statements for event insertion
-- Limit horizon to 14-30 days max
-
-**Expected performance:**
-- 1000 events/second generation rate
-- Full 14-day schedule for 10 channels: ~5 seconds
-- Daily rebuild (days 8-14 only): ~2 seconds
-
----
-
-## API Summary
-
-**Tags:**
-- `POST /api/media-items/:id/tags` - Add tags
-- `GET /api/media-items/:id/tags` - Get tags
-- `GET /api/tags` - List all tags
-- `DELETE /api/media-items/:id/tags/:tag` - Remove tag
-
-**Schedules:** (Already exist)
-- `POST /api/schedules` - Create schedule
-- `GET /api/schedules` - List schedules
-- `POST /api/schedules/:id/slots` - Add slot
-- `GET /api/schedules/:id/slots` - List slots
-
-**Overrides:** (New)
-- `POST /api/playouts/:id/overrides` - Create special event
-- `GET /api/playouts/:id/overrides` - List overrides
-- `DELETE /api/overrides/:id` - Remove override
-
-**Playouts:**
-- `POST /api/channels/:id/playout/rebuild?from=now` - Rebuild from NOW (config change)
-- `POST /api/channels/:id/playout/rebuild?from=horizon` - Rebuild days 8-14 only (daily job)
-
----
-
-## Next Steps
-
-1. **Phase 1A: Tag System** (1 day) ← Start here
-2. **Phase 1B: Filler Collections** (1 day)
-3. **Phase 2: Basic Scheduling Engine** (3-4 days)
-4. **Phase 3: Advanced Features** (2-3 days)
-
-**Total estimated time:** ~1.5-2 weeks for complete system
-
-**Immediate action:** Implement Phase 1A (Tag System) to unblock tunarr-scheduler integration.
-
----
-
-## Open Questions
-
-1. **Filler avoidance:** Should system track recently-played filler to avoid showing same ad twice in a row?
-2. **Time zones:** Should `start_time` in fixed slots respect channel timezone?
-3. **Multi-day schedules:** Should schedules support different programming Monday vs weekend?
-4. **Tag inheritance:** Should episodes inherit tags from their series?
-
-These can be addressed during implementation.
+## 8. Where to look for more
+
+- **This repo:** `scheduling/core.clj` (build engine), `scheduling/filler.clj`
+  + `scheduling/packing.clj` (filler), `http/api/daily-slots.clj` (Tunarr
+  Scheduler ingestion), `http/api/tags.clj`, `db/catalog.clj` (aggregate).
+- **tunarr-scheduler:** `SCHEDULING.md` (layered grid design), `ROADMAP.md`
+  (phased delivery status), `DURATION_AWARE_SCHEDULING.md` (in-progress
+  duration-fit work referenced in §7).
+- **tunabrain:** `docs/scheduling-grid-spec.md` (the cross-system contract
+  spec), `docs/handoff-tunarr-pseudovision.md`.
