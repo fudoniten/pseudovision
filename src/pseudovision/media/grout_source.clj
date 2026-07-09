@@ -115,7 +115,15 @@
                                           :remote-key      (remote-key clip)}])
                               (h/returning :*)
                               sql/format))
-                item-id (:media-items/id item)
+                ;; Both rows come from `db/execute-one!`, which uses
+                ;; `rs/as-unqualified-kebab-maps` — so the returned keys are
+                ;; `:id` and `:id` (not `:media-items/id` / `:media-versions/id`).
+                ;; The previous qualified lookups silently returned nil and
+                ;; the `media-versions` insert below violated the NOT NULL
+                ;; constraint on `media_item_id`, rolling back the whole Grout
+                ;; clip ingest. With these, both inserts succeed and Grout
+                ;; clips can flow into `media_files` like Jellyfin items.
+                item-id (:id item)
                 ver     (db/execute-one! tx
                           (-> (h/insert-into :media-versions)
                               (h/values [{:media-item-id item-id
@@ -128,13 +136,16 @@
                               sql/format))]
             (db/execute-one! tx
               (-> (h/insert-into :media-files)
-                  (h/values [{:media-version-id (:media-versions/id ver)
+                  (h/values [{:media-version-id (:id ver)
                               :path             path
                               :path-hash        (path-hash path)}])
                   (h/on-conflict :path-hash)
                   (h/do-update-set :media-version-id :path)
                   sql/format))
             (log/info "Ingested Grout clip" {:grout-id (:id clip) :media-item-id item-id :path path})
+            ;; Return the same shape callers expect — `item-id` is the local
+            ;; unqualified id (the only kind this function actually has), and
+            ;; `duration` is the resolved Java Duration.
             {:media-items/id item-id
              :media-versions/duration (Duration/ofMillis ms)}))))))
 
