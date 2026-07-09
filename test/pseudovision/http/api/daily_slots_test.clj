@@ -59,7 +59,8 @@
                   playout-db/bulk-insert-events! (fn [& _] nil)
                   db-core/query-one (fn [_ _] nil)
                   db-core/query (fn [_ _] [{:media-items/id 42
-                                            :media-items/kind "episode"}])]
+                                            :media-items/kind "episode"
+                                            :duration (java.time.Duration/ofMinutes 22)}])]
       (let [handler (make-test-handler)
             resp    (handler (-> (mock/request :post "/api/channels/1/daily-slots")
                                 (mock/json-body [{:start-time "2026-01-10T10:00:00Z"
@@ -84,7 +85,8 @@
                   ;; resolve to a single concrete episode.
                   db-core/query-one (fn [_ _] {:media-items/id 99})
                   db-core/query (fn [_ _] [{:media-items/id 42
-                                            :media-items/kind "episode"}])]
+                                            :media-items/kind "episode"
+                                            :duration (java.time.Duration/ofMinutes 22)}])]
       (let [batch [{:start-time "2026-06-29T00:00:00"
                     :end-time   "2026-06-29T01:00:00"
                     :media-id   "random:Mystery"
@@ -270,8 +272,10 @@
                                     (cond
                                       (str/includes? sql "from media_items")
                                       ;; resolve-show-episodes — the two episodes of show 7
-                                      [{:media-items/id 100 :media-items/kind "episode"}
-                                       {:media-items/id 101 :media-items/kind "episode"}]
+                                      [{:media-items/id 100 :media-items/kind "episode"
+                                        :duration (java.time.Duration/ofMinutes 22)}
+                                       {:media-items/id 101 :media-items/kind "episode"
+                                        :duration (java.time.Duration/ofMinutes 22)}]
                                       (str/includes? sql "from metadata_tags")
                                       ;; Tag lookup scoped by top-id (show 7):
                                       ;; the show carries channel:goldenreels, the
@@ -331,3 +335,151 @@
           (is (= 1 (:skipped body))
               "the slot is skipped when the show genuinely lacks the tag")
           (is (re-find #"(?i)no playable items" (first (:errors body)))))))))
+
+;; ---------------------------------------------------------------------------
+;; Regression: duration-aware fit selection (the "movie overlaps next slot" bug)
+;;
+;; Before this fix, a random:<category> pool was selected from blindly (with no
+;; regard for the slot's length), and the created event's finish_at was
+;; stamped from the SLOT's own end_time rather than the picked item's actual
+;; runtime. A 2h movie landed in a 1h slot was recorded as finishing on time,
+;; so the next slot's event silently started on top of it.
+;; ---------------------------------------------------------------------------
+
+(deftest daily-slots-picks-item-that-fits-slot-and-stamps-real-duration
+  (testing "random:<category> selection prefers a runtime that fits the slot; finish_at reflects the item's ACTUAL duration, not the slot boundary"
+    (let [captured (atom nil)]
+      (with-redefs [channels-db/get-channel (fn [_ _] {:channels/id 1})
+                    playout-db/get-playout-for-channel (fn [_ _] {:playouts/id 1})
+                    playout-db/delete-events! (fn [& _] 0)
+                    playout-db/bulk-insert-events! (fn [_ events] (reset! captured events))
+                    db-core/query-one (fn [_ _] nil)
+                    ;; Pool for random:movie: a 55-minute film that fits a
+                    ;; 1-hour slot, and a 130-minute epic that would grossly
+                    ;; overflow it.
+                    db-core/query (fn [_ _]
+                                    [{:media-items/id 501 :media-items/kind "movie"
+                                      :duration (java.time.Duration/ofMinutes 55)}
+                                     {:media-items/id 502 :media-items/kind "movie"
+                                      :duration (java.time.Duration/ofMinutes 130)}])]
+        (let [batch [{:start-time "2026-08-01T20:00:00"
+                      :end-time   "2026-08-01T21:00:00"
+                      :media-id   "random:movie"
+                      :media-selection-strategy "random"
+                      :category-filters []
+                      :notes []}]
+              handler (make-test-handler)
+              resp    (handler (-> (mock/request :post "/api/channels/1/daily-slots")
+                                  (mock/json-body batch)))]
+          (is (= 200 (:status resp)))
+          (let [body (parse-json-body resp)]
+            (is (= 1 (:ingested body)))
+            (is (empty? (:errors body))))
+          (is (= 1 (count @captured)))
+          (let [event (first @captured)]
+            (is (= 501 (:media-item-id event))
+                "the 55-minute film is picked over the 130-minute epic that would overflow the slot")
+            (is (= (java.time.Duration/ofMinutes 55)
+                   (java.time.Duration/between (:start-at event) (:finish-at event)))
+                "finish_at reflects the item's REAL duration, not the slot's nominal 1-hour boundary")))))))
+
+(deftest daily-slots-shifts-next-slot-when-previous-item-overflows
+  (testing "an oversized item shifts the NEXT slot's start forward instead of overlapping it"
+    (let [captured (atom nil)
+          call-idx (atom -1)
+          ;; Slot 1 (random:movie): the only candidate is a 100-minute movie,
+          ;; which overflows its nominal 1-hour window entirely (falls back to
+          ;; "closest available" since nothing fits within tolerance).
+          ;; Slot 2 (random:sitcom): a 22-minute episode that fits easily.
+          responses [[{:media-items/id 601 :media-items/kind "movie"
+                       :duration (java.time.Duration/ofMinutes 100)}]
+                     [{:media-items/id 602 :media-items/kind "episode"
+                       :duration (java.time.Duration/ofMinutes 22)}]]]
+      (with-redefs [channels-db/get-channel (fn [_ _] {:channels/id 1})
+                    playout-db/get-playout-for-channel (fn [_ _] {:playouts/id 1})
+                    playout-db/delete-events! (fn [& _] 0)
+                    playout-db/bulk-insert-events! (fn [_ events] (reset! captured events))
+                    db-core/query-one (fn [_ _] nil)
+                    db-core/query (fn [_ _] (nth responses (swap! call-idx inc)))]
+        (let [batch [{:start-time "2026-08-01T20:00:00"
+                      :end-time   "2026-08-01T21:00:00"
+                      :media-id   "random:movie"
+                      :media-selection-strategy "random"
+                      :category-filters []
+                      :notes []}
+                     {:start-time "2026-08-01T21:00:00"
+                      :end-time   "2026-08-01T21:30:00"
+                      :media-id   "random:sitcom"
+                      :media-selection-strategy "random"
+                      :category-filters []
+                      :notes []}]
+              handler (make-test-handler)
+              resp    (handler (-> (mock/request :post "/api/channels/1/daily-slots")
+                                  (mock/json-body batch)))]
+          (is (= 200 (:status resp)))
+          (let [body (parse-json-body resp)]
+            (is (= 2 (:ingested body)))
+            (is (empty? (:errors body))))
+          (is (= 2 (count @captured)))
+          (let [[first-event second-event] (sort-by :start-at @captured)]
+            (is (= 601 (:media-item-id first-event)))
+            (is (= 602 (:media-item-id second-event)))
+            ;; The 100-minute movie starting at 20:00 finishes at 21:40 —
+            ;; 40 minutes past its own slot AND past slot 2's nominal 21:00
+            ;; start.
+            (is (= (:finish-at first-event) (:start-at second-event))
+                "slot 2 starts exactly when slot 1's event actually finished, not at its own nominal 21:00 — no overlap")
+            (is (.isAfter ^java.time.Instant (:start-at second-event)
+                          (java.time.Instant/parse "2026-08-01T21:00:00Z"))
+                "slot 2's start drifted later than its nominal time because slot 1 overran")))))))
+
+(deftest daily-slots-varying-fit-pool-sizes-across-slots-do-not-error
+  (testing "multiple slots referencing the same random:<category> pool, each with a different fitting subset, ingest without error"
+    ;; Regression guard: pick-from-pool caches a shuffled array per pool key.
+    ;; Before pool-cache-key folded the candidate SET into that key, two slots
+    ;; of different lengths sharing one media_id could hand pick-from-pool
+    ;; different-sized item sets under the SAME cache key, risking an
+    ;; IndexOutOfBoundsException when a later call's index exceeded an
+    ;; earlier, smaller cached array.
+    (let [captured (atom nil)
+          pool     [{:media-items/id 701 :media-items/kind "movie"
+                     :duration (java.time.Duration/ofMinutes 20)}
+                    {:media-items/id 702 :media-items/kind "movie"
+                     :duration (java.time.Duration/ofMinutes 50)}
+                    {:media-items/id 703 :media-items/kind "movie"
+                     :duration (java.time.Duration/ofMinutes 100)}]]
+      (with-redefs [channels-db/get-channel (fn [_ _] {:channels/id 1})
+                    playout-db/get-playout-for-channel (fn [_ _] {:playouts/id 1})
+                    playout-db/delete-events! (fn [& _] 0)
+                    playout-db/bulk-insert-events! (fn [_ events] (reset! captured events))
+                    db-core/query-one (fn [_ _] nil)
+                    ;; Same underlying category pool on every call — as a real
+                    ;; DB would return for the same category, regardless of
+                    ;; the querying slot's own duration.
+                    db-core/query (fn [_ _] pool)]
+        (let [batch [{:start-time "2026-08-01T10:00:00"
+                      :end-time   "2026-08-01T10:24:00" ; ~24min slot
+                      :media-id   "random:comedy"
+                      :media-selection-strategy "random"
+                      :category-filters []
+                      :notes []}
+                     {:start-time "2026-08-01T11:00:00"
+                      :end-time   "2026-08-01T11:24:00" ; ~24min slot
+                      :media-id   "random:comedy"
+                      :media-selection-strategy "random"
+                      :category-filters []
+                      :notes []}
+                     {:start-time "2026-08-01T12:00:00"
+                      :end-time   "2026-08-01T13:50:00" ; ~110min slot
+                      :media-id   "random:comedy"
+                      :media-selection-strategy "random"
+                      :category-filters []
+                      :notes []}]
+              handler (make-test-handler)
+              resp    (handler (-> (mock/request :post "/api/channels/1/daily-slots")
+                                  (mock/json-body batch)))]
+          (is (= 200 (:status resp)))
+          (let [body (parse-json-body resp)]
+            (is (= 3 (:ingested body)))
+            (is (= 0 (:skipped body)))
+            (is (empty? (:errors body)))))))))
