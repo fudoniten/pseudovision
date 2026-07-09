@@ -273,7 +273,16 @@
                       sql/format))))
 
 (defn- upsert-version-and-file!
-  "Upserts a media version and its backing file for an item with a physical path."
+  "Upserts a media version and its backing file for an item with a physical path.
+
+  Each INSERT ends in `(h/returning :id)` so the next.jdbc driver returns the
+  inserted row's id via a `RETURNING id` clause. Without it, `execute-one!`
+  uses `Statement.RETURN_GENERATED_KEYS` which returns an empty result set
+  for fresh inserts into columns backed by sequences (the driver can't
+  distinguish sequence defaults from auto-generated keys here, and the actual
+  generated-key metadata only fires on serial/identity columns). The result
+  was a silent `:ver-id nil` and `:file-id nil`, gating off the rest of the
+  upsert — see `db.upsert-media-item!` docstring for the full writeup."
   [tx item-id item]
   (when (:Path item)
     ;; Delete existing version(s) for this item and let cascade clean up files/streams
@@ -285,16 +294,15 @@
           ver       (jdbc/execute-one! tx
                                        (sql/format
                                         (-> (h/insert-into :media-versions)
-                                            (h/values [ver-attrs])))
-                                       {:return-keys true})
-          ;; `db/execute-one!` uses `:builder-fn rs/as-unqualified-kebab-maps`,
-          ;; so the returned row has key `:id` — NOT `:media-versions/id`. The
-          ;; previous lookup silently returned nil for every item, which made
-          ;; the `(when ver-id ...)` block (file + streams inserts) never run
-          ;; and left `media_files`/`media_streams` empty across the entire
-          ;; library — the playout engine's `get-media-file-path` then returns
-          ;; nil for every item and no channel can stream.
+                                            (h/values [ver-attrs])
+                                            (h/returning :id))))
           ver-id    (:id ver)]
+      (log/debug "upsert-version-and-file!: version insert result"
+                 {:item-id item-id
+                  :path    (:Path item)
+                  :ver-row ver
+                  :ver-id  ver-id
+                  :sql-explicit-returning? true})
       (when ver-id
         (log/info "Created media version"
                   {:media-version-id ver-id
@@ -310,7 +318,14 @@
                                                               :path             (:Path item)
                                                               :path-hash        (path-hash (:Path item))}])
                                                   (h/on-conflict :path-hash)
-                                                  (h/do-update-set :media-version-id :path))))]
+                                                  (h/do-update-set :media-version-id :path)
+                                                  (h/returning :id))))]
+          (log/debug "upsert-version-and-file!: file insert result"
+                     {:item-id item-id
+                      :ver-id  ver-id
+                      :path    (:Path item)
+                      :file-row file-result
+                      :file-id  (:id file-result)})
           (log/info "Upserted media file"
                     {:media-file-id (:id file-result)
                      :media-version-id ver-id
@@ -345,9 +360,11 @@
                                              :year :plot :content-rating
                                              :episode-number :album :track-number
                                              :date-updated)))))
-  ;; Fetch the metadata row ID for genre/studio insertion.
-  ;; Same `db/execute-one!`/unqualified-builder caveat as `ver-id` above — the
-  ;; metadata row comes back keyed by `:id`, not `:metadata/id`.
+  ;; Fetch the metadata row ID for genre/studio insertion. The metadata row
+  ;; is keyed by `:id` (unqualified, kebab-case — see `db/execute-one!`'s
+  ;; builder-fn). The insert above is also affected by the same RETURNING
+  ;; pitfall, but the immediate SELECT below is idempotent and doesn't need
+  ;; a RETURNING clause to recover the id.
   (let [meta-row (jdbc/execute-one! tx
                                     (sql/format
                                      (-> (h/select :id)
@@ -445,6 +462,12 @@
                                                     (some? (:IndexNumber item))
                                                     (assoc :position (:IndexNumber item))))
                   item-id  (:id item-row)]
+              (log/debug "upsert-item!: item row + id after media_items upsert"
+                         {:jf-id jf-id
+                          :kind  kind
+                          :item-row-keys (when item-row (keys item-row))
+                          :item-id item-id
+                          :item-id-type (when item-id (type item-id))})
               (when item-id
                 (upsert-version-and-file! tx item-id item)
                 (upsert-metadata! tx item-id item kind))
