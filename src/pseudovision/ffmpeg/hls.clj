@@ -176,7 +176,23 @@
         ;; static 1080p30 screen is trivial to encode, so we always render it in
         ;; software (forcing :accel :none) and reuse only the codec/bitrate
         ;; selection from the profile.  Hardware slate encoding can come later.
-        cfg (assoc (profile/resolve-config (or profile-config {})) :accel :none)
+        ;;
+        ;; The accel override must ALSO strip the profile's accel-specific
+        ;; :video fields.  An NVENC profile carries :preset "p1".."p7" (NVENC
+        ;; quality shorthand) and :rate-control :vbr/:cbr (which the libx264
+        ;; branch doesn't honor — libx264's speed/rate-control is governed by
+        ;; -preset alone).  libx264 rejects "p4" with
+        ;;   "x264 [error]: invalid preset 'p4'"
+        ;; and the encoder dies in ~500ms.  The stream manager retries every
+        ;; 500ms; the user sees HTTP 503 from /stream/{uuid} for the entire
+        ;; gap (typically until the next playout event lands).  Stripping
+        ;; these fields lets video-encode-args fall through to the :none
+        ;; default preset ("veryfast").  See `pseudovision.ffmpeg.hls-test
+        ;; build-slate-command-strips-accel-specific-video-fields` and the
+        ;; 2026-07-09 Slate/NVENC 503 incident.
+        cfg (-> (profile/resolve-config (or profile-config {}))
+                (assoc :accel :none)
+                (update :video dissoc :preset :rate-control))
 
         channel-text (if channel-number
                       (format "Channel %s: %s" channel-number channel-name)
