@@ -481,3 +481,104 @@
         (is (every? string? args) (str label ": every arg is a String"))
         (is (some #(= "60" %) args) (str label ": gop value is the string \"60\""))
         (is (not-any? #(= 60 %) args) (str label ": integer 60 must NOT appear"))))))
+
+;; ---------------------------------------------------------------------------
+;; Regression: slate must not leak an NVENC preset into libx264.
+;;
+;; 2026-07-09 incident: every channel using ffmpeg profile id=5 ("NVENC 1080p",
+;; which has :video.preset "p4") returned HTTP 503 to VLC within seconds of
+;; the stream manager falling back to the generated slate (typically when the
+;; playout queue had no upcoming event).  The ffmpeg logs in the pod showed
+;; 16+ consecutive failures, each with
+;;   "x264 [error]: invalid preset 'p4'"
+;;   "Possible presets: ultrafast superfast veryfast faster fast medium slow
+;;    slower veryslow placebo"
+;; and exit code 234.
+;;
+;; Root cause: build-slate-command in hls.clj forced :accel :none so the
+;; slate would render in software, but did NOT strip the profile's
+;; :video.preset (NVENC's "p1".."p7" quality shorthand) or
+;; :video.rate-control (:vbr/:cbr — libx264's branch in video-encode-args
+;; doesn't emit -rc_mode or -rc).  The :none branch then dutifully emitted
+;;   -c:v libx264 -preset p4 -b:v 4000k
+;; and libx264 died in 500ms.  video-encode-args was the wrong place to fix
+;; this — the accel override in build-slate-command must strip the
+;; accel-specific fields, otherwise the same class of bug will recur for any
+;; future accel that adds new fields to its :video branch.
+;;
+;; These two tests pin the fix from BOTH ends: the slate command never
+;; carries an accel-specific value, and the underlying video-encode-args
+;; caller (with the override applied) produces a clean libx264 invocation.
+;; ---------------------------------------------------------------------------
+
+(deftest build-slate-command-strips-accel-specific-video-fields
+  (testing "an NVENC profile's :video.preset (p1..p7) does not leak into the slate"
+    (let [cmd (vec (hls/build-slate-command
+                    "/tmp/slate-out"
+                    {:channel-name "Spotlight"
+                     :channel-number 5
+                     :upcoming-events []
+                     :profile-config
+                     {:accel "nvenc"
+                      :decode "hardware"
+                      :video {:codec "h264" :bitrate "4000k"
+                              :preset "p4" :rate-control :vbr}}}))]
+      ;; The exact failure mode: libx264 was being passed -preset p4.
+      ;; After the fix, no element of the arg vector is "p4".
+      (is (not-any? #(= "p4" %) cmd)
+          "NVENC's :video.preset \"p4\" must NOT appear in the slate command")
+      (is (not-any? #(= "p1" %) cmd)
+          "nor p1, p2, p3, p5, p6, p7 (all NVENC quality shorthand)")
+      ;; The slate still uses libx264 (forced by the :accel :none override).
+      (is (some #(= "libx264" %) cmd)
+          "slate still encodes in software via libx264")
+      ;; And the libx264 default preset ("veryfast") is what the
+      ;; :none branch falls back to.
+      (is (some #(= "veryfast" %) cmd)
+          "libx264 default preset is \"veryfast\"")
+      ;; rate-control for NVENC is :vbr/:cbr; libx264 doesn't take a
+      ;; -rc_mode / -rc flag, so the value must not be passed at all.
+      (is (not-any? #(= "vbr" %) cmd)
+          "NVENC :vbr rate-control must not leak into the libx264 arg list")
+      (is (not-any? #(= "cbr" %) cmd)
+          "nor :cbr")
+      ;; The full arg vector must materialise to a String[] (regression
+      ;; on the build-hls-command-materialises-to-string-array pattern).
+      (let [materialised (hls/build-slate-command
+                          "/tmp/slate-out"
+                          {:channel-name "Spotlight"
+                           :channel-number 5
+                           :upcoming-events []
+                           :profile-config
+                           {:accel "nvenc"
+                            :video {:codec "h264" :bitrate "4000k"
+                                    :preset "p4" :rate-control :vbr}}})]
+        (is (instance? (Class/forName "[Ljava.lang.String;") materialised)
+            "build-slate-command must return a String[]")
+        (is (every? string? materialised)
+            "every element of the slate arg vector is a String")))))
+
+(deftest build-slate-command-with-software-profile-unchanged
+  (testing "a software profile's codec/bitrate survive the slate override"
+    ;; The slate path forces :accel :none and strips :video.preset so
+    ;; the slate always uses the libx264 default ("veryfast") — this is
+    ;; deliberate, so the slate's encoder behaviour is independent of
+    ;; whatever the channel's regular-accel profile says.  What MUST
+    ;; survive the override is the codec and the bitrate.
+    (let [cmd (vec (hls/build-slate-command
+                    "/tmp/slate-out"
+                    {:channel-name "Some Channel"
+                     :channel-number 9
+                     :upcoming-events []
+                     :profile-config
+                     {:accel "none"
+                      :video {:codec "h264" :bitrate "2500k"
+                              :preset "fast"}}}))]
+      (is (some #(= "libx264" %) cmd)
+          "software profile's codec is preserved (libx264)")
+      (is (some #(= "2500k" %) cmd)
+          "software profile's bitrate is preserved")
+      (is (some #(= "veryfast" %) cmd)
+          "slate always uses the libx264 default preset (NOT the profile's)")
+      (is (not-any? #(= "fast" %) cmd)
+          "profile's :video.preset is not passed through (the dissoc works)"))))
