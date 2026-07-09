@@ -441,7 +441,25 @@
                        (h/where [:= :mf.path path])
                        sql/format)))
 
-(defn upsert-media-item! [ds attrs]
+(defn upsert-media-item!
+  "Upserts a single `media_items` row and returns the row map (with
+  unqualified kebab-case keys, including `:id`), or nil if no row was
+  written (should never happen for a valid insert).
+
+  IMPORTANT: every INSERT here must end in `(h/returning :id)`. Without
+  it, the next.jdbc driver uses `Statement.RETURN_GENERATED_KEYS` which
+  returns an empty result set for `ON CONFLICT DO UPDATE` (no keys are
+  generated on the update path), so the caller would see `(:id result) =>
+  nil` even though the row was written. We hit this exact bug on
+  2026-07-09: scans reported `:synced N` for every library, `media_items`
+  was getting upserted, but every subsequent call gated on `(:id
+  item-row)` was silently skipped, so `media_versions`,
+  `media_files`, and `media_streams` stayed empty and no playout could
+  ever resolve a file path. The `(h/returning :id)` clause makes the
+  RETURNING explicit so the driver always returns the row, regardless
+  of whether the insert hit the conflict-update branch or the fresh-
+  insert branch."
+  [ds attrs]
   (let [prepared (cond-> attrs
                    (:kind attrs)  (update :kind #(sql-util/->pg-enum "media_item_kind" %))
                    (:state attrs) (update :state #(sql-util/->pg-enum "media_item_state" %)))]
@@ -451,11 +469,12 @@
                          (h/values [prepared])
                          (h/on-conflict :library-path-id :remote-key)
                          (h/do-update-set :state :remote-key :remote-etag :position)
+                         (h/returning :id)
                          sql/format)]
-        (log/info "Media item upsert SQL (with remote-key)" {:sql (first sql-vec)})
+        (log/debug "Media item upsert SQL (with remote-key)" {:sql (first sql-vec)})
         (let [result (db/execute-one! ds sql-vec)]
-          (log/info "Upserted media item"
-                    {:media-item-id   (:media-items/id result)
+          (log/debug "Upserted media item"
+                    {:media-item-id   (:id result)
                      :kind            (:kind attrs)
                      :library-path-id (:library-path-id attrs)
                      :remote-key      (:remote-key attrs)
@@ -464,9 +483,10 @@
       ;; For items without remote_key, just insert
       (let [result (db/execute-one! ds (-> (h/insert-into :media-items)
                                            (h/values [prepared])
+                                           (h/returning :id)
                                            sql/format))]
-        (log/info "Inserted media item (no remote-key)"
-                  {:media-item-id   (:media-items/id result)
+        (log/debug "Inserted media item (no remote-key)"
+                  {:media-item-id   (:id result)
                    :kind            (:kind attrs)
                    :library-path-id (:library-path-id attrs)
                    :parent-id       (:parent-id attrs)})
