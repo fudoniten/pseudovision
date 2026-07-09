@@ -287,7 +287,14 @@
                                         (-> (h/insert-into :media-versions)
                                             (h/values [ver-attrs])))
                                        {:return-keys true})
-          ver-id    (:media-versions/id ver)]
+          ;; `db/execute-one!` uses `:builder-fn rs/as-unqualified-kebab-maps`,
+          ;; so the returned row has key `:id` — NOT `:media-versions/id`. The
+          ;; previous lookup silently returned nil for every item, which made
+          ;; the `(when ver-id ...)` block (file + streams inserts) never run
+          ;; and left `media_files`/`media_streams` empty across the entire
+          ;; library — the playout engine's `get-media-file-path` then returns
+          ;; nil for every item and no channel can stream.
+          ver-id    (:id ver)]
       (when ver-id
         (log/info "Created media version"
                   {:media-version-id ver-id
@@ -305,7 +312,7 @@
                                                   (h/on-conflict :path-hash)
                                                   (h/do-update-set :media-version-id :path))))]
           (log/info "Upserted media file"
-                    {:media-file-id (:media-files/id file-result)
+                    {:media-file-id (:id file-result)
                      :media-version-id ver-id
                      :path (:Path item)}))
         ;; Insert streams
@@ -338,13 +345,15 @@
                                              :year :plot :content-rating
                                              :episode-number :album :track-number
                                              :date-updated)))))
-  ;; Fetch the metadata row ID for genre/studio insertion
+  ;; Fetch the metadata row ID for genre/studio insertion.
+  ;; Same `db/execute-one!`/unqualified-builder caveat as `ver-id` above — the
+  ;; metadata row comes back keyed by `:id`, not `:metadata/id`.
   (let [meta-row (jdbc/execute-one! tx
                                     (sql/format
                                      (-> (h/select :id)
                                          (h/from :metadata)
                                          (h/where [:= :media-item-id item-id]))))
-        meta-id  (:metadata/id meta-row)]
+        meta-id  (:id meta-row)]
     (when meta-id
       (log/info "Upserted metadata"
                 {:metadata-id meta-id
