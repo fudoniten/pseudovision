@@ -4,6 +4,7 @@
   (:require [honey.sql         :as sql]
             [honey.sql.helpers :as h]
             [pseudovision.db.core :as db]
+            [pseudovision.db.media :as media]
             [taoensso.timbre   :as log]))
 
 (defmulti resolve-collection
@@ -54,36 +55,64 @@
       (into [:and] clauses))))
 
 (defmethod resolve-collection :smart [ds collection]
-  ;; Supported config keys (all optional):
+  ;; Supported config keys (all optional; "show-id" and "category" are checked
+  ;; first and, when present, short-circuit the rest — they resolve through
+  ;; pseudovision.db.media's season-aware / tag-inheritance-aware queries
+  ;; (shared with the daily-slots ingest path) instead of the flat query below,
+  ;; which only matches tags on the row's OWN metadata and cannot express
+  ;; "all episodes of show X" or "all episodes whose SHOW carries genre Y"):
+  ;;   "show-id"       — internal id of a show; resolves to its ordered,
+  ;;                     season-aware episode list (a named-series strip).
+  ;;   "category"      — a genre/category tag (bare or `genre:`-prefixed);
+  ;;                     resolves matching shows (expanded to episodes) and
+  ;;                     movies, exactly like a `random:<category>` pool at
+  ;;                     air time.
   ;;   "media-type"    — "movie" | "episode" | "music_video" etc.
   ;;   "include-tags"  — item must have ALL (or ANY) of these tags
   ;;   "exclude-tags"  — item must have NONE of these tags
   ;;   "match"         — "all" (default) | "any"  applies to include-tags
   ;;   "order-by"      — "id" (default) | "title" | "random" | "year"
-  (let [q            (get-in collection [:collections/config "query"] {})
-        media-type   (get q "media-type")
-        include-tags (get q "include-tags" [])
-        exclude-tags (get q "exclude-tags" [])
-        match-mode   (get q "match" "all")
-        order-kw     (case (get q "order-by" "id")
-                       "title"  :mi.title
-                       "year"   :mi.year
-                       "random" [[:random]]
-                       :mi.id)
-        tag-clause   (smart-tag-clause match-mode include-tags exclude-tags)]
-    (log/info "Resolving smart collection"
-              {:id (:collections/id collection)
-               :media-type media-type
-               :include-tags include-tags
-               :exclude-tags exclude-tags
-               :match match-mode})
-    (db/query ds (cond-> (-> (h/select :mi.* :mv.duration)
-                             (h/from [:media-items :mi])
-                             (h/left-join [:media-versions :mv] [:= :mv.media-item-id :mi.id])
-                             (h/order-by order-kw))
-                   media-type  (h/where [:= :mi.kind (keyword media-type)])
-                   tag-clause  (h/where tag-clause)
-                   true        sql/format))))
+  (let [q           (get-in collection [:collections/config "query"] {})
+        show-id     (get q "show-id")
+        category    (get q "category")
+        channel-tag (get q "channel-tag")]
+    (cond
+      show-id
+      (do (log/info "Resolving smart collection (show-id)"
+                    {:id (:collections/id collection) :show-id show-id})
+          (media/list-show-episodes-by-id ds show-id))
+
+      category
+      (do (log/info "Resolving smart collection (category)"
+                    {:id (:collections/id collection) :category category
+                     :channel-tag channel-tag})
+          (media/resolve-playable-by-tag ds category
+                                         :require-tags (when channel-tag [channel-tag])))
+
+      :else
+      (let [media-type   (get q "media-type")
+            include-tags (get q "include-tags" [])
+            exclude-tags (get q "exclude-tags" [])
+            match-mode   (get q "match" "all")
+            order-kw     (case (get q "order-by" "id")
+                           "title"  :mi.title
+                           "year"   :mi.year
+                           "random" [[:random]]
+                           :mi.id)
+            tag-clause   (smart-tag-clause match-mode include-tags exclude-tags)]
+        (log/info "Resolving smart collection"
+                  {:id (:collections/id collection)
+                   :media-type media-type
+                   :include-tags include-tags
+                   :exclude-tags exclude-tags
+                   :match match-mode})
+        (db/query ds (cond-> (-> (h/select :mi.* :mv.duration)
+                                 (h/from [:media-items :mi])
+                                 (h/left-join [:media-versions :mv] [:= :mv.media-item-id :mi.id])
+                                 (h/order-by order-kw))
+                       media-type  (h/where [:= :mi.kind (keyword media-type)])
+                       tag-clause  (h/where tag-clause)
+                       true        sql/format))))))
 
 (defmethod resolve-collection :playlist [ds collection]
   ;; Items are stored in the config JSONB as an ordered list of collection

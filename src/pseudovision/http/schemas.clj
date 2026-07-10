@@ -727,6 +727,15 @@
    [:from    {:optional true} [:enum "now" "horizon"]]
    [:horizon {:optional true} [:int {:min 1 :max 365}]]])
 
+(def AttachScheduleBody
+  [:map
+   [:schedule-id [:maybe :int]]])
+
+(def AttachScheduleQuery
+  [:map
+   [:rebuild {:optional true} :boolean]
+   [:horizon {:optional true} [:int {:min 1 :max 365}]]])
+
 (def ClearPlayoutQuery
   [:map
    [:manual {:optional true} :boolean]])

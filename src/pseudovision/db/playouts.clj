@@ -36,6 +36,25 @@
                          sql/format)
                      {:return-keys true}))
 
+(defn attach-schedule!
+  "Attaches (or re-attaches) a schedule to a channel's playout, creating the
+   playout row on first attach. On an existing playout, updates only
+   :schedule-id — unlike upsert-playout!, it does NOT reset :seed, so
+   swapping in a re-synced schedule (e.g. after a grid re-freeze) doesn't
+   reshuffle filler variety or otherwise perturb an already-running channel.
+   Does not itself trigger a rebuild; the caller decides when to do that."
+  [ds channel-id schedule-id]
+  (jdbc/execute-one! ds
+                     (-> (h/insert-into :playouts)
+                         (h/values [{:channel-id  channel-id
+                                     :schedule-id schedule-id
+                                     :seed        (rand-int Integer/MAX_VALUE)}])
+                         (h/on-conflict :channel-id)
+                         (h/do-update-set :schedule-id)
+                         (h/returning :*)
+                         sql/format)
+                     {:return-keys true}))
+
 (defn update-playout! [ds id attrs]
   (db/execute-one! ds (-> (h/update :playouts)
                           (h/set attrs)

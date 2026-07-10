@@ -4,6 +4,7 @@
             [honey.sql.helpers :as h]
             [pseudovision.db.core :as db]
             [pseudovision.util.sql :as sql-util]
+            [pseudovision.util.tags :as tags]
             [taoensso.timbre :as log]))
 
 ;; ---------------------------------------------------------------------------
@@ -408,6 +409,102 @@
                           (:limit opts)  (h/limit (:limit opts))
                           (:offset opts) (h/offset (:offset opts)))]
     (db/query ds (sql/format with-pagination))))
+
+;; ---------------------------------------------------------------------------
+;; Season-aware / tag-scoped playable resolution
+;;
+;; Shared by the daily-slots ingest (pseudovision.http.api.daily-slots) and the
+;; native scheduling engine's collection resolver (pseudovision.db.collections)
+;; so "all episodes of show X" and "all episodes matching genre tag Y" are
+;; resolved identically everywhere, instead of maintaining two copies of the
+;; season-traversal / parent-tag-inheritance logic that previously only lived
+;; in daily-slots.clj.
+;; ---------------------------------------------------------------------------
+
+(defn list-show-episodes-by-id
+  "Ordered playable episodes for the show with internal id `show-id`.
+   Episodes hang off seasons (episode.parent_id -> season -> show), so each
+   episode's parent-as-season is joined to reach the show; a direct
+   show->episode link (flat libraries) is also honoured.
+
+   Each row carries `:_top-id` (the show's own id) so callers can look up
+   show-level tags — genre/channel/etc. tags live on the show's metadata, not
+   the episode's."
+  [ds show-id]
+  (mapv #(assoc % :_top-id show-id)
+        (db/query ds
+          (-> (h/select :mi.* [:mv.duration :duration])
+              (h/from [:media-items :mi])
+              (h/left-join [:media-items :season]
+                           [:and [:= :season.id :mi.parent-id]
+                                 [:= :season.kind (sql-util/->pg-enum "media_item_kind" "season")]])
+              (h/left-join [:media-versions :mv] [:= :mv.media-item-id :mi.id])
+              (h/where [:and
+                        [:= :mi.kind (sql-util/->pg-enum "media_item_kind" "episode")]
+                        [:= :mi.state (sql-util/->pg-enum "media_item_state" "normal")]
+                        [:or [:= :mi.parent-id show-id]
+                             [:= :season.parent-id show-id]]])
+              (h/order-by :season.position :mi.position :mi.id)
+              sql/format))))
+
+(defn- exact-tag-exists-subq
+  "HoneySQL EXISTS subquery: does the top-level item (`:mtop`) carry the exact
+   tag `tag-name` (case-insensitive)? Used for extra scoping tags (e.g.
+   `channel:<slug>`) that must ALSO be present, ANDed with the category match
+   in `resolve-playable-by-tag` — unlike the category match, these are exact,
+   not bare-or-`genre:`-prefixed."
+  [tag-name]
+  [:exists {:select [1]
+            :from   [[:metadata-tags :et]]
+            :where  [:and [:= :et.metadata-id :mtop.id]
+                          [:= [:lower :et.name] (str/lower-case tag-name)]]}])
+
+(defn resolve-playable-by-tag
+  "Resolves a genre/category tag (bare or `genre:`-prefixed, case-insensitive,
+   kebab-case tolerant) to concrete *playable* items: matching shows are
+   expanded to their (season-nested) episodes, matching movies resolve to
+   themselves. Mirrors the matching semantics of a `random:<category>` pool
+   at air time.
+
+   `:require-tags` (optional) — exact tag strings (e.g. `channel:hua`) the
+   top-level item must ALSO carry, ANDed with the category match. Used to
+   scope a category pool to one channel's own mapped media, same as the
+   `channel-tag` scoping `publish-daily-slots!` applies to `random:<category>`
+   pools today.
+
+   Each row carries `:_top-id` — the id of the top-level item (show or movie)
+   it was resolved from — for show-level tag lookups downstream."
+  [ds category & {:keys [require-tags]}]
+  (db/query ds
+    (-> (h/select-distinct :play.* [:mvp.duration :duration] [:top.id :_top-id])
+        (h/from [:media-items :top])
+        (h/join [:metadata :mtop] [:= :mtop.media-item-id :top.id])
+        (h/left-join [:metadata-tags :t] [:= :t.metadata-id :mtop.id])
+        (h/left-join [:media-items :season]
+                     [:and [:= :season.parent-id :top.id]
+                           [:= :season.kind (sql-util/->pg-enum "media_item_kind" "season")]])
+        (h/left-join [:media-items :play]
+                     [:or
+                      [:and [:= :top.kind (sql-util/->pg-enum "media_item_kind" "movie")]
+                            [:= :play.id :top.id]]
+                      [:and [:= :top.kind (sql-util/->pg-enum "media_item_kind" "show")]
+                            [:= :play.kind (sql-util/->pg-enum "media_item_kind" "episode")]
+                            [:or [:= :play.parent-id :top.id]
+                                 [:= :play.parent-id :season.id]]]])
+        (h/left-join [:media-versions :mvp] [:= :mvp.media-item-id :play.id])
+        (h/where (into [:and
+                        [:= :top.state (sql-util/->pg-enum "media_item_state" "normal")]
+                        [:= :play.state (sql-util/->pg-enum "media_item_state" "normal")]
+                        [:in :top.kind [(sql-util/->pg-enum "media_item_kind" "show")
+                                        (sql-util/->pg-enum "media_item_kind" "movie")]]
+                        [:or [:= [:lower :t.name] (str/lower-case category)]
+                             [:= [:lower :t.name] (str "genre:" (str/lower-case category))]
+                             [:= [:lower :t.name] (tags/kebab-case category)]
+                             [:= [:lower :t.name] (str "genre:" (tags/kebab-case category))]]]
+                       (map exact-tag-exists-subq)
+                       require-tags))
+        (h/order-by :play.id)
+        sql/format)))
 
 (defn list-items-for-library-path [ds library-path-id]
   (db/query ds (-> (h/select :*)
