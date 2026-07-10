@@ -276,26 +276,27 @@
   "Upserts a media version and its backing file for an item with a physical path.
 
   Each INSERT ends in `(h/returning :id)` so the next.jdbc driver returns the
-  inserted row's id via a `RETURNING id` clause. Without it, `execute-one!`
-  uses `Statement.RETURN_GENERATED_KEYS` which returns an empty result set
-  for fresh inserts into columns backed by sequences (the driver can't
-  distinguish sequence defaults from auto-generated keys here, and the actual
-  generated-key metadata only fires on serial/identity columns). The result
-  was a silent `:ver-id nil` and `:file-id nil`, gating off the rest of the
-  upsert — see `db.upsert-media-item!` docstring for the full writeup."
+  inserted row's id via a `RETURNING id` clause (PR #123). All `execute-one!`
+  calls go through `db/execute-one!` (the project's wrapper), which sets
+  `:builder-fn rs/as-unqualified-kebab-maps` and `:return-keys true` so the
+  returned row map has unqualified kebab-case keys (`:id`, not
+  `:media-versions/id`). Using the raw `next.jdbc/execute-one!` (which has
+  the default `as-maps` builder-fn and returns *qualified* keys) silently
+  makes `(:id ver)` return nil and the `(when ver-id ...)` block never
+  runs — see `db.upsert-media-item!` docstring for the full writeup."
   [tx item-id item]
   (when (:Path item)
     ;; Delete existing version(s) for this item and let cascade clean up files/streams
-    (jdbc/execute-one! tx
-                       (sql/format
-                        (-> (h/delete-from :media-versions)
-                            (h/where [:= :media-item-id item-id]))))
+    (db-core/execute-one! tx
+                          (sql/format
+                           (-> (h/delete-from :media-versions)
+                               (h/where [:= :media-item-id item-id]))))
     (let [ver-attrs (assoc (item->version-attrs item) :media-item-id item-id)
-          ver       (jdbc/execute-one! tx
-                                       (sql/format
-                                        (-> (h/insert-into :media-versions)
-                                            (h/values [ver-attrs])
-                                            (h/returning :id))))
+          ver       (db-core/execute-one! tx
+                                          (sql/format
+                                           (-> (h/insert-into :media-versions)
+                                               (h/values [ver-attrs])
+                                               (h/returning :id))))
           ver-id    (:id ver)]
       (log/debug "upsert-version-and-file!: version insert result"
                  {:item-id item-id
@@ -311,15 +312,15 @@
                    :height (:height ver-attrs)
                    :duration (str (:duration ver-attrs))})
         ;; Insert file
-        (let [file-result (jdbc/execute-one! tx
-                                             (sql/format
-                                              (-> (h/insert-into :media-files)
-                                                  (h/values [{:media-version-id ver-id
-                                                              :path             (:Path item)
-                                                              :path-hash        (path-hash (:Path item))}])
-                                                  (h/on-conflict :path-hash)
-                                                  (h/do-update-set :media-version-id :path)
-                                                  (h/returning :id))))]
+        (let [file-result (db-core/execute-one! tx
+                                                (sql/format
+                                                 (-> (h/insert-into :media-files)
+                                                     (h/values [{:media-version-id ver-id
+                                                                 :path             (:Path item)
+                                                                 :path-hash        (path-hash (:Path item))}])
+                                                     (h/on-conflict :path-hash)
+                                                     (h/do-update-set :media-version-id :path)
+                                                     (h/returning :id))))]
           (log/debug "upsert-version-and-file!: file insert result"
                      {:item-id item-id
                       :ver-id  ver-id
@@ -333,10 +334,10 @@
         ;; Insert streams
         (let [streams (map-indexed jellyfin-stream->attrs (:MediaStreams item []))]
           (when (seq streams)
-            (jdbc/execute! tx
-                           (sql/format
-                            (-> (h/insert-into :media-streams)
-                                (h/values (mapv #(assoc % :media-version-id ver-id) streams)))))
+            (db-core/execute! tx
+                              (sql/format
+                               (-> (h/insert-into :media-streams)
+                                   (h/values (mapv #(assoc % :media-version-id ver-id) streams)))))
             (log/info "Created media streams"
                       {:media-version-id ver-id
                        :stream-count (count streams)
