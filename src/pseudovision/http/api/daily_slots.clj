@@ -323,13 +323,22 @@
 (defn- playable-item?
   "True when `item` carries a known, positive runtime. Mirrors
    pseudovision.scheduling.core/playable? — an item with no probed duration
-   can't be stamped with a truthful finish_at, so it can't be scheduled here."
+   can't be stamped with a truthful finish_at, so it can't be scheduled here.
+
+   The duration can arrive under either `:media-versions/duration` (the
+   table-qualified key produced by `next.jdbc.result-set/as-kebab-maps` for
+   a `mv.duration` column, which is what `db-core/query` returns) or under
+   the bare alias `:duration` (the key some upstream queries project it
+   under via `:mv.duration :duration` aliases). Both forms are accepted so
+   the check is robust against either shape, mirroring
+   `pseudovision.scheduling.filler/item-duration-seconds`."
   [item]
-  (when-let [^Duration d (:duration item)]
-    (pos? (.getSeconds d))))
+  (let [d (or (:media-versions/duration item) (:duration item))]
+    (when d
+      (pos? (.getSeconds ^Duration d)))))
 
 (defn- duration-secs ^long [item]
-  (.getSeconds ^Duration (:duration item)))
+  (.getSeconds ^Duration (or (:media-versions/duration item) (:duration item))))
 
 (defn- closest-first [target-secs items]
   (sort-by #(Math/abs (- (duration-secs %) target-secs)) items))
@@ -550,7 +559,7 @@
           (let [actual-start (if (and cursor (.isAfter ^Instant cursor nominal-start))
                                 cursor
                                 nominal-start)
-                ^Duration dur (:duration item)
+                ^Duration dur (or (:media-versions/duration item) (:duration item))
                 actual-end   (.plus ^Instant actual-start dur)]
             [{:playout-id     playout-id
               :media-item-id  (:media-items/id item)

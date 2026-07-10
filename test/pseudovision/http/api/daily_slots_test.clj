@@ -482,4 +482,40 @@
           (let [body (parse-json-body resp)]
             (is (= 3 (:ingested body)))
             (is (= 0 (:skipped body)))
-            (is (empty? (:errors body)))))))))
+            (is (empty? (:errors body))))))))
+
+;; -----------------------------------------------------------------------
+;; Regression: duration is read under the qualified `:media-versions/duration`
+;; key (the form `db-core/query` actually returns via
+;; `next.jdbc.result-set/as-kebab-maps`), not the bare alias `:duration`.
+;;
+;; Before this fix, the channel-playout path's `playable-item?` filter
+;; checked `(:duration item)`, but the actual rows coming back from
+;; `db-core/query-one` had the duration under `:media-versions/duration`.
+;; Every slot errored with "No playable items found" once the upstream
+;; `media_files` / `media_versions` data finally populated post-scans.
+;; -----------------------------------------------------------------------
+
+(deftest playable-item?-accepts-qualified-media-versions-duration-key
+  (testing "rows shaped like real `db-core/query` output
+            (`{... :media-versions/duration <Duration>}`) are recognised
+            as playable even when no `:duration` alias is present"
+    (is (true? (#'ds/playable-item?
+                {:media-items/id 1
+                 :media-versions/duration (java.time.Duration/ofMinutes 90)}))
+        "an item with a positive duration under the qualified key passes")
+    (is (false? (#'ds/playable-item?
+                 {:media-items/id 1
+                  :media-versions/duration (java.time.Duration/ofSeconds 0)}))
+        "a zero-duration item still fails the positive-runtime check")
+    (is (false? (#'ds/playable-item?
+                 {:media-items/id 1
+                  :media-versions/duration nil}))
+        "a nil duration fails (item wasn't probed, so no truthful finish_at)")
+    (is (false? (#'ds/playable-item? {:media-items/id 1}))
+        "a missing duration key fails")
+    (testing "the legacy bare-alias key still works for upstream callers
+              that project under `[:mv.duration :duration]` aliases"
+      (is (true? (#'ds/playable-item?
+                  {:media-items/id 1
+                   :duration (java.time.Duration/ofMinutes 22)}))))))
