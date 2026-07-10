@@ -179,14 +179,21 @@
 ;; ---------------------------------------------------------------------------
 
 (defn- jellyfin-stream->attrs
-  "Converts a Jellyfin MediaStream to a media_streams attribute map."
+  "Converts a Jellyfin MediaStream to a media_streams attribute map.
+
+  The `:kind` field is wrapped in a PGobject for the `stream_kind` enum so
+  the INSERT doesn't blow up on `column \"kind\" is of type stream_kind but
+  expression is of type character varying`. Without this, the whole
+  transaction (media_items + media_versions + media_files) rolls back
+  when the streams insert fails, leaving the playout data path empty."
   [idx stream]
   {:stream-index    idx
-   :kind            (case (:Type stream)
-                      "Video"    "video"
-                      "Audio"    "audio"
-                      "Subtitle" "subtitle"
-                      "video")
+   :kind            (sql-util/->pg-enum "stream_kind"
+                                         (case (:Type stream)
+                                           "Video"    "video"
+                                           "Audio"    "audio"
+                                           "Subtitle" "subtitle"
+                                           "video"))
    :codec           (:Codec stream)
    :profile         (:Profile stream)
    :language        (:Language stream)
