@@ -191,6 +191,16 @@
             :responses  {202 {:body s/JobSubmitResponse}
                          404 {:body s/APIError}}
             :handler    (pl/rebuild-playout-handler ctx)}
+     :put  {:summary    "Attach a schedule to the channel's playout"
+            :description "Creates the playout row on first attach. Does not
+                          itself rebuild the timeline unless ?rebuild=true is
+                          passed (or call POST .../playout separately)."
+            :parameters {:path  [:map [:channel-id s/ChannelId]]
+                         :query s/AttachScheduleQuery
+                         :body  s/AttachScheduleBody}
+            :responses  {200 {:body s/Playout}
+                         404 {:body s/APIError}}
+            :handler    (pl/attach-schedule-handler ctx)}
      :delete {:summary    "Clear the whole playout timeline and reset its cursor"
               :parameters {:path  [:map [:channel-id s/ChannelId]]
                            :query s/ClearPlayoutQuery}

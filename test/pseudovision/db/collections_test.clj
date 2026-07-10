@@ -130,3 +130,38 @@
     (let [clause (#'sut/smart-tag-clause "all" ["comedy"] ["explicit"])]
       (is (= :and (first clause)))
       (is (= 2 (count (rest clause)))))))
+
+;; ---------------------------------------------------------------------------
+;; smart :show-id / :category — the native-schedule content sources (a named
+;; series strip, or a genre pool with parent-show tag inheritance) route
+;; through pseudovision.db.media instead of the flat query above.
+;; ---------------------------------------------------------------------------
+
+(deftest smart-show-id-uses-season-aware-episode-query
+  (testing "show-id short-circuits the flat query and joins seasons"
+    (let [sql (capture-sql!
+                #(sut/resolve-collection nil (coll "smart" {"query" {"show-id" 42}})))]
+      (let [s (first sql)]
+        (is (.contains s "season"))
+        (is (.contains s "episode"))
+        (is (not (.contains s "metadata_tags")))))))
+
+(deftest smart-category-uses-tag-inheritance-query
+  (testing "category short-circuits the flat query and matches genre: prefix + episode/movie expansion"
+    (let [sql (capture-sql!
+                #(sut/resolve-collection nil (coll "smart" {"query" {"category" "sitcom"}})))]
+      (let [s (first sql)]
+        (is (.contains s "sitcom"))
+        (is (.contains s "genre"))))))
+
+(deftest smart-category-with-channel-tag-scopes-to-channel
+  (testing "channel-tag adds an extra exact-match EXISTS clause"
+    (let [sql (capture-sql!
+                #(sut/resolve-collection nil (coll "smart" {"query" {"category" "sitcom"
+                                                                     "channel-tag" "channel:hua"}})))
+          sql-unscoped (capture-sql!
+                         #(sut/resolve-collection nil (coll "smart" {"query" {"category" "sitcom"}})))]
+      (let [s (first sql)]
+        (is (.contains s "channel:hua"))
+        (is (> (count (re-seq #"EXISTS" s))
+               (count (re-seq #"EXISTS" (first sql-unscoped)))))))))

@@ -7,6 +7,7 @@
             [pseudovision.db.playouts      :as playout-db]
             [pseudovision.db.channels      :as channels-db]
             [pseudovision.db.core          :as db-core]
+            [pseudovision.db.media         :as media-db]
             [pseudovision.util.sql         :as sql-util]
             [pseudovision.util.tags        :as tags]
             [pseudovision.util.time        :as time]
@@ -32,7 +33,10 @@
   "Returns ordered episodes for a show identified by id or remote_key.
 
    Each row carries a `:_top-id` key (the show's id) so downstream
-   `category_filters` matching can look up show-level tags."
+   `category_filters` matching can look up show-level tags. Season
+   traversal + tag-inheritance semantics live in
+   `pseudovision.db.media/list-show-episodes-by-id`, shared with the native
+   scheduling engine's collection resolver (pseudovision.db.collections)."
   [ds show-id-or-key]
   (let [;; Try to resolve by internal id or remote_key
         show (or (db-core/query-one ds
@@ -48,28 +52,7 @@
                         sql/format)))
         show-id (:media-items/id show)]
     (if show
-      (let [episodes (db-core/query ds
-                         (-> (h/select :mi.* [:mv.duration :duration])
-                             (h/from [:media-items :mi])
-                             ;; Episodes are nested under seasons (episode.parent_id → season →
-                             ;; show), so join each episode's parent-as-season to reach the show.
-                             ;; A direct show→episode link is also honoured for flat libraries.
-                             (h/left-join [:media-items :season]
-                                          [:and [:= :season.id :mi.parent-id]
-                                                [:= :season.kind (sql-util/->pg-enum "media_item_kind" "season")]])
-                             (h/left-join [:media-versions :mv] [:= :mv.media-item-id :mi.id])
-                             (h/where [:and
-                                       [:= :mi.kind (sql-util/->pg-enum "media_item_kind" "episode")]
-                                       [:= :mi.state (sql-util/->pg-enum "media_item_state" "normal")]
-                                       [:or [:= :mi.parent-id show-id]
-                                            [:= :season.parent-id show-id]]])
-                             (h/order-by :season.position :mi.position :mi.id)
-                             sql/format))]
-        ;; Tag every episode with its parent show id so downstream
-        ;; `category_filters` matching (via `top-id-of`) can resolve
-        ;; show-level tags that live on the show's metadata, not the
-        ;; episode's.
-        (mapv #(assoc % :_top-id show-id) episodes))
+      (media-db/list-show-episodes-by-id ds show-id)
       [])))
 
 (defn- resolve-movie
@@ -133,45 +116,7 @@
    id to look up show-level tags, which live on the top row rather than the
    episode row."
   [ds category]
-  (db-core/query ds
-    (-> (h/select-distinct :play.* [:mvp.duration :duration] [:top.id :_top-id])
-        (h/from [:media-items :top])
-        (h/join [:metadata :mtop] [:= :mtop.media-item-id :top.id])
-        (h/left-join [:metadata-tags :t] [:= :t.metadata-id :mtop.id])
-        ;; Seasons of matching shows, so we can reach their episodes.
-        (h/left-join [:media-items :season]
-                     [:and [:= :season.parent-id :top.id]
-                           [:= :season.kind (sql-util/->pg-enum "media_item_kind" "season")]])
-        ;; The actual playable row: the movie itself, or an episode of the show
-        ;; (direct child or nested under one of its seasons).
-        ;;
-        ;; This is a LEFT JOIN even though it behaves like an inner join (the
-        ;; `play.state = normal` predicate in WHERE drops the unmatched NULL
-        ;; rows). HoneySQL emits every inner `:join` before every `:left-join`
-        ;; regardless of threading order, so an inner join here would be
-        ;; rendered ahead of the `:season` LEFT JOIN it references, producing
-        ;; "missing FROM-clause entry for table season". Keeping it a left join
-        ;; preserves the season → play ordering.
-        (h/left-join [:media-items :play]
-                     [:or
-                      [:and [:= :top.kind (sql-util/->pg-enum "media_item_kind" "movie")]
-                            [:= :play.id :top.id]]
-                      [:and [:= :top.kind (sql-util/->pg-enum "media_item_kind" "show")]
-                            [:= :play.kind (sql-util/->pg-enum "media_item_kind" "episode")]
-                            [:or [:= :play.parent-id :top.id]
-                                 [:= :play.parent-id :season.id]]]])
-        (h/left-join [:media-versions :mvp] [:= :mvp.media-item-id :play.id])
-        (h/where [:and
-                  [:= :top.state (sql-util/->pg-enum "media_item_state" "normal")]
-                  [:= :play.state (sql-util/->pg-enum "media_item_state" "normal")]
-                  [:in :top.kind [(sql-util/->pg-enum "media_item_kind" "show")
-                                  (sql-util/->pg-enum "media_item_kind" "movie")]]
-                  [:or [:= [:lower :t.name] (str/lower-case category)]
-                       [:= [:lower :t.name] (str "genre:" (str/lower-case category))]
-                       [:= [:lower :t.name] (kebab-case category)]
-                       [:= [:lower :t.name] (str "genre:" (kebab-case category))]]])
-        (h/order-by :play.id)
-        sql/format)))
+  (media-db/resolve-playable-by-tag ds category))
 
 (defn- last-aired-episode-index
   "Finds the index of the most recently aired episode for a show in a playout.

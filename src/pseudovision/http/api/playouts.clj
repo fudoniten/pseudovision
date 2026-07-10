@@ -37,6 +37,39 @@
         {:status 200 :body (unqualify-keys p)}
         {:status 404 :body {:error "No playout for this channel"}}))))
 
+(defn attach-schedule-handler
+  "PUT /api/channels/:channel-id/playout — attaches a schedule to the
+   channel's playout, creating the playout row on first attach. This is the
+   missing link the native scheduling engine's schedules/slots/collections
+   needed: schedule_id lives on `playouts`, not `channels`, and until this
+   endpoint there was no HTTP path to set it (pseudovision.db.playouts/
+   upsert-playout! was previously called only from a dev/test helper).
+   Does not itself rebuild the timeline — POST .../playout afterwards (or
+   pass ?rebuild=true) to regenerate events against the newly-attached
+   schedule."
+  [{:keys [db jobs grout]}]
+  (fn [req]
+    (let [channel-id  (resolve-channel-id db (get-in req [:parameters :path :channel-id]))
+          schedule-id (get-in req [:parameters :body :schedule-id])
+          qp          (get-in req [:parameters :query])
+          rebuild?    (boolean (:rebuild qp))
+          horizon-days (or (:horizon qp) 14)]
+      (if (nil? channel-id)
+        {:status 404 :body {:error "Channel not found"}}
+        (let [playout (db/attach-schedule! db channel-id schedule-id)]
+          (when rebuild?
+            (runner/submit!
+             jobs
+             {:type     :playout/rebuild
+              :metadata {:channel-id channel-id :from "now" :horizon-days horizon-days}}
+             (fn [_report-progress]
+               (let [count (sched/rebuild-from-now! db (:playouts/id playout) horizon-days {:grout grout})]
+                 {:message          "Rebuild complete"
+                  :events-generated count
+                  :horizon-days     horizon-days
+                  :from             "now"}))))
+          {:status 200 :body (unqualify-keys playout)})))))
+
 (defn rebuild-playout-handler
   "Rebuilding a playout's timeline can take minutes, so it runs as an
    asynchronous job rather than blocking the request. Returns 202 with the
