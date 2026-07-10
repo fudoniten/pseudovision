@@ -1,3 +1,9 @@
+> **ARCHIVED (2026-07):** last updated 2026-04-21, over 3 months stale as of
+> this note. Functioned as a running scratch log rather than a maintained
+> backlog — verify against current code before trusting any item's status
+> below; don't assume unchecked items are still open or checked items are
+> still accurate.
+
 # Pseudovision XMLTV/M3U/Streaming TODO
 
 This document tracks the completion status of XMLTV, M3U, and live streaming functionality.

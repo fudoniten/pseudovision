@@ -1,6 +1,16 @@
 # Pseudovision Scheduling System - Architecture & Design
 
-**Status:** 📋 Design Complete, Implementation Pending  
+**Status:** ✅ Implemented (2026-07) — this is now a historical design doc, not
+a status tracker. Tags, Collections, Schedules/Slots, Playouts, Playout
+Events, and Overrides all exist as described below in broad strokes, but
+some details have drifted (notably the "API Summary" section's routes —
+see the current, authoritative API surface in `README.md`'s Playout table
+and `PLAYOUT_JOBS.md` instead of trusting the routes listed here verbatim).
+Two things this doc predates entirely: **attaching a schedule to a channel
+is now `PUT /api/channels/:id/playout`** (there was no HTTP path for this at
+all until 2026-07 — see `PLAYOUT_JOBS.md`), and `db/collections.clj`'s
+`smart` kind now also supports `"show-id"`/`"category"`/`"channel-tag"`
+query keys (see `COLLECTIONS_GUIDE.md`).  
 **Last Updated:** 2026-04-18  
 **Design Session:** Architecture discussion with requirements analysis
 

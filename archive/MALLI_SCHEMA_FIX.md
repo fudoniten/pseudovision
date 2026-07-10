@@ -1,3 +1,7 @@
+> **ARCHIVED (2026-07):** a narrow, one-off incident note rather than living
+> documentation. The underlying gotcha (below) is presumably still true of
+> Malli, but this isn't a maintained reference — treat as historical.
+
 # Malli Schema Validation Error: `:merge` Operator Fix
 
 ## Problem

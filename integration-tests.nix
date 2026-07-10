@@ -345,12 +345,14 @@
       # 6. Create playouts and trigger builds
       # ================================================================
 
-      # Wire channel → schedule via playout rows (direct SQL to set schedule_id)
+      # Wire channel → schedule via PUT /api/channels/:id/playout (attaches
+      # the schedule, creating the playout row on first attach). This used to
+      # be a raw INSERT INTO playouts because no HTTP path existed for it;
+      # now it's a real end-to-end exercise of the attach endpoint itself.
       for (ch_id, s_id) in [(ch1_id, s1_id), (ch2_id, s2_id), (ch3_id, s3_id)]:
-          server.succeed(
-              f"psql -U pseudovision -d pseudovision -c \""
-              f"INSERT INTO playouts (channel_id, schedule_id, seed) "
-              f"VALUES ({ch_id}, {s_id}, 42);\""
+          attached = api_put(f"/api/channels/{ch_id}/playout", {"schedule-id": s_id})
+          assert attached["schedule-id"] == s_id, (
+              f"Attach did not set schedule-id for channel {ch_id}: {attached}"
           )
 
       # Trigger async rebuild jobs via the API. Rebuilds now run as background

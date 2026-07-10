@@ -13,7 +13,10 @@ Pseudovision supports several collection types:
 - **`playlist`** - Ordered list of collections with settings
 - **`multi`** - Union of other collections
 - **`trakt`** - Synced from Trakt.tv lists
-- **`rerun`** - First-run → rerun wrapper
+- **`rerun`** - First-run → rerun wrapper. **Not yet implemented** — the
+  resolver is a stub that logs a warning and always returns no items
+  (`pseudovision.db.collections`, `TODO: implement first-run / rerun
+  filtering`). A collection of this kind will resolve empty.
 
 For testing purposes, **`manual`** collections are the simplest.
 
@@ -169,16 +172,31 @@ curl -X POST http://localhost:8080/api/media/collections \
     "kind": "smart",
     "config": {
       "query": {
-        "media_type": "movie"
+        "media-type": "movie"
       }
     }
   }' | jq
 ```
 
-**Config options for smart collections:**
-- Filter by media type: `{"media_type": "movie"}` or `{"media_type": "episode"}`
-- Filter by library: `{"library_id": 1}`
-- Filter by title pattern: `{"title_pattern": "%Star%"}`
+**Config options for smart collections** (key names are hyphenated, matching
+the wire format everywhere else in the API — `media-type`, not `media_type`;
+see `pseudovision.db.collections/resolve-collection :smart` for the
+canonical list, this section is a summary):
+- `"show-id": 42` — a named series' full episode list, in season/episode
+  order (a recurring-strip content source; short-circuits every other key).
+- `"category": "sitcom"` (+ optional `"channel-tag": "channel:hua"`) — all
+  episodes/movies tagged with a genre, matching shows expanded to their
+  episodes and scoped to one channel's own mapped media when `channel-tag`
+  is given (short-circuits every other key below).
+- `"media-type"`: `"movie"` or `"episode"` (etc.) — filter by item kind.
+- `"include-tags"` / `"exclude-tags"`: arrays of exact tag strings, `"match"`:
+  `"all"` (default) or `"any"` for include-tags. **Caveat:** these check only
+  the item's own tags, not an episode's parent show's tags — for genre pools
+  spanning shows, use `"category"` above instead.
+- `"order-by"`: `"id"` (default), `"title"`, `"year"`, or `"random"`.
+
+(There is no `library_id`/`title_pattern` key — those were never
+implemented; this doc previously listed them in error.)
 
 ---
 
