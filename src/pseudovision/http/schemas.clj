@@ -868,7 +868,7 @@
    [:id           JobId]
    [:type         JobType]
    [:status       JobStatus]
-   [:metadata     {:optional true} [:maybe :map]]
+   [:metadata     {:optional true} [:maybe [:map {:closed false}]]] 
    [:progress     {:optional true} [:maybe [:or JobProgress number?]]]
    [:duration-ms  {:optional true} [:maybe :int]]
    [:result       {:optional true} :any]

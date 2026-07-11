@@ -20,13 +20,15 @@
   (testing "GET /api/tags shapes rows as {:name :count}"
     (with-redefs [pseudovision.db.core/query
                   (fn [_ _] [{:metadata-tags/name "comedy" :count 12}
-                             {:metadata-tags/name "short"  :count 4}])]
+                             {:metadata-tags/name "short"  :count 4}])
+                  pseudovision.db.core/query-one
+                  (fn [_ _] {:count 2})]
       (let [resp ((make-test-handler) (mock/request :get "/api/tags"))
             body (parse-json-body resp)]
         (is (= 200 (:status resp)))
-        (is (= 2 (count body)))
-        (is (= "comedy" (get-in body [0 :name])))
-        (is (= 12      (get-in body [0 :count])))))))
+        (is (= 2 (count (:items body))))
+        (is (= "comedy" (get-in body [:items 0 :name])))
+        (is (= 12      (get-in body [:items 0 :count])))))))
 
 (deftest add-tags-rejects-missing-tags-key
   (testing "POST /api/media-items/1/tags with no :tags key returns 400"

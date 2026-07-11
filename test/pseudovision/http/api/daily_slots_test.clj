@@ -482,7 +482,7 @@
           (let [body (parse-json-body resp)]
             (is (= 3 (:ingested body)))
             (is (= 0 (:skipped body)))
-            (is (empty? (:errors body))))))))
+            (is (empty? (:errors body)))))))))
 
 ;; -----------------------------------------------------------------------
 ;; Regression: duration is read under the qualified `:media-versions/duration`

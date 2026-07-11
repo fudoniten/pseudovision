@@ -138,7 +138,8 @@
   (let [cfg (profile/resolve-config {:accel "none" :video {:codec "h264" :bitrate "2000k"}}
                                     all-accels)]
     (is (= [] (profile/input-args cfg)) "no -hwaccel for software")
-    (is (= ["-c:v" "libx264" "-preset" "veryfast" "-b:v" "2000k"]
+    (is (= ["-c:v" "libx264" "-preset" "veryfast" "-b:v" "2000k"
+            "-g" "60" "-keyint_min" "60"]
            (profile/video-encode-args cfg)))))
 
 (deftest nvenc-encode-args
@@ -148,7 +149,8 @@
              all-accels)]
     (is (= ["-hwaccel" "cuda" "-hwaccel_output_format" "cuda"]
            (profile/input-args cfg)))
-    (is (= ["-c:v" "h264_nvenc" "-preset" "p4" "-rc" "vbr" "-b:v" "4000k"]
+    (is (= ["-c:v" "h264_nvenc" "-preset" "p4" "-rc" "vbr" "-b:v" "4000k"
+            "-g" "60"]
            (profile/video-encode-args cfg)))))
 
 (deftest vaapi-encode-args
@@ -160,7 +162,8 @@
             "-hwaccel_output_format" "vaapi"]
            (profile/input-args cfg)))
     (testing "VAAPI uses -rc_mode and no -preset"
-      (is (= ["-c:v" "h264_vaapi" "-rc_mode" "VBR" "-b:v" "4000k"]
+      (is (= ["-c:v" "h264_vaapi" "-rc_mode" "VBR" "-b:v" "4000k"
+              "-g" "60"]
              (profile/video-encode-args cfg))))))
 
 (deftest nvenc-encode-args-emits-gop
@@ -225,7 +228,8 @@
       (is (not (some #{"-hwaccel_output_format"} (profile/input-args cfg)))
           "no strict output format, so a non-decodable codec falls back to software")
       (is (= "format=nv12,hwupload" (profile/video-filter cfg)))
-      (is (= ["-c:v" "h264_vaapi" "-rc_mode" "VBR" "-b:v" "4000k"]
+      (is (= ["-c:v" "h264_vaapi" "-rc_mode" "VBR" "-b:v" "4000k"
+              "-g" "60"]
              (profile/video-encode-args cfg))))))
 
 (deftest nvenc-auto-decode-best-effort
@@ -246,7 +250,8 @@
       (is (= ["-vaapi_device" "/dev/dri/renderD128"] (profile/input-args cfg))
           "device is set up for filtering/encoding, but no -hwaccel decode")
       (is (= "format=nv12,hwupload" (profile/video-filter cfg)))
-      (is (= ["-c:v" "h264_vaapi" "-rc_mode" "VBR" "-b:v" "4000k"]
+      (is (= ["-c:v" "h264_vaapi" "-rc_mode" "VBR" "-b:v" "4000k"
+              "-g" "60"]
              (profile/video-encode-args cfg))))))
 
 (deftest nvenc-software-decode-uploads-then-encodes
@@ -460,11 +465,14 @@
       (is (every? string? cmd))
       (is (some #(= "-g" %) cmd))
       (is (some #(= "-keyint_min" %) cmd))
-      ;; Both -g and -keyint_min must point at the stringified gop
-      (is (= "60" (nth cmd (inc (.indexOf cmd "-g"))))
-          "-g value is \"60\"")
-      (is (= "60" (nth cmd (inc (.indexOf cmd "-keyint_min"))))
-          "-keyint_min value is \"60\""))))
+      ;; Both -g and -keyint_min must point at the stringified gop.
+      ;; Calling .indexOf on a Java String[] goes through reflection with no
+      ;; 1-arg overload — coerce to a List first.
+      (let [cvec (vec cmd)]
+        (is (= "60" (nth cvec (inc (.indexOf ^java.util.List cvec "-g"))))
+            "-g value is \"60\"")
+        (is (= "60" (nth cvec (inc (.indexOf ^java.util.List cvec "-keyint_min"))))
+            "-keyint_min value is \"60\"")))))
 
 (deftest video-encode-args-emits-string-gop
   (testing "every encoder backend that supports gop emits a String, not a Long"

@@ -279,8 +279,9 @@
    `pseudovision.scheduling.filler/item-duration-seconds`."
   [item]
   (let [d (or (:media-versions/duration item) (:duration item))]
-    (when d
-      (pos? (.getSeconds ^Duration d)))))
+    (boolean
+      (when d
+        (pos? (.getSeconds ^Duration d))))))
 
 (defn- duration-secs ^long [item]
   (.getSeconds ^Duration (or (:media-versions/duration item) (:duration item))))
