@@ -2,7 +2,9 @@
   (:require [clojure.test :refer [deftest is testing]]
             [ring.mock.request :as mock]
             [cheshire.core     :as json]
-            [pseudovision.http.core    :as http]
+            [pseudovision.http.core       :as http]
+            [pseudovision.jobs.runner     :as runner]
+            [pseudovision.scheduling.core :as sched]
             [pseudovision.db.playouts  :as pl]
             [pseudovision.db.channels  :as ch])
   (:import [java.time Duration Instant]))
@@ -101,6 +103,70 @@
           (is (false? (:manual-events-removed body)))
           (is (= {:pid 23 :keep-manual? true} @captured)
               "Manual events preserved by default"))))))
+
+;; ---------------------------------------------------------------------------
+;; Attaching a schedule (PUT) — schedule_id lives on playouts, not channels;
+;; this endpoint was the missing link until 2026-07 (see PLAYOUT_JOBS.md).
+;; ---------------------------------------------------------------------------
+
+(deftest attach-schedule-creates-playout-row
+  (testing "PUT /api/channels/:id/playout attaches the given schedule-id"
+    (let [captured (atom nil)]
+      (with-redefs [ch/get-channel        (fn [_ id] (when (= id 91) {:channels/id 91}))
+                    ch/get-channel-by-number (fn [_ _] nil)
+                    pl/attach-schedule!   (fn [_ channel-id schedule-id]
+                                            (reset! captured {:channel-id channel-id :schedule-id schedule-id})
+                                            {:playouts/id 23 :playouts/channel-id 91
+                                             :playouts/schedule-id schedule-id})]
+        (let [handler (make-test-handler)
+              resp    (handler (-> (mock/request :put "/api/channels/91/playout")
+                                   (mock/json-body {:schedule-id 9})))
+              body    (parse-json-body resp)]
+          (is (= 200 (:status resp)))
+          (is (= {:channel-id 91 :schedule-id 9} @captured))
+          (is (= 9 (:schedule-id body)))
+          (is (= 23 (:id body))))))))
+
+(deftest attach-schedule-resolves-channel-by-number
+  (testing "PUT /api/channels/:number/playout falls back to channel number lookup"
+    (with-redefs [ch/get-channel        (fn [_ _] nil)
+                  ch/get-channel-by-number (fn [_ n] (when (= n "41") {:channels/id 7}))
+                  pl/attach-schedule!   (fn [_ channel-id schedule-id]
+                                          {:playouts/id 5 :playouts/channel-id channel-id
+                                           :playouts/schedule-id schedule-id})]
+      (let [handler (make-test-handler)
+            resp    (handler (-> (mock/request :put "/api/channels/41/playout")
+                                 (mock/json-body {:schedule-id 9})))
+            body    (parse-json-body resp)]
+        (is (= 200 (:status resp)))
+        (is (= 7 (:channel-id body)))))))
+
+(deftest attach-schedule-returns-404-for-unknown-channel
+  (testing "PUT /api/channels/:id/playout returns 404 when the channel doesn't resolve"
+    (with-redefs [ch/get-channel        (fn [_ _] nil)
+                  ch/get-channel-by-number (fn [_ _] nil)
+                  pl/attach-schedule!   (fn [& _] (throw (ex-info "should not be called" {})))]
+      (let [handler (make-test-handler)
+            resp    (handler (-> (mock/request :put "/api/channels/91/playout")
+                                 (mock/json-body {:schedule-id 9})))]
+        (is (= 404 (:status resp)))))))
+
+(deftest attach-schedule-with-rebuild-submits-a-job
+  (testing "PUT .../playout?rebuild=true also submits a rebuild job"
+    (with-redefs [ch/get-channel        (fn [_ id] (when (= id 91) {:channels/id 91}))
+                  ch/get-channel-by-number (fn [_ _] nil)
+                  pl/attach-schedule!   (fn [_ _ schedule-id]
+                                          {:playouts/id 23 :playouts/channel-id 91
+                                           :playouts/schedule-id schedule-id})
+                  sched/rebuild-from-now! (fn [_ _ _] 17)]
+      (let [r       (runner/create {})
+            handler (http/make-handler {:db nil :ffmpeg {} :media {} :scheduling {} :jobs r})
+            resp    (handler (-> (mock/request :put "/api/channels/91/playout?rebuild=true&horizon=14")
+                                 (mock/json-body {:schedule-id 9})))
+            body    (parse-json-body resp)]
+        (is (= 200 (:status resp)))
+        (is (= 9 (:schedule-id body))
+            "the attach response is still the Playout, not the job")))))
 
 (deftest clear-playout-can-wipe-manual-events
   (testing "DELETE /api/channels/:id/playout?manual=true also removes manual events"

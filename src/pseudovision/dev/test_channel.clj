@@ -112,8 +112,11 @@
          
          (log/info "Created schedule slot" {:collection-id coll-id})
          
-         ;; Create playout and build initial events
-         (let [playout (db-playouts/upsert-playout! ds channel-id schedule-id)
+         ;; Create playout and build initial events. attach-schedule! (the
+         ;; same fn the production PUT /api/channels/:id/playout endpoint
+         ;; uses) rather than upsert-playout! directly, so this dev helper
+         ;; exercises the real production path instead of a parallel one.
+         (let [playout (db-playouts/attach-schedule! ds channel-id schedule-id)
                playout-id (:playouts/id playout)]
            
            (log/info "Created playout" {:id playout-id})

@@ -1,3 +1,8 @@
+> **ARCHIVED (2026-07):** a running checkpoint log from the April 2026
+> streaming milestone, stale for 3+ months and superseded by whatever
+> shipped after it. Kept for history only — do not treat "Current Step"
+> below as current.
+
 # Pseudovision Streaming Implementation - Session State
 
 **Session Date:** 2026-04-10 (Initial), 2026-04-12 (Walking Skeleton), 2026-04-13 (Production Deploy)

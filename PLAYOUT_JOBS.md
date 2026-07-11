@@ -60,6 +60,7 @@ This matches Tunarr Scheduler's `Job` schema, with a pseudovision-specific
 
 | Method | Path | Response |
 |--------|------|----------|
+| `PUT` | `/api/channels/:channel-id/playout` | **200** `{ <Playout> }`. **Attaches a schedule** (`{"schedule-id": N}` body) — a different operation from the `POST` below, on the same path: this one sets which schedule the channel plays, `POST` regenerates its timeline. Creates the playout row on first attach. Pass `?rebuild=true&horizon=<days>` to also submit a rebuild job in the same call. |
 | `POST` | `/api/channels/:channel-id/playout` | **202** `{ "job": <Job> }` (or `404` if the channel has no playout). `?from=now\|horizon` and `?horizon=<days>` are unchanged. |
 | `GET` | `/api/jobs` | **200** `{ "jobs": [<Job>, …] }`, newest-first. |
 | `GET` | `/api/jobs/:job-id` | **200** `{ "job": <Job> }`, or **404** `{ "error": "Job not found" }`. |

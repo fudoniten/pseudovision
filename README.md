@@ -143,6 +143,7 @@ pre-coercion behaviour until they're migrated.
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/channels/:id/playout` | Get the playout for a channel |
+| PUT | `/api/channels/:id/playout` | **Attach a schedule** to the channel's playout (creates the playout row on first attach; `?rebuild=true&horizon=N` also triggers a rebuild) — this is the only way to attach a schedule, since `schedule_id` lives on `playouts`, not `channels` |
 | POST | `/api/channels/:id/playout` | **Trigger a rebuild** — runs as an async job, returns `202` with `{ "job": … }` (poll `/api/jobs/:job-id`) |
 | DELETE | `/api/channels/:id/playout` | **Clear the whole timeline** & reset the cursor (`?manual=true` also wipes injected events) |
 | GET | `/api/channels/:id/playout/events` | List upcoming events |
