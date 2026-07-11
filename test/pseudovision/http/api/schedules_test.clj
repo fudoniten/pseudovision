@@ -77,7 +77,11 @@
       (with-redefs [pseudovision.db.schedules/create-schedule!
                     (fn [_ attrs]
                       (reset! captured attrs)
-                      (assoc attrs :id 42))]
+                      (assoc attrs
+                             :id 42
+                             :random-start-point false
+                             :keep-multi-part-together false
+                             :treat-collections-as-shows false))]
         (let [resp ((make-test-handler)
                     (post-json "/api/schedules"
                                {:name "Weeknights"
@@ -101,12 +105,14 @@
   (testing "GET /api/schedules/3/slots coerces the path schedule-id to int"
     (let [captured (atom nil)]
       (with-redefs [pseudovision.db.schedules/list-slots
-                    (fn [_ sid] (reset! captured sid) [test-slot])]
+                    (fn [& args] (reset! captured (second args)) [test-slot])
+                    pseudovision.db.schedules/count-slots
+                    (fn [& _] 1)]
         (let [resp ((make-test-handler) (mock/request :get "/api/schedules/3/slots"))
               body (parse-json-body resp)]
           (is (= 200 (:status resp)))
           (is (= 3 @captured))
-          (is (= 5 (get-in body [0 :id]))))))))
+          (is (= 5 (get-in body [:items 0 :id]))))))))
 
 (deftest create-slot-rejects-invalid-anchor
   (testing "POST with an anchor value outside the enum returns 400"
@@ -169,7 +175,7 @@
       (with-redefs [pseudovision.db.schedules/update-slot!
                     (fn [_ id attrs]
                       (reset! captured {:id id :attrs attrs})
-                      (assoc attrs :id id))]
+                      (assoc attrs :id id :schedule-id 1 :slot-index 0))]
         (let [resp ((make-test-handler)
                     (put-json "/api/schedules/1/slots/5"
                               {:custom-title "Weekly Special"}))]

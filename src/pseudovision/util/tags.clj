@@ -23,11 +23,12 @@
    `Sci-Fi`             -> `sci-fi`
    `Comedy`             -> `comedy`
    `Random`             -> `random`
-   nil                  -> nil"
+   nil                  -> empty string"
   [s]
-  (when s
+  (if s
     (-> s
         str/lower-case
         (str/replace "&" "and")
         (str/replace #"[^a-z0-9]+" "-")
-        (str/replace #"(^-+)|(-+$)" ""))))
+        (str/replace #"(^-+)|(-+$)" ""))
+    ""))

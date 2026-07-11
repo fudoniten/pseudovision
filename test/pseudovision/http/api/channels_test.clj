@@ -17,7 +17,7 @@
    :channels/number    "2"
    :channels/name      "Test Channel"
    :channels/sort-number 2.0
-   :channels/streaming-mode 'ts
+   :channels/streaming-mode "ts"
    :channels/ffmpeg-profile-id 1
    :channels/subtitle-mode "disabled"
    :channels/stream-selector-mode "auto"
@@ -25,7 +25,11 @@
    :channels/show-in-epg true})
 
 (defn- make-test-handler []
-  (let [stub {:db nil :ffmpeg {} :media {} :scheduling {}}]
+  (let [stub {:db nil
+              :ffmpeg {}
+              :media {}
+              :scheduling {}
+              :streams {:registry (atom {})}}]
     (http/make-handler stub)))
 
 (defn- parse-json-body [resp]

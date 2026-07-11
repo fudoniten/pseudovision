@@ -30,7 +30,7 @@
     (with-redefs [ch/get-channel             (fn [_ id] (when (= id 91) {:channels/id 91}))
                   ch/get-channel-by-number  (fn [_ _] nil)
                   pl/get-playout-for-channel (fn [_ _] test-playout)
-                  sched/rebuild-from-now!    (fn [_ _ _] 17)]
+                  sched/rebuild-from-now!    (fn [& _] 17)]
       (let [r       (runner/create {})
             handler (make-handler r)
             resp    (handler (mock/request :post "/api/channels/91/playout"))
