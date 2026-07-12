@@ -485,7 +485,10 @@
                            [:= :season.kind (sql-util/->pg-enum "media_item_kind" "season")]])
         (h/left-join [:media-items :play]
                      [:or
-                      [:and [:= :top.kind (sql-util/->pg-enum "media_item_kind" "movie")]
+                      ;; Movies and programs are flat: they ARE their own
+                      ;; playable item (play.id = top.id).
+                      [:and [:in :top.kind [(sql-util/->pg-enum "media_item_kind" "movie")
+                                            (sql-util/->pg-enum "media_item_kind" "program")]]
                             [:= :play.id :top.id]]
                       [:and [:= :top.kind (sql-util/->pg-enum "media_item_kind" "show")]
                             [:= :play.kind (sql-util/->pg-enum "media_item_kind" "episode")]
@@ -496,7 +499,8 @@
                         [:= :top.state (sql-util/->pg-enum "media_item_state" "normal")]
                         [:= :play.state (sql-util/->pg-enum "media_item_state" "normal")]
                         [:in :top.kind [(sql-util/->pg-enum "media_item_kind" "show")
-                                        (sql-util/->pg-enum "media_item_kind" "movie")]]
+                                        (sql-util/->pg-enum "media_item_kind" "movie")
+                                        (sql-util/->pg-enum "media_item_kind" "program")]]
                         [:or [:= [:lower :t.name] (str/lower-case category)]
                              [:= [:lower :t.name] (str "genre:" (str/lower-case category))]
                              [:= [:lower :t.name] (tags/kebab-case category)]

@@ -65,6 +65,48 @@ curl -sX POST http://pseudovision:8080/api/filler-presets \
 
 Rebuild the channel's playout and the gaps fill from Grout.
 
+## Long-form content
+
+Grout also stores long-form **content** (`kind=program`): documentaries, video
+essays, and orphan web/YouTube long-form that isn't a Jellyfin movie or show but
+should still be scheduled and appear in the catalog. Unlike filler — pulled
+lazily at build time as bare items that only need to stream and pack — content
+must be visible to the **catalog aggregate** (the report Tunarr Scheduler reads)
+and the **daily-slot resolver** *before* a schedule is built. So content is
+materialised by an explicit sync rather than lazily.
+
+### Sync
+
+`POST /api/sync/grout` pulls every `program` item from Grout and upserts each as
+a `program`-kind `media_item` **with metadata + metadata_tags**:
+
+- `name` → `metadata.title`, `description` → `metadata.plot`.
+- Grout tags pass through verbatim into `metadata_tags` (an already
+  `genre:`-prefixed tag flows into the catalog's genre aggregate; a bare tag is
+  still matchable by `random:<tag>`), plus a synthesized `channel:<slug>` tag
+  from Grout's `channel` column so the item lands in the right channel's slice.
+- Items are keyed by `remote_key = grout:<id>` under a dedicated `grout-content`
+  library (distinct from the `grout-filler` library, same "Grout" media source).
+
+The sync is idempotent and best-effort: re-running refreshes metadata + tags to
+match Grout (Grout is the source of truth, including tag removals), leaves the
+immutable file/version untouched, and is a no-op when Grout is disabled. The
+response is a `{enabled, total, synced, updated, skipped, errors}` summary. It's
+intended to be driven by a scheduled job (e.g. a Kubernetes CronJob) as well as
+manually.
+
+### Report & scheduling
+
+Once synced, content needs no separate resolution path:
+
+- **Catalog aggregate** (`GET /api/catalog/aggregate`) lists each program in
+  `shows[]` as a flat, movie-like entry (`episode-count: 1`) with a `program:`
+  media-id, and its tags/genres feed `tags[]`/`genres[]`.
+- **Daily-slots** (`POST …/daily-slots`) resolves `program:grout:<uuid>` to the
+  synced item, and `random:<category>` pools include matching programs — so
+  Tunarr Scheduler references Grout content like any native title.
+- **Streaming** resolves it by path off the shared mount, exactly like filler.
+
 ## Scope / limitations (initial integration)
 
 - Grout filler is resolved at **build time**; clips are cached as `media_items`,
@@ -73,5 +115,9 @@ Rebuild the channel's playout and the gaps fill from Grout.
   ingest. There is no unique constraint on media-source name, so highly
   concurrent first-time builds could theoretically create duplicates; benign and
   easy to harden later.
+- Grout **content** metadata is fully owned by Grout: each sync overwrites PV's
+  copy (title/plot/tags) to match, so channel/tag edits belong in Grout, not in
+  PV's `metadata_tags` for these items. The sync is triggered on demand (or by a
+  future scheduled job); it does not yet prune programs deleted from Grout.
 - Only the **read/ingest** path is implemented here. Grout intake (the Tunarr
   write path) is Grout's own concern.

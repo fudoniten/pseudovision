@@ -154,8 +154,9 @@ pre-coercion behaviour until they're migrated.
 ### Catalog (Tunarr Scheduler / Tunabrain integration)
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/catalog/aggregate` | **Library aggregate profile** — show counts, genre breakdowns, runtime histogram. Optional `?channel=` or `?tag=` scope. |
+| GET | `/api/catalog/aggregate` | **Library aggregate profile** — show counts, genre breakdowns, runtime histogram. Optional `?channel=` or `?tag=` scope. Includes synced Grout long-form content (`program:` media-ids). |
 | POST | `/api/catalog/count` | Stub count endpoint (Phase 7). |
+| POST | `/api/sync/grout` | **Sync Grout long-form content** into the catalog (`program`-kind items with metadata + tags) so it's schedulable and appears in the aggregate. Idempotent, best-effort. See [`docs/grout-integration.md`](docs/grout-integration.md). |
 
 ### Daily Slots (Tunarr Scheduler expander output)
 | Method | Path | Description |

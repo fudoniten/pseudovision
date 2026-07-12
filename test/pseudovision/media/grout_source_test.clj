@@ -82,3 +82,56 @@
                                       {:channels/name "Britannia"}
                                       (Instant/now) (Instant/now)
                                       {:filler-presets/grout-tags ["x"]})))))
+
+;; ---------------------------------------------------------------------------
+;; content sync — program-tags
+;; ---------------------------------------------------------------------------
+
+(deftest program-tags-passthrough-and-channel-synthesis
+  (testing "grout tags pass through (trimmed, deduped) + channel:<slug> synthesized"
+    (is (= ["daytime" "fun" "channel:britannia"]
+           (#'sut/program-tags {:tags ["daytime" " fun " "daytime"] :channel "Britannia"})))))
+
+(deftest program-tags-no-channel-tag-when-blank
+  (is (= ["a"] (#'sut/program-tags {:tags ["a"] :channel "  "})))
+  (is (= []    (#'sut/program-tags {:tags [] :channel nil})))
+  (is (= []    (#'sut/program-tags {}))))
+
+(deftest program-tags-dedupes-existing-channel-tag
+  (is (= ["channel:britannia"]
+         (#'sut/program-tags {:tags ["channel:britannia"] :channel "britannia"}))))
+
+;; ---------------------------------------------------------------------------
+;; content sync — sync-program! guard rails + sync-programs! aggregation
+;; ---------------------------------------------------------------------------
+
+(deftest sync-program-skips-unusable-clips
+  ;; Path/duration guards return :skipped before any DB work.
+  (is (= :skipped (sut/sync-program! nil 1 {:id "a"})))
+  (is (= :skipped (sut/sync-program! nil 1 {:id "a" :path "" :duration-ms 5})))
+  (is (= :skipped (sut/sync-program! nil 1 {:id "a" :path "/x.mp4" :duration-ms 0})))
+  (is (= :skipped (sut/sync-program! nil 1 {:id "a" :path "/x.mp4" :duration-ms -1}))))
+
+(deftest sync-programs-disabled-returns-zeroes
+  (with-redefs [grout/list-programs (fn [& _] (throw (Exception. "should not query")))]
+    (is (= {:enabled false :total 0 :synced 0 :updated 0 :skipped 0 :errors 0}
+           (sut/sync-programs! nil nil)))))
+
+(deftest sync-programs-aggregates-outcomes
+  (let [clips [{:id "1"} {:id "2"} {:id "3"} {:id "4"}]]
+    (with-redefs [grout/enabled?                   (fn [_] true)
+                  grout/list-programs              (fn [_] clips)
+                  sut/ensure-content-library-path! (fn [_ _] 7)
+                  sut/sync-program!                (fn [_ _ clip]
+                                                     (case (:id clip)
+                                                       "1" :synced
+                                                       "2" :updated
+                                                       "3" :skipped
+                                                       "4" (throw (Exception. "boom"))))]
+      (let [r (sut/sync-programs! nil {:base-url "http://grout:8080"})]
+        (is (true? (:enabled r)))
+        (is (= 4 (:total r)))
+        (is (= 1 (:synced r)))
+        (is (= 1 (:updated r)))
+        (is (= 1 (:skipped r)))
+        (is (= 1 (:errors r)) "a throwing sync-program! is counted as an error, not fatal")))))

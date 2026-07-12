@@ -18,6 +18,7 @@
             [pseudovision.db.core   :as db]
             [pseudovision.media.grout :as grout]
             [pseudovision.util.sql  :as sql-util]
+            [pseudovision.util.tags :as tags]
             [taoensso.timbre        :as log])
   (:import [java.security MessageDigest]
            [java.time Duration]
@@ -25,6 +26,7 @@
 
 (def ^:private source-name "Grout")
 (def ^:private library-name "grout-filler")
+(def ^:private content-library-name "grout-content")
 (def ^:private default-media-dir "/data/media/grout")
 
 ;; ---------------------------------------------------------------------------
@@ -41,10 +43,12 @@
                                       (h/returning :*)
                                       sql/format)))))
 
-(defn ensure-library-path!
-  "Ensures the singleton Grout media source / library / library-path exist,
-   rooted at `media-dir`. Returns the library_path id used for all Grout items."
-  [ds media-dir]
+(defn- ensure-library-path*!
+  "Ensures the singleton Grout media source and the named library / library-path
+   exist, rooted at `media-dir`. Returns the library_path id. Filler and content
+   share the one \"Grout\" media source but live under distinct libraries
+   (`grout-filler` vs `grout-content`) so the two pools stay separable."
+  [ds media-dir library]
   (let [root       (or media-dir default-media-dir)
         source-id  (find-or-create! ds :media-sources :media-sources/id
                                      [:= :name source-name]
@@ -52,14 +56,26 @@
                                       :kind (sql-util/->pg-enum "media_source_kind" "local")})
         library-id (find-or-create! ds :libraries :libraries/id
                                      [:and [:= :media-source-id source-id]
-                                           [:= :name library-name]]
+                                           [:= :name library]]
                                      {:media-source-id source-id
-                                      :name            library-name
+                                      :name            library
                                       :kind            (sql-util/->pg-enum "library_kind" "other_videos")
                                       :should-sync     false})]
     (find-or-create! ds :library-paths :library-paths/id
                      [:and [:= :library-id library-id] [:= :path root]]
                      {:library-id library-id :path root})))
+
+(defn ensure-library-path!
+  "Ensures the Grout **filler** library-path exists, rooted at `media-dir`.
+   Returns the library_path id used for all Grout filler clips."
+  [ds media-dir]
+  (ensure-library-path*! ds media-dir library-name))
+
+(defn ensure-content-library-path!
+  "Ensures the Grout **content** library-path exists, rooted at `media-dir`.
+   Returns the library_path id used for all Grout `program` items."
+  [ds media-dir]
+  (ensure-library-path*! ds media-dir content-library-name))
 
 ;; ---------------------------------------------------------------------------
 ;; Clip ingest
@@ -187,3 +203,140 @@
             [])
         (let [lib-path-id (ensure-library-path! ds (:media-dir grout))]
           (into [] (keep #(ingest-clip! ds lib-path-id %)) clips))))))
+
+;; ---------------------------------------------------------------------------
+;; Long-form content sync (program items → catalog + scheduler)
+;;
+;; Unlike filler (ingested lazily at build time as bare media items that only
+;; need to stream + pack), long-form *content* must be visible to the catalog
+;; aggregate and the daily-slot resolver BEFORE a schedule is built. So content
+;; is pulled by an explicit sync that materialises each Grout `program` item as
+;; a `program`-kind media item WITH metadata + metadata_tags — the shape the
+;; catalog and scheduler read. Once ingested, the existing streamer resolves it
+;; by path off the shared mount with no special-casing, exactly like filler.
+;; ---------------------------------------------------------------------------
+
+(defn- program-tags
+  "metadata_tags names for a Grout program: its freeform Grout tags, plus a
+   synthesized `channel:<slug>` tag from the clip's `channel` column so the
+   item lands in the right channel's catalog slice. Grout tags are passed
+   through verbatim (an already-`genre:`-prefixed tag flows straight into the
+   catalog's genre aggregate; a bare tag is still matchable by
+   `random:<tag>`). Deduped; blanks dropped."
+  [clip]
+  (let [base     (->> (:tags clip) (filter string?) (map str/trim) (remove str/blank?))
+        chan     (:channel clip)
+        chan-tag (when-not (str/blank? chan) (str "channel:" (tags/kebab-case chan)))]
+    (->> (cond-> (vec base) chan-tag (conj chan-tag))
+         distinct
+         vec)))
+
+(defn- upsert-program-metadata!
+  "Writes/refreshes the `metadata` row (title/plot) and fully replaces the
+   `metadata_tags` for a program media item from its Grout clip. Grout owns
+   content metadata, so each sync makes PV's copy match Grout — including tag
+   removals. `name`/`description` are human/AI-owned in Grout; PV mirrors them."
+  [tx item-id clip]
+  (db/execute-one! tx
+    (-> (h/insert-into :metadata)
+        (h/values [{:media-item-id item-id
+                    :kind  (sql-util/->pg-enum "media_item_kind" "program")
+                    :title (not-empty (:name clip))
+                    :plot  (not-empty (:description clip))}])
+        (h/on-conflict :media-item-id)
+        (h/do-update-set :title :plot :date-updated)
+        sql/format))
+  (let [meta-id (:metadata/id (db/query-one tx (-> (h/select :id)
+                                                   (h/from :metadata)
+                                                   (h/where [:= :media-item-id item-id])
+                                                   sql/format)))
+        tag-names (program-tags clip)]
+    (when meta-id
+      (db/execute-one! tx (-> (h/delete-from :metadata-tags)
+                              (h/where [:= :metadata-id meta-id])
+                              sql/format))
+      (when (seq tag-names)
+        (jdbc/execute! tx (-> (h/insert-into :metadata-tags)
+                              (h/values (mapv (fn [t] {:metadata-id meta-id :name t}) tag-names))
+                              sql/format))))))
+
+(defn sync-program!
+  "Idempotently materialises one Grout `program` clip as a local-path media item
+   (kind `program`) with metadata + metadata_tags, keyed by `grout:<id>` under
+   the Grout content library. On re-sync of an already-ingested clip the
+   immutable file/version are left untouched and only metadata + tags are
+   refreshed (Grout is the source of truth). Returns :synced (new), :updated
+   (existing, metadata refreshed), or :skipped (unusable clip)."
+  [ds lib-path-id clip]
+  (let [path (:path clip)
+        ms   (:duration-ms clip)]
+    (cond
+      (str/blank? path)
+      (do (log/warn "Skipping Grout program with no path" {:id (:id clip)}) :skipped)
+
+      (or (nil? ms) (not (pos? ms)))
+      (do (log/warn "Skipping Grout program with non-positive duration"
+                    {:id (:id clip) :duration-ms ms})
+          :skipped)
+
+      :else
+      (jdbc/with-transaction [tx ds]
+        (let [existing (existing-item tx lib-path-id clip)
+              item-id  (or (:media-items/id existing)
+                           (let [item (db/execute-one! tx
+                                        (-> (h/insert-into :media-items)
+                                            (h/values [{:kind            (sql-util/->pg-enum "media_item_kind" "program")
+                                                        :state           (sql-util/->pg-enum "media_item_state" "normal")
+                                                        :library-path-id lib-path-id
+                                                        :remote-key      (remote-key clip)}])
+                                            (h/returning :*)
+                                            sql/format))
+                                 ver  (db/execute-one! tx
+                                        (-> (h/insert-into :media-versions)
+                                            (h/values [{:media-item-id (:id item)
+                                                        :duration (-> (Duration/ofMillis ms)
+                                                                      sql-util/duration->pg-interval
+                                                                      sql-util/->pg-interval)
+                                                        :width  (or (:width clip) 0)
+                                                        :height (or (:height clip) 0)}])
+                                            (h/returning :*)
+                                            sql/format))]
+                             (db/execute-one! tx
+                               (-> (h/insert-into :media-files)
+                                   (h/values [{:media-version-id (:id ver)
+                                               :path             path
+                                               :path-hash        (path-hash path)}])
+                                   (h/on-conflict :path-hash)
+                                   (h/do-update-set :media-version-id :path)
+                                   sql/format))
+                             (:id item)))]
+          (upsert-program-metadata! tx item-id clip)
+          (if existing :updated :synced))))))
+
+(defn sync-programs!
+  "Pulls every `program`-kind item from Grout and materialises it into PV's
+   catalog (see sync-program!). Best-effort and safe to re-run: no-op when Grout
+   is disabled/unreachable. Returns a summary map
+   {:enabled :total :synced :updated :skipped :errors}."
+  [ds grout]
+  (if-not (grout/enabled? grout)
+    {:enabled false :total 0 :synced 0 :updated 0 :skipped 0 :errors 0}
+    (let [clips       (grout/list-programs grout)
+          lib-path-id (when (seq clips) (ensure-content-library-path! ds (:media-dir grout)))
+          result      (reduce
+                        (fn [acc clip]
+                          (let [outcome (try (sync-program! ds lib-path-id clip)
+                                             (catch Exception e
+                                               (log/warn e "Failed to sync Grout program"
+                                                         {:id (:id clip)})
+                                               :error))]
+                            (update acc (case outcome
+                                          :synced  :synced
+                                          :updated :updated
+                                          :skipped :skipped
+                                          :error   :errors) inc)))
+                        {:enabled true :total (count clips)
+                         :synced 0 :updated 0 :skipped 0 :errors 0}
+                        clips)]
+      (log/info "Grout content sync complete" result)
+      result)))

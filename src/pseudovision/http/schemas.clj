@@ -1001,6 +1001,19 @@
    [:errors          [:vector :string]]
    [:channel_id      :int]])
 
+(def GroutSyncResult
+  "Result of a Grout long-form content sync. `enabled` is false (with zero
+   counts) when GROUT_URL is unset. `synced` counts newly ingested programs,
+   `updated` counts existing ones whose metadata was refreshed, `skipped`
+   counts unusable clips, `errors` counts clips that threw during ingest."
+  [:map
+   [:enabled :boolean]
+   [:total   :int]
+   [:synced  :int]
+   [:updated :int]
+   [:skipped :int]
+   [:errors  :int]])
+
 (def CatalogCountRequest
   [:map
    [:filters {:optional true} [:map]]])

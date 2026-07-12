@@ -59,6 +59,13 @@
       (is (= true           (get qp "random")))
       (is (= 1              (get qp "limit"))))))
 
+(deftest query-maps-offset
+  (let [captured (atom nil)
+        client   (sut/client {:base-url "http://grout:8080"})]
+    (with-redefs [http/get (capture-get captured {:status 200 :body {:items []}})]
+      (sut/query client {:offset 40 :limit 10}))
+    (is (= 40 (get-in @captured [:opts :query-params "offset"])))))
+
 (deftest query-omits-nil-params
   (let [captured (atom nil)
         client   (sut/client {:base-url "http://grout:8080"})]
@@ -102,6 +109,43 @@
     (with-redefs [http/get (capture-get captured {:status 200 :body {:items []}})]
       (sut/find-filler client {:channel "britannia"}))
     (is (= 50 (get-in @captured [:opts :query-params "limit"])))))
+
+;; ---------------------------------------------------------------------------
+;; list-all / list-programs — paginated sweep for content sync
+;; ---------------------------------------------------------------------------
+
+(deftest list-all-empty-when-disabled
+  (with-redefs [http/get (fn [& _] (throw (Exception. "should not query")))]
+    (is (= [] (sut/list-all nil {})))))
+
+(deftest list-all-pages-until-short-page
+  (let [client (sut/client {:base-url "http://grout:8080"})
+        offsets (atom [])
+        ;; page size is 200: full, full, then a short final page.
+        pages  {0   (vec (repeat 200 {:id "a"}))
+                200 (vec (repeat 200 {:id "b"}))
+                400 (vec (repeat 30  {:id "c"}))}]
+    (with-redefs [sut/query (fn [_ opts]
+                              (swap! offsets conj (:offset opts))
+                              {:items (get pages (:offset opts) [])})]
+      (let [result (sut/list-all client {:kind "program"})]
+        (is (= 430 (count result)))
+        (is (= [0 200 400] @offsets) "walks offsets by page size, stops on the short page")))))
+
+(deftest list-all-honours-max-pages-safety-valve
+  (let [client (sut/client {:base-url "http://grout:8080"})
+        calls  (atom 0)]
+    ;; Every page is full (200), so only max-pages stops the loop.
+    (with-redefs [sut/query (fn [_ _] (swap! calls inc) {:items (vec (repeat 200 {:id "x"}))})]
+      (is (= 400 (count (sut/list-all client {} 2))))
+      (is (= 2 @calls)))))
+
+(deftest list-programs-queries-kind-program
+  (let [captured (atom nil)
+        client   (sut/client {:base-url "http://grout:8080"})]
+    (with-redefs [sut/query (fn [_ opts] (reset! captured opts) {:items []})]
+      (sut/list-programs client))
+    (is (= "program" (:kind @captured)))))
 
 ;; ---------------------------------------------------------------------------
 ;; point lookups
