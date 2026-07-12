@@ -1,0 +1,12 @@
+-- Add a `program` media_item_kind for long-form content sourced from Grout
+-- (documentaries, video essays, orphan web/YouTube long-form) that isn't a
+-- Jellyfin movie or show but is still a schedulable, catalog-visible program.
+--
+-- A program is flat/top-level like a movie, so it satisfies
+-- chk_hierarchical_kinds_have_parent (parent_id stays NULL).
+--
+-- NOTE: PostgreSQL forbids using a freshly added enum value in the SAME
+-- transaction that adds it. This migration only adds the value; every consumer
+-- (Grout content sync, catalog aggregation, daily-slot resolution) uses it at
+-- runtime in a later transaction, so there is no in-transaction use here.
+ALTER TYPE media_item_kind ADD VALUE IF NOT EXISTS 'program';

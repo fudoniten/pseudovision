@@ -1,0 +1,7 @@
+-- NOTE: PostgreSQL does not support removing a value from an ENUM type.
+-- To revert this change you would need to:
+--   1. Create a new media_item_kind type without 'program'
+--   2. Alter every column using the old type to use the new type
+--   3. Drop the old type
+-- This is intentionally left as a no-op to avoid data loss (mirrors
+-- 20260701001-add-bumper-event-kind).

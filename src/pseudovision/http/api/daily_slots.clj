@@ -83,6 +83,34 @@
     (cond-> movie
       movie (assoc :_top-id (:media-items/id movie)))))
 
+(defn- resolve-program
+  "Returns a program item (long-form Grout content) by id or remote_key.
+
+   Like a movie, a program is a flat, self-playable item, so the returned row
+   carries `:_top-id` == its own id for uniform downstream category_filters
+   matching. Grout content is synced with `remote_key = grout:<uuid>`, and the
+   catalog emits `program:grout:<uuid>` — parse-media-id splits on the first
+   colon, so the identifier handed here is `grout:<uuid>`, matched by
+   remote_key."
+  [ds program-id-or-key]
+  (let [program (or (db-core/query-one ds
+                      (-> (h/select :mi.* [:mv.duration :duration])
+                          (h/from [:media-items :mi])
+                          (h/left-join [:media-versions :mv] [:= :mv.media-item-id :mi.id])
+                          (h/where [:and [:= :mi.id (try (Long/parseLong program-id-or-key)
+                                                        (catch Exception _ -1))]
+                                         [:= :mi.kind (sql-util/->pg-enum "media_item_kind" "program")]])
+                          sql/format))
+                    (db-core/query-one ds
+                      (-> (h/select :mi.* [:mv.duration :duration])
+                          (h/from [:media-items :mi])
+                          (h/left-join [:media-versions :mv] [:= :mv.media-item-id :mi.id])
+                          (h/where [:and [:= :mi.remote-key program-id-or-key]
+                                         [:= :mi.kind (sql-util/->pg-enum "media_item_kind" "program")]])
+                          sql/format)))]
+    (cond-> program
+      program (assoc :_top-id (:media-items/id program)))))
+
 (defn- kebab-case
   "DEPRECATED: Use `pseudovision.util.tags/kebab-case` instead. Kept as a
    private alias so the existing #ds/kebab-case test reference keeps working
@@ -333,9 +361,10 @@
     (let [type (first parsed)
           id   (second parsed)
           items (case type
-                  "series" (resolve-show-episodes ds id)
-                  "movie"  (when-let [m (resolve-movie ds id)] [m])
-                  "random" (resolve-by-category ds id)
+                  "series"  (resolve-show-episodes ds id)
+                  "movie"   (when-let [m (resolve-movie ds id)] [m])
+                  "program" (when-let [p (resolve-program ds id)] [p])
+                  "random"  (resolve-by-category ds id)
                   [])]
       (when (seq items)
         (log/info "pick-item debug" {:media-id media-id

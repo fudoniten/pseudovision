@@ -164,7 +164,28 @@
 
         movie-rows (db/query-unqualified ds (sql/format movie-base))
 
-        all-rows   (concat show-rows movie-rows)
+        ;; Programs (long-form Grout content) are flat, movie-like single
+        ;; items: episode_count 1, avg_runtime is the program's own runtime.
+        ;; They surface in the profile as schedulable entries with a `program:`
+        ;; media-id so Tunarr Scheduler can reference them like any other title.
+        program-base
+        (-> (h/select :mi.id :mi.kind :mi.remote-key [:m.title :name]
+                     [[:count [:distinct :mi.id]] :episode_count]
+                     [[:avg [:raw "EXTRACT(EPOCH FROM mv.duration) / 60"]] :avg_runtime_minutes])
+            (h/from [:media-items :mi])
+            (h/join [:metadata :m] [:= :m.media-item-id :mi.id])
+            (h/left-join [:media-versions :mv]
+                         [:= :mv.media-item-id :mi.id])
+            (h/where [:= :mi.state (sql-util/->pg-enum "media_item_state" "normal")])
+            (h/where [:= :mi.kind (sql-util/->pg-enum "media_item_kind" "program")])
+            (cond->
+              tag-filter (h/where (tag-filter-clause tag-filter)))
+            (h/group-by :mi.id :mi.remote-key :m.title)
+            (h/order-by :mi.id))
+
+        program-rows (db/query-unqualified ds (sql/format program-base))
+
+        all-rows   (concat show-rows movie-rows program-rows)
         all-ids    (map :id all-rows)
         genre-map  (show-genres ds all-ids)
         tag-map    (show-tags ds all-ids)]
@@ -174,11 +195,11 @@
                  (let [id        (:id row)
                        remote-key (:remote-key row)
                        kind      (let [k (:kind row)] (if (keyword? k) (name k) (str k)))
-                       media-id  (if (seq remote-key)
-                                   (str (if (= "movie" kind) "movie:" "series:")
-                                        remote-key)
-                                   (str (if (= "movie" kind) "movie:" "series:")
-                                        id))]
+                       prefix    (case kind
+                                   "movie"   "movie:"
+                                   "program" "program:"
+                                   "series:")
+                       media-id  (str prefix (if (seq remote-key) remote-key id))]
                    {:media_id              media-id
                     :title                 (or (:name row) "Unknown")
                     :genres                (get genre-map id [])
@@ -226,7 +247,8 @@
                           [:= 1 1])
              (h/where [:and [:= :mi.state (sql-util/->pg-enum "media_item_state" "normal")]
                             [:in :mi.kind [(sql-util/->pg-enum "media_item_kind" "show")
-                                           (sql-util/->pg-enum "media_item_kind" "movie")]]
+                                           (sql-util/->pg-enum "media_item_kind" "movie")
+                                           (sql-util/->pg-enum "media_item_kind" "program")]]
                             [:like :mt.name "genre:%"]])
             (cond->
               tag-filter (h/where (tag-filter-clause tag-filter)))
@@ -336,7 +358,8 @@
                           [:= 1 1])
             (h/where [:and [:= :mi.state (sql-util/->pg-enum "media_item_state" "normal")]
                            [:in :mi.kind [(sql-util/->pg-enum "media_item_kind" "show")
-                                          (sql-util/->pg-enum "media_item_kind" "movie")]]])
+                                          (sql-util/->pg-enum "media_item_kind" "movie")
+                                          (sql-util/->pg-enum "media_item_kind" "program")]]])
             (cond->
               tag-filter (h/where (tag-filter-clause tag-filter)))
             (h/group-by :mt.name)

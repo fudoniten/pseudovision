@@ -77,7 +77,7 @@
 (defn- ->query-params
   "Maps a kebab-case opts map to Grout's snake_case query params, dropping nils.
    `tags` may be a seq or a comma-separated string (AND semantics)."
-  [{:keys [channel tags min-ms max-ms kind random limit]}]
+  [{:keys [channel tags min-ms max-ms kind random limit offset]}]
   (let [tags-str (cond
                    (nil? tags)        nil
                    (string? tags)     (when-not (str/blank? tags) tags)
@@ -90,7 +90,8 @@
       max-ms                     (assoc "max_ms"  (long max-ms))
       kind                       (assoc "kind"    (name kind))
       (some? random)             (assoc "random"  (boolean random))
-      limit                      (assoc "limit"   (long limit)))))
+      limit                      (assoc "limit"   (long limit))
+      offset                     (assoc "offset"  (long offset)))))
 
 (defn query
   "Queries `GET /grout/media`. `opts` is a kebab-case map:
@@ -112,6 +113,38 @@
    :tags), or [] when Grout is disabled, unreachable, or has no match."
   [grout opts]
   (vec (:items (query grout (merge {:limit default-limit} opts)))))
+
+(def ^:private list-page-size 200)
+
+(defn list-all
+  "Pages through `GET /grout/media` for `opts`, returning the full (non-random)
+   result set as a single vector. Used by the content sync to sweep every
+   matching item. Stops when a page comes back shorter than the page size, or
+   after `max-pages` pages as a safety valve against a runaway loop. Returns []
+   when Grout is disabled/unreachable."
+  ([grout opts] (list-all grout opts 1000))
+  ([grout opts max-pages]
+   (if-not (enabled? grout)
+     []
+     (loop [offset 0
+            page   0
+            acc    (transient [])]
+       (let [items (:items (query grout (assoc opts
+                                               :random false
+                                               :limit  list-page-size
+                                               :offset offset)))
+             acc'  (reduce conj! acc items)]
+         (if (or (< (count items) list-page-size)
+                 (>= (inc page) max-pages))
+           (persistent! acc')
+           (recur (+ offset list-page-size) (inc page) acc')))))))
+
+(defn list-programs
+  "Returns every long-form `program`-kind item in Grout (paged). Each item is a
+   summary map (see the MediaSummary shape): :id :kind :name :description
+   :channel :duration-ms :width :height :path :source :tags, plus :stream-url."
+  [grout]
+  (list-all grout {:kind "program"}))
 
 ;; ---------------------------------------------------------------------------
 ;; Point lookups (foundation for the write/dedup path)

@@ -193,11 +193,15 @@ blank field is reported as `"Missing start_time"`.
 
 ### Behaviour notes for the TS client
 
-* `media-id` format: `series:<id>`, `movie:<id>`, or `random:<category>`. **The
-  identifiers are exactly the ones `GET /api/catalog/aggregate` emits for the
-  same catalog** — `series:`/`movie:` ids are `shows[].media-id`, and
-  `random:` categories are `genres[].genre` (or any `tags[]`/`tag_aggregates[]`
-  name). You do not need to discover a separate id space.
+* `media-id` format: `series:<id>`, `movie:<id>`, `program:<id>`, or
+  `random:<category>`. **The identifiers are exactly the ones
+  `GET /api/catalog/aggregate` emits for the same catalog** —
+  `series:`/`movie:`/`program:` ids are `shows[].media-id`, and `random:`
+  categories are `genres[].genre` (or any `tags[]`/`tag_aggregates[]` name).
+  You do not need to discover a separate id space.
+  * `program:<id>` → `<id>` is the program's `remote_key` (`grout:<uuid>` for
+    Grout-sourced content) or its internal numeric id — the value the
+    aggregate puts in `shows[].media-id`. Resolves to that single program.
   * `series:<id>` → `<id>` is the show's `remote_key` (or its internal numeric
     id if it has no remote key) — the value the aggregate puts in
     `shows[].media-id`. Resolves to a concrete **episode**, traversing the
@@ -232,5 +236,15 @@ blank field is reported as `"Missing start_time"`.
 |---------|------------------|----------------------------|-------------------------|
 | `series:` | Show / series  | `shows[].media-id`         | `series:f2c639e8…`      |
 | `movie:`  | Single movie   | `shows[].media-id`         | `movie:99`              |
+| `program:`| Long-form Grout content | `shows[].media-id` | `program:grout:1c9e…`   |
 | `random:` | Genre/tag pool | `genres[].genre` / `tags`  | `random:Mystery`        |
+
+`program:` items are long-form content sourced from Grout (documentaries,
+video essays, orphan web/YouTube long-form) that Pseudovision syncs into its
+catalog. They appear in `shows[]` as flat, movie-like single entries
+(`episode-count: 1`) and their tags — including `channel:<slug>` and any
+`genre:<name>` — participate in `tags[]`/`genres[]` and `random:<category>`
+pools exactly like native titles. Their `media-id` embeds Grout's own id, e.g.
+`program:grout:<uuid>`; `media-selection-strategy` is irrelevant (there is one
+concrete item), and they resolve to a single playable file on the shared mount.
 

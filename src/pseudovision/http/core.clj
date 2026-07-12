@@ -25,6 +25,7 @@
              [pseudovision.http.api.jobs       :as jobs]
              [pseudovision.http.api.catalog    :as catalog]
              [pseudovision.http.api.daily-slots :as ds]
+             [pseudovision.http.api.grout      :as grout-api]
              [pseudovision.ffmpeg.profile      :as profile]))
 
 (defn- routes [ctx]
@@ -453,6 +454,14 @@
              :parameters {:body s/CatalogCountRequest}
              :responses  {200 {:body s/CatalogCountResponse}}
              :handler    (catalog/catalog-count-handler ctx)}}]
+
+    ;; ── Grout content sync ─────────────────────────────────────────────────
+    ["/api/sync/grout"
+     {:tags ["sync"]
+      :post {:summary    "Sync Grout long-form content into the catalog"
+             :description "Pulls every `program`-kind item from Grout and upserts it as a program media item with metadata + tags, so it is visible to the catalog aggregate and schedulable via daily-slots. Idempotent and best-effort (a no-op when Grout is disabled)."
+             :responses  {200 {:body s/GroutSyncResult}}
+             :handler    (grout-api/sync-grout-handler ctx)}}]
 
     ;; ── Daily Slots (Tunabrain expander output) ────────────────────────────
     ["/api/channels/:channel-id/daily-slots"
