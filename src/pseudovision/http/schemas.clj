@@ -672,13 +672,23 @@
    [:name                      :string]
    [:kind                      {:optional true} CollectionKind]
    [:use-custom-playback-order {:optional true} :boolean]
-   [:config                    {:optional true} [:map]]])
+   ;; Open map — the body carries a kind-specific config (smart collections
+   ;; send {:query {:category ... :channel-tag ...}}, manual/playlist/multi
+   ;; have their own shapes). The previous `[:map]` schema was a closed map
+   ;; with no entries, which reitit-malli's request-body coercion interpreted
+   ;; as "drop every key in :config" — silently turning every create into
+   ;; config: {}. Verified 2026-07-13: a POST with
+   ;; {"config": {"query": {"category": "mystery", "channel-tag": "channel:enigma"}}}
+   ;; arrived at db/media/create-collection! as {:config {}} and the row
+   ;; stored '{}'::jsonb. Widening to `[:map {:closed false}]` matches the
+   ;; convention used elsewhere in this file (e.g. lines 864, 870, 879, 883).
+   [:config                    {:optional true} [:map {:closed false}]]])
 
 (def CollectionUpdate
   [:map
    [:name                      {:optional true} :string]
    [:use-custom-playback-order {:optional true} :boolean]
-   [:config                    {:optional true} [:map]]])
+   [:config                    {:optional true} [:map {:closed false}]]])
 
 (def CollectionItem
   [:map
