@@ -2,8 +2,13 @@
   "Playout build engine.
 
    Entry points:
-     (build! db opts playout)   — full rebuild from scratch
-     (rebuild! db opts playout) — incremental: extend the timeline forward
+     (build! db opts playout)     — core engine. Resume/extend by default
+                                    (preserving the near term); pass
+                                    :reset-cursor? true for a full rebuild.
+     (rebuild-from-now! …)        — reset: wipe the future and regenerate from now
+     (rebuild-horizon! …)         — extend the timeline forward to a horizon
+     (ensure-horizon! …)          — daily top-up for one channel (extend)
+     (ensure-all-horizons! …)     — daily top-up across every schedule-backed channel
 
    The engine walks the schedule's slots in order, advancing a cursor
    through the content collections and emitting playout_events rows.
@@ -642,13 +647,25 @@
   "Builds the playout, replacing non-manual events from the rebuild point to the
    horizon.  Runs inside a transaction; saves the updated cursor on success.
 
-   By default the build resumes from the playout's saved cursor (extending the
-   timeline forward).  When opts carries :reset-cursor? true, the saved cursor
-   is discarded and a fresh timeline is generated from now — the schedule
-   restarts at its first slot and every collection from the top.  To avoid
-   cutting off the program currently on screen, the fresh timeline (and the
-   delete boundary) begins at the finish of the in-progress event rather than
-   exactly now."
+   Two modes:
+
+   • Resume / extend (default) — pick up from the playout's saved cursor and
+     extend the timeline forward to the horizon, WITHOUT disturbing the events
+     already scheduled before the cursor.  The delete boundary is the cursor's
+     own edge (where the previous build stopped), not `now`, so the near-term
+     timeline — and every show's rotation position — is preserved.  This is the
+     path the daily top-up uses (see ensure-horizon!): each show keeps advancing
+     from where it left off.  A cursor that has fallen into the past (the
+     channel ran dry) is fast-forwarded to `now`, so the resumed build fills
+     from now rather than replaying stale past times; its enumerator states are
+     kept so rotation still continues.  Without this fast-forward the
+     delete-then-resume left a gap between now and the old horizon.
+
+   • Reset (opts :reset-cursor? true) — discard the saved cursor and generate a
+     fresh timeline from now: the schedule restarts at its first slot and every
+     collection from the top.  To avoid cutting off the program currently on
+     screen, the fresh timeline (and the delete boundary) begins at the finish
+     of the in-progress event rather than exactly now."
   [db opts playout]
   (let [channel-id  (:playouts/channel-id playout)
         schedule-id (:playouts/schedule-id playout)
@@ -662,6 +679,14 @@
                       (schedules-db/list-slots db schedule-id))
         now         (t/now)
         reset?      (boolean (:reset-cursor? opts))
+        saved-cursor (cursor/<-json (:playouts/cursor playout))
+        ;; On a resume build the timeline is extended forward from where the last
+        ;; build stopped — the saved cursor's edge — rather than from now, so the
+        ;; already-generated near-term events (and rotation state) survive. A
+        ;; cursor that has slipped into the past (dry channel) is clamped up to
+        ;; now so we fill from now instead of the stale past edge.
+        resume-edge (let [e (:next-start saved-cursor)]
+                      (if (and e (.isAfter ^Instant e now)) e now))
         ;; When resetting, start the fresh timeline after any event currently on
         ;; air so the rebuild doesn't overlap (or interrupt) the program playing
         ;; right now; fall back to `now` when nothing is in progress.
@@ -669,7 +694,7 @@
                        (or (some-> (playout-db/get-current-event db playout-id now)
                                    :playout-events/finish-at)
                            now)
-                       now)
+                       resume-edge)
         horizon     (t/add-duration now (t/hours->duration
                                          (get opts :lookahead-hours 72)))
         opts'       (assoc opts :seed seed)]
@@ -687,15 +712,22 @@
       (do (log/warn "No schedule or slots; nothing to build"
                     {:playout-id playout-id})
           :no-schedule)
-      (let [saved-cursor (cursor/<-json (:playouts/cursor playout))
-            initial-cur  (if reset?
+      (let [initial-cur  (if reset?
                            (cursor/init rebuild-from)
-                           (or saved-cursor (cursor/init now)))
+                           ;; Resume from the saved cursor, but fast-forward its
+                           ;; wall-clock edge up to `resume-edge` (= now for a dry
+                           ;; channel) so a stale past position doesn't replay old
+                           ;; times. Enumerator states are kept, so rotation
+                           ;; continues from where it left off.
+                           (if saved-cursor
+                             (assoc saved-cursor :next-start resume-edge)
+                             (cursor/init now)))
             window       (get opts :recency-window (t/hours->duration 4))]
         (jdbc/with-transaction [tx db]
-          ;; Remove auto-generated events from the rebuild point to the horizon.
-          ;; On a reset this is the in-progress event's finish (preserving what's
-          ;; on air); otherwise it's now.
+          ;; Remove auto-generated events from the rebuild point forward. On a
+          ;; reset that's the in-progress event's finish (preserving what's on
+          ;; air); on a resume it's the saved cursor's edge (clamped up to now for
+          ;; a dry channel), so the already-built near-term timeline survives.
           (playout-db/delete-non-manual-events-after! tx playout-id rebuild-from)
 
           ;; Seed global filler recency from what is already scheduled on every
@@ -818,8 +850,12 @@
        0))))
 
 (defn rebuild-horizon!
-  "Generate events for days beyond current horizon (daily rebuild).
-   Builds from current-horizon-days out to new-horizon-days.
+  "Extend a playout's timeline forward to `new-horizon-days` from now, preserving
+   the events already scheduled before the saved cursor (and every show's
+   rotation).  Resumes from the saved cursor via build!'s default (non-reset)
+   mode — see build!'s docstring for the resume/extend semantics, including how a
+   dry channel is refilled from now.  `current-horizon-days` is accepted for call
+   compatibility but ignored; the horizon is always measured from now.
    `opts` (optional) is merged into the build options (see rebuild-from-now!).
    Returns number of events generated."
   ([ds playout-id current-horizon-days new-horizon-days]
@@ -830,3 +866,63 @@
        (let [result (build! ds (merge opts {:lookahead-hours (* new-horizon-days 24)}) playout)]
          (if (= result :no-schedule) 0 result))
        0))))
+
+(defn ensure-horizon!
+  "Ensure one channel's playout timeline reaches at least `horizon-days` from now,
+   without disturbing what's already scheduled in the near term.
+
+   This is the per-channel daily top-up: it extends the timeline forward from
+   wherever the last build stopped (advancing each show's rotation) up to
+   `now + horizon-days`.  Existing upcoming events are preserved, so repeated
+   calls are idempotent — once the timeline already reaches the horizon a further
+   call generates nothing.  A channel that has run dry is refilled from now.
+
+   Thin wrapper over rebuild-horizon! (the extend path); named for intent at the
+   call site.  `opts` is merged into the build options (notably :grout).
+   Returns number of events generated."
+  ([ds playout-id horizon-days] (ensure-horizon! ds playout-id horizon-days nil))
+  ([ds playout-id horizon-days opts]
+   (rebuild-horizon! ds playout-id 0 horizon-days opts)))
+
+(defn ensure-all-horizons!
+  "Top up EVERY schedule-backed channel's playout timeline to at least
+   `horizon-days` from now (see ensure-horizon!).  This is the bulk daily entry
+   point: one call keeps all channels stocked with upcoming content, preserving
+   near-term events and rotation.  Channels with no attached schedule (populated
+   only via the DailySlot ingest stream) are skipped — PV can't rebuild those.
+
+   `opts` (optional) is merged into each channel's build options (notably
+   :grout).  Per-channel failures are isolated: one channel erroring does not
+   abort the rest; its entry carries an :error string instead of :events-generated.
+
+   Returns a summary:
+     {:channels N
+      :horizon-days D
+      :events-generated TOTAL
+      :results [{:channel-id .. :playout-id .. :events-generated N}
+                {:channel-id .. :playout-id .. :error \"...\"} ...]}"
+  ([ds horizon-days] (ensure-all-horizons! ds horizon-days nil))
+  ([ds horizon-days opts]
+   (let [playouts (playout-db/list-playouts-with-schedule ds)
+         results  (mapv
+                   (fn [p]
+                     (let [playout-id (:playouts/id p)
+                           channel-id (:playouts/channel-id p)]
+                       (try
+                         {:channel-id       channel-id
+                          :playout-id       playout-id
+                          :events-generated (ensure-horizon! ds playout-id horizon-days opts)}
+                         (catch Exception e
+                           (log/error e "ensure-all-horizons: channel failed"
+                                      {:playout-id playout-id :channel-id channel-id})
+                           {:channel-id channel-id
+                            :playout-id playout-id
+                            :error      (.getMessage e)}))))
+                   playouts)
+         total    (reduce + 0 (keep :events-generated results))]
+     (log/info "ensure-all-horizons complete"
+               {:channels (count results) :events-generated total})
+     {:channels         (count results)
+      :horizon-days     horizon-days
+      :events-generated total
+      :results          results})))

@@ -727,6 +727,13 @@
    [:from    {:optional true} [:enum "now" "horizon"]]
    [:horizon {:optional true} [:int {:min 1 :max 365}]]])
 
+(def EnsureHorizonQuery
+  [:map
+   [:horizon {:optional true
+              :description "Days of upcoming content to guarantee, measured from
+                           now. Default 7."}
+    [:int {:min 1 :max 365}]]])
+
 (def AttachScheduleBody
   [:map
    [:schedule-id [:maybe :int]]])
@@ -844,7 +851,8 @@
   ;; Closed enum of the job types pseudovision can submit. Keep in sync with the
   ;; configs passed to pseudovision.jobs.runner/submit!.
   [:enum {:description "Type of async job"}
-   :playout/rebuild])
+   :playout/rebuild
+   :playout/ensure-all])
 
 (def JobStatus
   [:enum {:description "Current job status"}

@@ -235,3 +235,44 @@
       (let [handler (make-test-handler)
             resp    (handler (mock/request :delete "/api/channels/91/playout/events?to=not-a-date"))]
         (is (= 400 (:status resp)))))))
+
+;; ---------------------------------------------------------------------------
+;; POST /api/playouts/ensure — bulk daily top-up
+;; ---------------------------------------------------------------------------
+
+(deftest ensure-horizon-all-submits-job-with-requested-horizon
+  (testing "POST /api/playouts/ensure?horizon=10 submits a bulk top-up job and
+            runs ensure-all-horizons! with the requested horizon"
+    (let [captured (promise)]
+      ;; ensure-all-horizons! runs inside the job's future; the redef is global
+      ;; (alter-var-root), so the future thread sees the stub, and we deref the
+      ;; promise INSIDE the with-redefs body so the stub has run before it exits.
+      (with-redefs [sched/ensure-all-horizons!
+                    (fn [_db horizon-days _opts]
+                      (deliver captured horizon-days)
+                      {:channels 3 :horizon-days horizon-days
+                       :events-generated 42 :results []})]
+        (let [r       (runner/create {})
+              handler (http/make-handler {:db nil :ffmpeg {} :media {} :scheduling {} :jobs r})
+              resp    (handler (mock/request :post "/api/playouts/ensure?horizon=10"))
+              body    (parse-json-body resp)]
+          (is (= 202 (:status resp)))
+          (is (= "playout/ensure-all" (get-in body [:job :type])))
+          (is (= 10 (get-in body [:job :metadata :horizon-days])))
+          (is (= 10 (deref captured 2000 :timed-out))
+              "job runs ensure-all-horizons! with horizon=10"))))))
+
+(deftest ensure-horizon-all-defaults-horizon-to-7
+  (testing "POST /api/playouts/ensure with no ?horizon defaults to a 7-day window"
+    (let [captured (promise)]
+      (with-redefs [sched/ensure-all-horizons!
+                    (fn [_db horizon-days _opts]
+                      (deliver captured horizon-days)
+                      {:channels 0 :horizon-days horizon-days
+                       :events-generated 0 :results []})]
+        (let [r       (runner/create {})
+              handler (http/make-handler {:db nil :ffmpeg {} :media {} :scheduling {} :jobs r})
+              resp    (handler (mock/request :post "/api/playouts/ensure"))]
+          (is (= 202 (:status resp)))
+          (is (= 7 (deref captured 2000 :timed-out))
+              "absent horizon defaults to 7 days"))))))

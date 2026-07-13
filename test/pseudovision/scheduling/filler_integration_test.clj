@@ -245,3 +245,39 @@
               "rebuilt timeline starts near now, not at the old horizon")
           (is (< (max-consecutive-gap-secs ev2) (* 2 block-seconds))
               "rebuild fills from now; no multi-hour gap left by a stale cursor"))))))
+
+(deftest ensure-horizon-extends-without-wiping-near-term
+  ;; Regression: the daily top-up (ensure-horizon! -> build! resume mode) must
+  ;; EXTEND the timeline forward while leaving the already-scheduled near-term
+  ;; events — and each show's rotation — untouched. Previously a resume build
+  ;; deleted everything from now forward and refilled only from the old horizon,
+  ;; wiping the near term and leaving a gap.
+  (if-not @ds-atom
+    (is true "skipped (no test database configured)")
+    (let [ds @ds-atom]
+      (with-redefs [t/now (constantly (Instant/parse "2026-06-14T00:00:00Z"))]
+        (let [{a :a} (seed! ds)
+              t0      (Instant/parse "2026-06-14T00:00:00Z")
+              ;; First build: an 8h window; the saved cursor lands ~8h ahead.
+              _       (sched/build! ds {:lookahead-hours 8} (playout-db/get-playout ds a))
+              ev1     (playout-db/list-events ds a)
+              ids1    (set (map :playout-events/id ev1))
+              max1    (reduce (fn [m e] (if (.isAfter (:playout-events/finish-at e) m)
+                                          (:playout-events/finish-at e) m))
+                              t0 ev1)
+              ;; Daily top-up: extend to a full day from now.
+              n       (sched/ensure-horizon! ds a 1)
+              ev2     (sort-by :playout-events/start-at (playout-db/list-events ds a))
+              ids2    (set (map :playout-events/id ev2))
+              max2    (reduce (fn [m e] (if (.isAfter (:playout-events/finish-at e) m)
+                                          (:playout-events/finish-at e) m))
+                              t0 ev2)]
+          (is (pos? n) "extending to a wider horizon generates new events")
+          (is (.isAfter max1 (t/add-duration t0 (t/hours->duration 6)))
+              "first build reaches ~8h ahead")
+          (is (every? ids2 ids1)
+              "every near-term event from the first build survives the top-up")
+          (is (.isAfter max2 (t/add-duration t0 (t/hours->duration 20)))
+              "the timeline is extended out toward the new 24h horizon")
+          (is (< (max-consecutive-gap-secs ev2) (* 2 block-seconds))
+              "no multi-hour gap opens between the preserved near term and the extension"))))))

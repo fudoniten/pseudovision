@@ -103,6 +103,30 @@
           {:status 202 :body {:job job}})
         {:status 404 :body {:error "No playout for this channel"}}))))
 
+(defn ensure-horizon-all-handler
+  "POST /api/playouts/ensure — daily top-up across all channels.
+
+   Extends every schedule-backed channel's playout timeline to at least
+   ?horizon days from now (default 7), preserving the events already scheduled
+   in the near term and advancing each show's rotation. Idempotent — a channel
+   already covered past the horizon is left untouched — so this is safe to call
+   on a daily cron to guarantee upcoming content. Channels populated only via
+   the DailySlot ingest stream (no attached schedule) are skipped.
+
+   Like the per-channel rebuild this can take a while, so it runs as an async
+   job: returns 202 with the job record; poll GET /api/jobs/:job-id for the
+   per-channel summary in :result."
+  [{:keys [db jobs grout]}]
+  (fn [req]
+    (let [horizon-days (or (get-in req [:parameters :query :horizon]) 7)
+          job (runner/submit!
+                jobs
+                {:type     :playout/ensure-all
+                 :metadata {:horizon-days horizon-days}}
+                (fn [_report-progress]
+                  (sched/ensure-all-horizons! db horizon-days {:grout grout})))]
+      {:status 202 :body {:job job}})))
+
 (defn- parse-instant [s]
   (when s
     (try (java.time.Instant/parse s)
