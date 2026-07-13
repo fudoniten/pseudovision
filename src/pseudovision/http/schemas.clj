@@ -852,7 +852,8 @@
   ;; configs passed to pseudovision.jobs.runner/submit!.
   [:enum {:description "Type of async job"}
    :playout/rebuild
-   :playout/ensure-all])
+   :playout/ensure-all
+   :media/scan-all])
 
 (def JobStatus
   [:enum {:description "Current job status"}

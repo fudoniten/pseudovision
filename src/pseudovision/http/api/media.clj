@@ -2,6 +2,7 @@
   (:require [clojure.string                 :as str]
             [clj-http.client                :as http]
             [pseudovision.db.media          :as db]
+            [pseudovision.jobs.runner       :as runner]
             [pseudovision.media.scanner     :as scanner]
             [pseudovision.media.jellyfin    :as jellyfin]
             [pseudovision.media.connection  :as conn]
@@ -175,6 +176,52 @@
                                                     :kind       kind}))))
           {:status 202 :body {:message "Scan triggered"}})
         {:status 404 :body {:error "Library not found"}}))))
+
+(defn scan-all-handler
+  "POST /api/media/scan-all — scan every Jellyfin-backed library across all
+   sources, as a single async job. This is the nightly catalog-ingest entry
+   point: one call instead of a per-library fan-out. Non-Jellyfin libraries
+   (e.g. the local `grout-content` library, which is populated by the Grout
+   content sync rather than a filesystem scan) are skipped. Returns 202 with
+   the job; poll GET /api/jobs/:job-id for the per-library summary in :result."
+  [{:keys [db media ffmpeg jobs]}]
+  (fn [_req]
+    (let [job (runner/submit!
+                jobs
+                {:type :media/scan-all}
+                (fn [_report-progress]
+                  (let [libraries (db/list-libraries db {:limit 10000 :offset 0})
+                        results
+                        (mapv
+                         (fn [library]
+                           (let [source (db/get-media-source db (:libraries/media-source-id library))
+                                 kind   (keyword (:media-sources/kind source))]
+                             (if (not= kind :jellyfin)
+                               {:library-id (:libraries/id library)
+                                :library    (:libraries/name library)
+                                :kind       (name kind)
+                                :status     "skipped"}
+                               (try
+                                 (jellyfin/scan-library! db source library)
+                                 {:library-id (:libraries/id library)
+                                  :library    (:libraries/name library)
+                                  :kind       (name kind)
+                                  :status     "ok"}
+                                 (catch Exception e
+                                   (log/error e "scan-all: library scan failed"
+                                              {:library-id (:libraries/id library)})
+                                   {:library-id (:libraries/id library)
+                                    :library    (:libraries/name library)
+                                    :kind       (name kind)
+                                    :status     "error"
+                                    :error      (.getMessage e)})))))
+                         libraries)]
+                    {:libraries (count results)
+                     :scanned   (count (filter #(= "ok" (:status %)) results))
+                     :skipped   (count (filter #(= "skipped" (:status %)) results))
+                     :failed    (count (filter #(= "error" (:status %)) results))
+                     :results   results})))]
+      {:status 202 :body {:job job}})))
 
 (defn discover-libraries-handler [{:keys [db]}]
   (fn [req]
