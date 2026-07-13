@@ -375,6 +375,16 @@
             :responses {202 {:body s/ScanTriggerResult}
                         404 {:body s/APIError}}
             :handler   (med/trigger-scan-handler ctx)}}]
+   ["/api/media/scan-all"
+    {:tags       ["media"]
+     :post {:summary     "Scan every Jellyfin library (async job)"
+            :description "Nightly catalog-ingest entry point: scans all
+                          Jellyfin-backed libraries across all sources in one
+                          async job (non-Jellyfin libraries like grout-content
+                          are skipped). Returns 202 with the job; poll
+                          GET /api/jobs/:job-id for the per-library summary."
+            :responses  {202 {:body s/JobSubmitResponse}}
+            :handler    (med/scan-all-handler ctx)}}]
    ["/api/media/items/:id"
     {:tags       ["media"]
      :get {:summary   "Get a media item (by Jellyfin/remote id or internal id)"
