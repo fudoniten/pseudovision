@@ -44,13 +44,13 @@ A job serialises to JSON as:
 | Field | Notes |
 |-------|-------|
 | `id` | UUID string. |
-| `type` | Job type; currently only `"playout/rebuild"`. |
+| `type` | Job type; `"playout/rebuild"` (single channel) or `"playout/ensure-all"` (bulk daily top-up). |
 | `status` | One of `queued`, `running`, `succeeded`, `failed`. |
-| `metadata` | Caller-supplied context. For rebuilds: `channel-id`, `from`, `horizon-days`. |
-| `progress` | Present only while/after the task reports progress. Either a number or a map (`phase`, `total`, `completed`, `failed`, `skipped`, `current-item`). Rebuild does not currently report granular progress, so this stays absent. |
+| `metadata` | Caller-supplied context. For rebuilds: `channel-id`, `from`, `horizon-days`. For ensure-all: `horizon-days`. |
+| `progress` | Present only while/after the task reports progress. Either a number or a map (`phase`, `total`, `completed`, `failed`, `skipped`, `current-item`). Rebuild/ensure-all do not currently report granular progress, so this stays absent. |
 | `created-at` / `started-at` / `completed-at` | ISO-8601 strings. `started-at` appears once running; `completed-at` once finished. |
 | `duration-ms` | Elapsed ms (started→completed, or started→now while running). |
-| `result` | Present on `succeeded`. For rebuilds: `{ "message", "events-generated", "horizon-days", "from" }`. |
+| `result` | Present on `succeeded`. For rebuilds: `{ "message", "events-generated", "horizon-days", "from" }`. For ensure-all: `{ "channels", "horizon-days", "events-generated", "results": [{ "channel-id", "playout-id", "events-generated" }, …] }`. |
 | `error` | Present on `failed`: `{ "message", "type" }`. |
 
 This matches Tunarr Scheduler's `Job` schema, with a pseudovision-specific
@@ -61,7 +61,8 @@ This matches Tunarr Scheduler's `Job` schema, with a pseudovision-specific
 | Method | Path | Response |
 |--------|------|----------|
 | `PUT` | `/api/channels/:channel-id/playout` | **200** `{ <Playout> }`. **Attaches a schedule** (`{"schedule-id": N}` body) — a different operation from the `POST` below, on the same path: this one sets which schedule the channel plays, `POST` regenerates its timeline. Creates the playout row on first attach. Pass `?rebuild=true&horizon=<days>` to also submit a rebuild job in the same call. |
-| `POST` | `/api/channels/:channel-id/playout` | **202** `{ "job": <Job> }` (or `404` if the channel has no playout). `?from=now\|horizon` and `?horizon=<days>` are unchanged. |
+| `POST` | `/api/channels/:channel-id/playout` | **202** `{ "job": <Job> }` (or `404` if the channel has no playout). `?from=now\|horizon` and `?horizon=<days>` are unchanged. `?from=horizon` now truly **extends** the timeline (preserving near-term events and rotation) rather than wiping it — see the note below. |
+| `POST` | `/api/playouts/ensure` | **202** `{ "job": <Job> }`. **Bulk daily top-up:** extends every schedule-backed channel's timeline to at least `?horizon=<days>` (default **7**) from now, preserving near-term events and each show's rotation. Idempotent — safe to run on a daily cron to guarantee upcoming content. Channels with no attached schedule (populated only via the DailySlot ingest stream) are skipped. |
 | `GET` | `/api/jobs` | **200** `{ "jobs": [<Job>, …] }`, newest-first. |
 | `GET` | `/api/jobs/:job-id` | **200** `{ "job": <Job> }`, or **404** `{ "error": "Job not found" }`. |
 
@@ -76,9 +77,32 @@ now the job's `result` field, retrievable once the job succeeds.
   Scheduler for wire compatibility.
 - `src/pseudovision/http/api/jobs.clj` — the two read endpoints.
 - `src/pseudovision/http/api/playouts.clj` — `rebuild-playout-handler` submits a
-  `:playout/rebuild` job.
+  `:playout/rebuild` job; `ensure-horizon-all-handler` submits a
+  `:playout/ensure-all` job.
+- `src/pseudovision/scheduling/core.clj` — `ensure-horizon!` (one channel) and
+  `ensure-all-horizons!` (all schedule-backed channels) are the extend/top-up
+  entry points; both ride on `build!`'s resume mode.
 - Wired into the Integrant system as `:pseudovision/jobs` and injected into the
   HTTP handler context.
+
+### Extend vs. reset (why the daily top-up is safe to repeat)
+
+`build!` has two modes. **Reset** (`POST .../playout?from=now`, the "Rebuild"
+button) wipes the channel's upcoming auto-generated events and regenerates from
+now, restarting the schedule at slot 0 and every collection from the top — so it
+is *not* safe to run daily (sequential shows would replay their first episodes
+each day). **Resume/extend** (`?from=horizon`, and the new `/api/playouts/ensure`
+top-up) picks up from the saved cursor and extends the timeline forward to the
+horizon, leaving the near-term events untouched and advancing each show's
+rotation from where it left off. This is what `SCHEDULING.md` describes as the
+daily rebuild ("keep days 1-7, generate days 8-14").
+
+> **Bug fixed here:** resume mode previously deleted non-manual events from *now*
+> forward while resuming from the *old horizon* cursor, opening a gap between now
+> and that horizon (the symptom: channels going empty after a while). `build!`
+> now deletes only from the cursor's own edge forward, and fast-forwards a cursor
+> that has fallen into the past up to now, so the near-term timeline survives and
+> a dry channel is refilled from now.
 
 Jobs are **in-memory only**: they do not survive a server restart, and in a
 multi-instance deployment each instance tracks its own. That is sufficient for

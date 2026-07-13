@@ -21,6 +21,19 @@
                        (h/where [:= :channel-id channel-id])
                        sql/format)))
 
+(defn list-playouts-with-schedule
+  "All playouts that have a schedule attached (schedule_id IS NOT NULL) — the
+   channels the build engine can (re)generate. Playouts populated purely from
+   the DailySlot ingest stream (no attached schedule) carry no schedule_id and
+   are therefore skipped: PV can't rebuild them itself. Ordered by channel_id
+   for a stable, repeatable iteration."
+  [ds]
+  (db/query ds (-> (h/select :*)
+                   (h/from :playouts)
+                   (h/where [:is-not :schedule-id nil])
+                   (h/order-by :channel-id)
+                   sql/format)))
+
 (defn upsert-playout!
   "Creates the playout row for channel-id if it doesn't exist, or returns the
    existing one. Uses INSERT … ON CONFLICT DO UPDATE to ensure RETURNING works."

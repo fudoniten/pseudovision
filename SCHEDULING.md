@@ -174,8 +174,14 @@ ALTER TABLE playouts
 ```
 
 **Rebuild Behavior:**
-- **Daily rebuild (scheduled):** Generate events for days 8-14, keep days 1-7 untouched
+- **Daily rebuild (scheduled):** Extend the timeline forward to the horizon, keeping the
+  near term untouched and advancing each show's rotation — e.g. generate days 8-14, keep
+  days 1-7. This is `build!`'s resume mode, exposed as `scheduling.core/ensure-horizon!`
+  (one channel) / `ensure-all-horizons!` (all channels) and `POST /api/playouts/ensure`
+  (bulk, default 7-day horizon). Idempotent — safe to run on a daily cron.
 - **Manual rebuild (config change):** Delete all future events (from NOW forward), regenerate
+  from scratch (restarts rotation). This is `build!`'s reset mode / `rebuild-from-now!` /
+  `POST /api/channels/:id/playout?from=now`.
 - **Never modify:** Past events or currently-airing events
 
 ---

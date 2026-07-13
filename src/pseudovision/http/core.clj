@@ -176,6 +176,18 @@
            :handler    (sc/reorder-slots-handler ctx)}}]
 
    ;; ── Playouts ────────────────────────────────────────────────────────────
+   ["/api/playouts/ensure"
+    {:tags       ["playouts"]
+     :post {:summary     "Top up every channel's timeline to a horizon (async job)"
+            :description "Extends every schedule-backed channel's playout timeline
+                          to at least ?horizon days from now (default 7),
+                          preserving near-term events and each show's rotation.
+                          Idempotent — safe to call on a daily cron to guarantee
+                          upcoming content. Returns 202 with the job; poll
+                          GET /api/jobs/:job-id for the per-channel summary."
+            :parameters  {:query s/EnsureHorizonQuery}
+            :responses   {202 {:body s/JobSubmitResponse}}
+            :handler     (pl/ensure-horizon-all-handler ctx)}}]
    ["/api/channels/:channel-id/playout"
     {:tags       ["playouts"]
      :get  {:summary   "Get the playout for a channel"
