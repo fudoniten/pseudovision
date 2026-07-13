@@ -629,11 +629,23 @@
                        sql/format)))
 
 (defn create-collection! [ds attrs]
+  ;; TEMP-DIAGNOSTIC-LOG: 2026-07-13 — confirm where the :config field is
+  ;; being dropped on the create-collection path. Reverts once the upstream
+  ;; cause is identified and fixed.
+  (log/debug "create-collection!: attrs at db entry" {:attrs attrs})
   (let [result (db/execute-one! ds (-> (h/insert-into :collections)
                                        (h/values [(cond-> attrs
                                                     (:kind attrs)   (update :kind #(sql-util/->pg-enum "collection_kind" %))
                                                     (:config attrs) (update :config sql-util/->jsonb))])
-                                       sql/format))]
+                                       sql/format))
+        ;; TEMP-DIAGNOSTIC-LOG: 2026-07-13 — capture the post-cond-> map and
+        ;; the actual SQL the executor sends, plus the round-tripped row.
+        prepared     (cond-> attrs
+                      (:kind attrs)   (update :kind #(sql-util/->pg-enum "collection_kind" %))
+                      (:config attrs) (update :config sql-util/->jsonb))]
+    (log/debug "create-collection!: prepared for insert" {:prepared prepared
+                                                          :row (:collections/config result)
+                                                          :row-keys (keys result)})
     (log/info "Created collection"
               {:collection-id (:collections/id result)
                :name          (:name attrs)
