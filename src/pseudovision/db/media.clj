@@ -459,6 +459,63 @@
             :where  [:and [:= :et.metadata-id :mtop.id]
                           [:= [:lower :et.name] (str/lower-case tag-name)]]}])
 
+(defn resolve-playable-by-channel-tag
+  "Resolves a channel's content via its `channel:<slug>` tag without a category
+   filter.  Every normal-state episode / movie / program whose top-level item
+   carries `channel-tag` is returned, with shows expanded to their
+   season-nested episodes.  Each row carries `:_top-id` (the show or movie id)
+   so downstream code can do show-level tag lookups (same convention as
+   `resolve-playable-by-tag`).
+
+   This is the path the native scheduling engine takes when a slot has neither
+   a `collection-id` nor a `media-item-id` — i.e. an \"auto\" schedule slot
+   whose intent is \"play anything tagged for this channel.\"  Pairing with the
+   slot's own `required-tags` / `excluded-tags` filtering (in the caller)
+   narrows to one channel's content; without the caller's tag filter the
+   result is the union of every channel's media, so this function MUST be
+   called with a channel-specific tag, never a bare genre.
+
+   Returns playable items with `:media-items/id` and
+   `:media-versions/duration` set, same shape as
+   `resolve-playable-by-tag`.  Items with no positive duration are not
+   filtered here — the caller (scheduling.core/load-items → playable?) is
+   the single point that drops unplayable rows, so the same skip
+   accounting/log lines apply regardless of resolution path."
+  [ds channel-tag]
+  (mapv (fn [row]
+          (-> row
+              (assoc :_top-id (or (:media-items/top-media-id row)
+                                  (:top-media-id row)))
+              (dissoc :media-items/top-media-id :top-media-id)))
+    (db/query ds
+      (-> (h/select-distinct :play.* [:mvp.duration :duration] [:top.id :top_media_id])
+          (h/from [:media-items :top])
+          (h/join [:metadata :mtop] [:= :mtop.media-item-id :top.id])
+          (h/left-join [:media-items :season]
+                       [:and [:= :season.parent-id :top.id]
+                             [:= :season.kind (sql-util/->pg-enum "media_item_kind" "season")]])
+          (h/left-join [:media-items :play]
+                       [:or
+                        ;; Movies and programs are flat: they ARE their own
+                        ;; playable item (play.id = top.id).
+                        [:and [:in :top.kind [(sql-util/->pg-enum "media_item_kind" "movie")
+                                              (sql-util/->pg-enum "media_item_kind" "program")]]
+                              [:= :play.id :top.id]]
+                        [:and [:= :top.kind (sql-util/->pg-enum "media_item_kind" "show")]
+                              [:= :play.kind (sql-util/->pg-enum "media_item_kind" "episode")]
+                              [:or [:= :play.parent-id :top.id]
+                                   [:= :play.parent-id :season.id]]]])
+          (h/left-join [:media-versions :mvp] [:= :mvp.media-item-id :play.id])
+          (h/where [:and
+                    [:= :top.state (sql-util/->pg-enum "media_item_state" "normal")]
+                    [:= :play.state (sql-util/->pg-enum "media_item_state" "normal")]
+                    [:in :top.kind [(sql-util/->pg-enum "media_item_kind" "show")
+                                    (sql-util/->pg-enum "media_item_kind" "movie")
+                                    (sql-util/->pg-enum "media_item_kind" "program")]]
+                    [(exact-tag-exists-subq channel-tag)]])
+          (h/order-by :play.id)
+          sql/format))))
+
 (defn resolve-playable-by-tag
   "Resolves a genre/category tag (bare or `genre:`-prefixed, case-insensitive,
    kebab-case tolerant) to concrete *playable* items: matching shows are
