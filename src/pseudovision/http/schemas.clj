@@ -659,7 +659,19 @@
    [:kind                      CollectionKind]
    [:name                      :string]
    [:use-custom-playback-order {:optional true} :boolean]
-   [:config                    {:optional true} [:map]]])
+   ;; Open map — the response carries the same kind-specific :config shape
+   ;; as the request (smart collections send {:query {:category ...
+   ;; :channel-tag ...}}). The previous `[:map]` schema was a closed map
+   ;; with no entries, which reitit-malli's response-body coercion
+   ;; interpreted as "drop every key in :config" — silently turning every
+   ;; GET /api/media/collections/{id} response into config: {} even when
+   ;; the stored row has the real value. Verified 2026-07-14: PR #139
+   ;; restored the SQL path so the DB now stores the real config, but
+   ;; the API still returned `config: {}` because of this response-side
+   ;; coercion. The request-side fix landed in PR #133 (CollectionCreate
+   ;; + CollectionUpdate); the response-side fix mirrors it. See the
+   ;; CollectionCreate docstring for the 2026-07-13 incident history.
+   [:config                    {:optional true} [:map {:closed false}]]])
 
 (def PaginatedCollections
   "Paginated response for collections."
