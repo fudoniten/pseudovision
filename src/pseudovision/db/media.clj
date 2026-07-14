@@ -628,88 +628,55 @@
                        (h/where [:= :id id])
                        sql/format)))
 
-(defn create-collection! [ds attrs]
-  ;; TEMP-DIAGNOSTIC-LOG: 2026-07-13 (round 2) — the previous diagnostic
-  ;; showed that the post-cond-> map has :config as a PGobject with the
-  ;; full JSON, yet the stored row's config column ends up as {} (the
-  ;; DEFAULT). This new diagnostic logs the *exact* SQL string and
-  ;; parameter vector that next.jdbc is about to send, so we can see
-  ;; whether HoneySQL is preserving the PGobject all the way to the
-  ;; PreparedStatement, or whether something in the SQL pipeline is
-  ;; stripping it.
-  (log/debug "create-collection!: attrs at db entry" {:attrs attrs})
-  (let [honey-map    (-> (h/insert-into :collections)
-                         (h/values [(cond-> attrs
-                                      (:kind attrs)   (update :kind #(sql-util/->pg-enum "collection_kind" %))
-                                      (:config attrs) (update :config sql-util/->jsonb))]))
-        ;; Call sql/format with {:params true} to get a [sql-string params]
-        ;; vector back. Default sql/format just returns the HoneySQL map (which
-        ;; next.jdbc consumes directly via its own format call). The previous
-        ;; diagnostic tried to destructure sql/format as a vector and crashed
-        ;; with ISeq-from-PGobject because the format was a HoneySQL map.
-        [sql-str params] (sql/format honey-map {:params true})
-        param-shapes (mapv (fn [p]
-                             (cond
-                               (instance? org.postgresql.util.PGobject p)
-                               {:type "PGobject"
-                                :pg-type (.getType ^org.postgresql.util.PGobject p)
-                                :value-preview (let [v (.getValue ^org.postgresql.util.PGobject p)]
-                                                 (if (> (count v) 80)
-                                                   (str (subs v 0 80) "...[" (count v) " chars]")
-                                                   v))}
-                               :else {:type (.getName (class p)) :value (str p)}))
-                           params)]
-    (log/debug "create-collection!: formatted SQL + param shapes"
-               {:sql sql-str
-                :param-count (count params)
-                :param-shapes param-shapes})
-    (let [result (db/execute-one! ds honey-map)]
-      (log/debug "create-collection!: result from RETURNING"
-                 {:id            (:id result)
-                  :config        (:config result)
-                  :config-class  (some-> (:config result) class .getName)
-                  :all-keys      (keys result)})
-      (log/info "Created collection"
-                {:collection-id (:id result)
-                 :name          (:name attrs)
-                 :kind          (:kind attrs)})
-      result)))
+(defn create-collection!
+  "Inserts a new `collections` row and returns the row map (with
+  unqualified kebab-case keys, including `:id`).
 
-(defn update-collection! [ds id attrs]
-  ;; TEMP-DIAGNOSTIC-LOG: 2026-07-13 (round 2) — same depth as
-  ;; create-collection!: log the exact SQL + param shapes, and the
-  ;; round-tripped row's :config. PUT /api/media/collections/{id}
-  ;; also returns config: {} in the response, so we need to see
-  ;; whether the bug is in the SQL path or in the response path.
-  (let [honey-map    (-> (h/update :collections)
-                          (h/set (cond-> attrs
-                                   (:config attrs) (update :config sql-util/->jsonb)))
-                          (h/where [:= :id id]))
-        [sql-str params] (sql/format honey-map {:params true})
-        param-shapes (mapv (fn [p]
-                             (cond
-                               (instance? org.postgresql.util.PGobject p)
-                               {:type "PGobject"
-                                :pg-type (.getType ^org.postgresql.util.PGobject p)
-                                :value-preview (let [v (.getValue ^org.postgresql.util.PGobject p)]
-                                                 (if (> (count v) 80)
-                                                   (str (subs v 0 80) "...[" (count v) " chars]")
-                                                   v))}
-                               :else {:type (.getName (class p)) :value (str p)}))
-                           params)]
-    (log/debug "update-collection!: formatted SQL + param shapes"
-               {:sql sql-str
-                :param-count (count params)
-                :param-shapes param-shapes
-                :attrs-config-key? (contains? attrs :config)})
-    (let [result (db/execute-one! ds honey-map)]
-      (log/debug "update-collection!: result from RETURNING"
-                 {:id            (:id result)
-                  :config        (:config result)
-                  :config-class  (some-> (:config result) class .getName)
-                  :all-keys      (keys result)})
-      (log/info "Updated collection" {:collection-id id})
-      result)))
+  IMPORTANT: every INSERT here must end in `(h/returning :*)`. Without
+  it, the next.jdbc driver uses `Statement.RETURN_GENERATED_KEYS` for
+  the INSERT (because `db/execute-one!` always passes `:return-keys
+  true`), which on a jsonb-bearing row silently returns an empty/partial
+  result. The caller would see `(:id result) => nil` and `(:config
+  result) => nil`, the response would serialize the nil config as `{}`
+  (the column's DEFAULT), and the response would look exactly like the
+  bug we hit on 2026-07-13: the POST returns 201 with `config: {}`,
+  and every subsequent `GET /api/media/collections/{id}` shows the
+  same `{}`. The `(h/returning :*)` clause makes the RETURNING
+  explicit so the driver returns the full row, regardless of whether
+  the next.jdbc path uses RETURN_GENERATED_KEYS or RETURNING.
+
+  Same class of bug was already documented on `upsert-media-item!` above
+  (fixed 2026-07-09 for the ON CONFLICT DO UPDATE path; this is the
+  plain-INSERT variant of the same shape)."
+  [ds attrs]
+  (let [result (db/execute-one! ds (-> (h/insert-into :collections)
+                                       (h/values [(cond-> attrs
+                                                    (:kind attrs)   (update :kind #(sql-util/->pg-enum "collection_kind" %))
+                                                    (:config attrs) (update :config sql-util/->jsonb))])
+                                       (h/returning :*)))]
+    (log/info "Created collection"
+              {:collection-id (:id result)
+               :name          (:name attrs)
+               :kind          (:kind attrs)})
+    result))
+
+(defn update-collection!
+  "Updates a `collections` row and returns the row map (with unqualified
+  kebab-case keys, including `:id`).
+
+  Same `(h/returning :*)` requirement as `create-collection!` — see the
+  docstring there for the full rationale. Without the explicit RETURNING,
+  next.jdbc's `RETURN_GENERATED_KEYS` path on an UPDATE with a jsonb
+  SET clause silently returns a partial/empty row, and the response
+  renders `config: {}` for the same reason."
+  [ds id attrs]
+  (let [result (db/execute-one! ds (-> (h/update :collections)
+                                       (h/set (cond-> attrs
+                                                (:config attrs) (update :config sql-util/->jsonb)))
+                                       (h/where [:= :id id])
+                                       (h/returning :*)))]
+    (log/info "Updated collection" {:collection-id id})
+    result))
 
 (defn delete-collection! [ds id]
   (db/execute-one! ds (-> (h/delete-from :collections)

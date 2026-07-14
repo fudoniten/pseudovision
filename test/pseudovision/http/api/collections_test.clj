@@ -10,10 +10,12 @@
   and the closest-runtime fallback was repeatedly picking the same
   handful of items."
   (:require [clojure.test :refer [deftest is testing]]
-            [clojure.string :as str]
             [ring.mock.request :as mock]
             [cheshire.core     :as json]
-            [pseudovision.http.core :as http]))
+            [honey.sql         :as sql]
+            [pseudovision.db.core     :as db-core]
+            [pseudovision.db.media    :as db-media]
+            [pseudovision.http.core   :as http]))
 
 (defn- make-test-handler []
   (http/make-handler {:db nil :ffmpeg {} :media {} :scheduling {}}))
@@ -128,13 +130,13 @@
     (let [resp ((make-test-handler)
                 (post-json
                  "/api/media/collections"
-                 {:kind "smart"
-                  :config {:query {:category "mystery"}}}))
+                 {:kind       "smart"
+                  :config     {:query {:category "mystery"}}}))
           body (parse-json-body resp)]
       (is (= 400 (:status resp))
           "missing :name triggers reitit-malli request-body coercion failure")
       (is (re-find #"Request coercion failed" (:error body))
-          "the body says coercion failed (the schema's :name :string is required)")))))
+          "the body says coercion failed (the schema's :name :string is required)"))))
 
 (deftest create-collection-rejects-nested-config-as-string
   (testing "POST with config as a JSON string (instead of an object) is
@@ -142,9 +144,74 @@
     (let [resp ((make-test-handler)
                 (post-json
                  "/api/media/collections"
-                 {:name "bad-shape"
-                  :kind "smart"
+                 {:name   "bad-shape"
+                  :kind   "smart"
                   :config "{\"query\":{\"category\":\"mystery\"}}"}))
           body (parse-json-body resp)]
       (is (= 400 (:status resp))
-          "config-as-string is rejected (was previously silently coerced to {})"))))
+          "config-as-string is rejected (was previously silently coerced to {})")
+      (is (re-find #"Request coercion failed" (:error body))
+          "the body says coercion failed (the schema's :config is [:map], not :string)"))))
+
+;; ---------------------------------------------------------------------------
+;; SQL-shape regression: every INSERT/UPDATE that returns a row must end in
+;; (h/returning :*) so the next.jdbc driver returns the full row including
+;; the jsonb :config column. Without it, the driver falls back to
+;; Statement.RETURN_GENERATED_KEYS which silently returns an empty/partial
+;; row, and the response shows `config: {}` (the column DEFAULT). This is
+;; the same class of bug as `upsert-media-item!` (fixed 2026-07-09 for the
+;; ON CONFLICT DO UPDATE path). These tests capture the SQL that
+;; `db-media/create-collection!` and `db-media/update-collection!` pass to
+;; `db-core/execute-one!` and assert that the SQL contains `RETURNING *`.
+;; ---------------------------------------------------------------------------
+
+(defn- capture-execute-one-sql
+  "Run `f` with `db-core/execute-one!` redefined to capture the first
+   argument (a HoneySQL map) into a dynamic var, then format it via
+   `sql/format` to get the SQL string the driver would actually see.
+   Returns the SQL string."
+  [f]
+  (let [captured (atom nil)]
+    (with-redefs [db-core/execute-one!
+                  (fn [_ds honey-map _opts]
+                    (reset! captured honey-map)
+                    ;; Mimic the real builder-fn + return-keys so anything
+                    ;; downstream that touches :id/:config behaves
+                    ;; realistically, but the test only inspects the SQL.
+                    {:id 0 :kind "smart" :name "stub" :config {}})]
+      (f)
+      (let [hm @captured]
+        (assert (some? hm) "execute-one! was not called")
+        (first (sql/format hm))))))
+
+(deftest create-collection-insert-has-returning-star
+  (testing "db-media/create-collection! emits a SQL string with
+            'RETURNING *' so next.jdbc returns the full row (including
+            :config). Without the (h/returning :*) clause the driver
+            falls back to RETURN_GENERATED_KEYS and the response shows
+            config: {} — the 2026-07-13 incident."
+    (let [sql-str (capture-execute-one-sql
+                   #(db-media/create-collection!
+                     nil
+                     {:name   "auto:test:enigma"
+                      :kind   "smart"
+                      :config {:query {:category "mystery"
+                                       :channel-tag "channel:enigma"}}}))]
+      (is (string? sql-str) "sql/format produced a string")
+      (is (re-find #"(?i)\bRETURNING\s+\*" sql-str)
+          "the INSERT contains RETURNING * — without it the jsonb :config
+           column is silently absent from the result row, and the response
+           shows config: {} (the column DEFAULT)."))))
+
+(deftest update-collection-update-has-returning-star
+  (testing "db-media/update-collection! emits a SQL string with
+            'RETURNING *' for the same reason as create-collection!"
+    (let [sql-str (capture-execute-one-sql
+                   #(db-media/update-collection!
+                     nil
+                     42
+                     {:config {:query {:category "drama"
+                                       :channel-tag "channel:enigma"}}}))]
+      (is (re-find #"(?i)\bRETURNING\s+\*" sql-str)
+          "the UPDATE contains RETURNING * — same class of bug as
+           create-collection! if missing."))))
