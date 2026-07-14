@@ -49,10 +49,18 @@
 (defn- collection-key
   "Returns a stable string key identifying the content source for a slot.
    Used to key enumerator states in the cursor so each slot's position is
-   tracked independently."
-  [slot]
-  (str "collection:" (or (:schedule-slots/collection-id slot)
-                         (str "item:" (:schedule-slots/media-item-id slot)))))
+   tracked independently.  Channel-catalog slots (no collection-id, no
+   media-item-id) get a key scoped to the channel so two different channels
+   that both fall back to the channel-catalog path maintain separate
+   enumerator positions."
+  [slot channel]
+  (cond
+    (:schedule-slots/collection-id slot)
+    (str "collection:" (:schedule-slots/collection-id slot))
+    (:schedule-slots/media-item-id slot)
+    (str "item:" (:schedule-slots/media-item-id slot))
+    :else
+    (str "channel-catalog:" (or (:channels/id channel) "unknown"))))
 
 (defn- get-item-tags
   "Get all tags for a media item."
@@ -97,8 +105,26 @@
 (defn- load-items
   "Returns the ordered seq of playable media items for a slot.
    Filters by required/excluded tags if specified, and drops items with no
-   usable (positive) duration so they can't stall the build."
-  [db slot]
+   usable (positive) duration so they can't stall the build.
+
+   Resolution paths, in order:
+     1. `:schedule-slots/collection-id` — the slot is pinned to a specific
+        collection, resolved through `col-db/resolve-collection`.
+     2. `:schedule-slots/media-item-id` — the slot is pinned to one media
+        item, fetched directly.
+     3. Channel-catalog fallback (the new path) — when a slot has neither a
+        collection-id nor a media-item-id, the schedule is implicitly asking
+        for \"anything tagged for this channel.\"  The slot is resolved
+        against the channel's `channel:<name>` dimension tag through
+        `media-db/resolve-playable-by-channel-tag`.  This is the contract for
+        \"auto\" schedules whose slots carry no explicit content source — the
+        pre-fix `:else []` branch silently returned an empty vector and
+        every such slot produced zero events (see pitfall-51 in the
+        pseudovision-ecosystem-development skill).  A slot whose
+        `required-tags` filter strips every catalog item is still
+        legitimately empty and produces zero events — the fallback only
+        adds the resolution path, not content."
+  [db slot channel]
   (let [required-tags (or (:schedule-slots/required-tags slot) [])
         excluded-tags (or (:schedule-slots/excluded-tags slot) [])
         slot-id       (:schedule-slots/id slot)
@@ -122,7 +148,19 @@
                             :media-name (when item (:media-items/name item))})
                   [item])
 
-                :else [])
+                :else
+                (let [{ch-name :channels/name} channel]
+                  (if ch-name
+                    (let [channel-tag (str "channel:" ch-name)]
+                      (log/info "Loading channel-catalog items for slot"
+                               {:slot-id slot-id
+                                :channel-id (:channels/id channel)
+                                :channel-name ch-name
+                                :channel-tag channel-tag})
+                      (media-db/resolve-playable-by-channel-tag db channel-tag))
+                    (do (log/warn "Slot has no content source and no channel; emitting nothing"
+                                  {:slot-id slot-id})
+                        []))))
         ;; Apply tag filters if specified
         tagged (if (or (seq required-tags) (seq excluded-tags))
                  (do
@@ -318,9 +356,9 @@
 
 (defn emit-once
   "Emit one item, return [events cursor]."
-  [db cursor slot playout-id opts]
-  (let [items   (load-items db slot)
-        ckey    (collection-key slot)
+  [db cursor slot channel playout-id opts]
+  (let [items   (load-items db slot channel)
+        ckey    (collection-key slot channel)
         order   (keyword (or (:schedule-slots/playback-order slot) "chronological"))
         enum-opts {:seed (get opts :seed 0)
                    :batch-size (or (:schedule-slots/marathon-batch-size slot) 5)}]
@@ -359,8 +397,8 @@
    items, and post-roll filler after the last item, when configured.  A count
    slot has no time deadline, so inline filler is sized purely by its preset."
   [db cursor slot channel playout-id opts]
-  (let [items  (load-items db slot)
-        ckey   (collection-key slot)
+  (let [items  (load-items db slot channel)
+        ckey   (collection-key slot channel)
         order  (keyword (or (:schedule-slots/playback-order slot) "chronological"))
         enum-opts {:seed (get opts :seed 0)
                    :batch-size (or (:schedule-slots/marathon-batch-size slot) 5)}
@@ -410,8 +448,8 @@
    mid-roll filler between items, post-roll filler after the last item, and
    pads any remaining time with tail filler.  Returns [events cursor]."
   [db cursor slot channel playout-id opts]
-  (let [items      (load-items db slot)
-        ckey       (collection-key slot)
+  (let [items      (load-items db slot channel)
+        ckey       (collection-key slot channel)
         order      (keyword (or (:schedule-slots/playback-order slot) "chronological"))
         enum-opts  {:seed (get opts :seed 0)
                     :batch-size (or (:schedule-slots/marathon-batch-size slot) 5)}
@@ -509,8 +547,8 @@
    Returns [events cursor]."
   [db cursor slot channel playout-id {:keys [flood-end] :as opts}]
   ;; Flood fills from :next-start up to flood-end (the next fixed-anchor time).
-  (let [items  (load-items db slot)
-        ckey   (collection-key slot)
+  (let [items  (load-items db slot channel)
+        ckey   (collection-key slot channel)
         order  (keyword (or (:schedule-slots/playback-order slot) "chronological"))
         enum-opts {:seed (get opts :seed 0)
                    :batch-size (or (:schedule-slots/marathon-batch-size slot) 5)}
@@ -629,7 +667,7 @@
       ;; Normal path -- slot fires today (or is sequential).
       (let [fill (keyword (or (:schedule-slots/fill-mode slot) "once"))
             [events cursor'] (case fill
-                               :once  (emit-once  db cursor slot playout-id opts)
+                               :once  (emit-once  db cursor slot channel playout-id opts)
                                :count (emit-count db cursor slot channel playout-id opts)
                                :block (emit-block db cursor slot channel playout-id opts)
                                :flood (let [flood-end (next-slot-start

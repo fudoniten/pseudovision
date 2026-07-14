@@ -67,7 +67,10 @@
   (testing "returns empty events and unchanged cursor when collection is empty"
     (let [slot {:schedule-slots/id 1}   ; no media-item-id or collection-id
           cur  (make-cursor t0)
-          [events cursor'] (core/emit-once nil cur slot 1 {})]
+          ;; Pass nil for channel: with no content source and no channel the
+          ;; fallback branch in load-items returns [] (and logs a warn), so
+          ;; the test still validates the empty guard.
+          [events cursor'] (core/emit-once nil cur slot nil 1 {})]
       (is (= [] events) "no events emitted")
       (is (= t0 (:next-start cursor')) "cursor time must not advance"))))
 
