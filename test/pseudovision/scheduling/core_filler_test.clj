@@ -174,6 +174,42 @@
         (is (= [] events) "no events when neither content nor filler")
         (is (= t2 (:next-start cursor')) "cursor still advances to flood-end")))))
 
+(deftest emit-flood-pads-overflow-remainder-with-fallback-filler
+  (testing "when the next item would overflow flood-end, the leftover gap is
+            padded with fallback filler instead of being silently dropped"
+    ;; 30m episodes, flood window is only 45m long: one episode fits, a second
+    ;; would overflow by 15m — that 15m must be filled, not left as a hole.
+    (let [flood-end (t/add-duration t0 (Duration/ofMinutes 45))
+          slot      {:schedule-slots/id 1
+                     :schedule-slots/media-item-id 1
+                     :schedule-slots/playback-order "chronological"}
+          cur       (make-cursor t0)
+          opts      {:flood-end flood-end :seed 0}]
+      (with-redefs [media-db/get-media-item     (fn [_ _] content-item)
+                    filler-db/get-filler-preset  (fn [_ _] fallback-filler-preset)
+                    filler-db/load-filler-items  (fn [_ _] (filler-items 30))]
+        (let [[events cursor'] (core/emit-flood nil cur slot channel 1 opts)]
+          (is (= 1 (count (filter #(= 1 (:media-item-id %)) events)))
+              "the one episode that fit is emitted")
+          (is (pos? (count (filter #(= 99 (:media-item-id %)) events)))
+              "filler events pad the remainder")
+          (is (= flood-end (:finish-at (last events)))
+              "events cover the gap all the way to flood-end")
+          (is (= flood-end (:next-start cursor')) "cursor advances to flood-end"))))))
+
+(deftest emit-flood-overflow-remainder-empty-without-fallback-configured
+  (testing "overflow with no fallback filler configured: no crash, cursor still advances"
+    (let [flood-end (t/add-duration t0 (Duration/ofMinutes 45))
+          slot      {:schedule-slots/id 1
+                     :schedule-slots/media-item-id 1
+                     :schedule-slots/playback-order "chronological"}
+          cur       (make-cursor t0)
+          opts      {:flood-end flood-end :seed 0}]
+      (with-redefs [media-db/get-media-item (fn [_ _] content-item)]
+        (let [[events cursor'] (core/emit-flood nil cur slot {} 1 opts)]
+          (is (= 1 (count events)) "only the one episode that fit is emitted")
+          (is (= flood-end (:next-start cursor')) "cursor still advances to flood-end"))))))
+
 ;; ---------------------------------------------------------------------------
 ;; emit-block — filler enumerator state persisted in cursor
 ;; ---------------------------------------------------------------------------
