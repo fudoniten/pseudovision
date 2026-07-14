@@ -629,37 +629,92 @@
                        sql/format)))
 
 (defn create-collection! [ds attrs]
-  ;; TEMP-DIAGNOSTIC-LOG: 2026-07-13 — confirm where the :config field is
-  ;; being dropped on the create-collection path. Reverts once the upstream
-  ;; cause is identified and fixed.
+  ;; TEMP-DIAGNOSTIC-LOG: 2026-07-13 (round 2) — the previous diagnostic
+  ;; showed that the post-cond-> map has :config as a PGobject with the
+  ;; full JSON, yet the stored row's config column ends up as {} (the
+  ;; DEFAULT). This new diagnostic logs the *exact* SQL string and
+  ;; parameter vector that next.jdbc is about to send, so we can see
+  ;; whether HoneySQL is preserving the PGobject all the way to the
+  ;; PreparedStatement, or whether something in the SQL pipeline is
+  ;; stripping it.
   (log/debug "create-collection!: attrs at db entry" {:attrs attrs})
-  (let [result (db/execute-one! ds (-> (h/insert-into :collections)
-                                       (h/values [(cond-> attrs
-                                                    (:kind attrs)   (update :kind #(sql-util/->pg-enum "collection_kind" %))
-                                                    (:config attrs) (update :config sql-util/->jsonb))])
-                                       sql/format))
-        ;; TEMP-DIAGNOSTIC-LOG: 2026-07-13 — capture the post-cond-> map and
-        ;; the actual SQL the executor sends, plus the round-tripped row.
-        prepared     (cond-> attrs
-                      (:kind attrs)   (update :kind #(sql-util/->pg-enum "collection_kind" %))
-                      (:config attrs) (update :config sql-util/->jsonb))]
-    (log/debug "create-collection!: prepared for insert" {:prepared prepared
-                                                          :row (:collections/config result)
-                                                          :row-keys (keys result)})
-    (log/info "Created collection"
-              {:collection-id (:collections/id result)
-               :name          (:name attrs)
-               :kind          (:kind attrs)})
-    result))
+  (let [formatted-sql (-> (h/insert-into :collections)
+                          (h/values [(cond-> attrs
+                                       (:kind attrs)   (update :kind #(sql-util/->pg-enum "collection_kind" %))
+                                       (:config attrs) (update :config sql-util/->jsonb))])
+                          sql/format)
+        ;; sql/format returns [sql-string params]. Log the SQL string
+        ;; and a structural view of the params (don't log the full
+        ;; PGobject value to keep log lines readable, but DO log the
+        ;; type/value shape so we can tell if the PGobject is in there).
+        [sql-str params] (if (vector? formatted-sql)
+                           formatted-sql
+                           [formatted-sql []])
+        param-shapes (mapv (fn [p]
+                             (cond
+                               (instance? org.postgresql.util.PGobject p)
+                               {:type "PGobject"
+                                :pg-type (.getType ^org.postgresql.util.PGobject p)
+                                :value-preview (let [v (.getValue ^org.postgresql.util.PGobject p)]
+                                                 (if (> (count v) 80)
+                                                   (str (subs v 0 80) "...[" (count v) " chars]")
+                                                   v))}
+                               :else {:type (.getName (class p)) :value (str p)}))
+                           params)]
+    (log/debug "create-collection!: formatted SQL + param shapes"
+               {:sql (first (if (vector? formatted-sql) formatted-sql [formatted-sql []]))
+                :param-count (count params)
+                :param-shapes param-shapes})
+    (let [result (db/execute-one! ds formatted-sql)]
+      (log/debug "create-collection!: result from RETURNING"
+                 {:id            (:id result)
+                  :config        (:config result)
+                  :config-class  (some-> (:config result) class .getName)
+                  :all-keys      (keys result)})
+      (log/info "Created collection"
+                {:collection-id (:id result)
+                 :name          (:name attrs)
+                 :kind          (:kind attrs)})
+      result)))
 
 (defn update-collection! [ds id attrs]
-  (let [result (db/execute-one! ds (-> (h/update :collections)
-                                       (h/set (cond-> attrs
-                                                (:config attrs) (update :config sql-util/->jsonb)))
-                                       (h/where [:= :id id])
-                                       sql/format))]
-    (log/info "Updated collection" {:collection-id id})
-    result))
+  ;; TEMP-DIAGNOSTIC-LOG: 2026-07-13 (round 2) — same depth as
+  ;; create-collection!: log the exact SQL + param shapes, and the
+  ;; round-tripped row's :config. PUT /api/media/collections/{id}
+  ;; also returns config: {} in the response, so we need to see
+  ;; whether the bug is in the SQL path or in the response path.
+  (let [formatted-sql (-> (h/update :collections)
+                          (h/set (cond-> attrs
+                                   (:config attrs) (update :config sql-util/->jsonb)))
+                          (h/where [:= :id id])
+                          sql/format)
+        [sql-str params] (if (vector? formatted-sql)
+                           formatted-sql
+                           [formatted-sql []])
+        param-shapes (mapv (fn [p]
+                             (cond
+                               (instance? org.postgresql.util.PGobject p)
+                               {:type "PGobject"
+                                :pg-type (.getType ^org.postgresql.util.PGobject p)
+                                :value-preview (let [v (.getValue ^org.postgresql.util.PGobject p)]
+                                                 (if (> (count v) 80)
+                                                   (str (subs v 0 80) "...[" (count v) " chars]")
+                                                   v))}
+                               :else {:type (.getName (class p)) :value (str p)}))
+                           params)]
+    (log/debug "update-collection!: formatted SQL + param shapes"
+               {:sql (first (if (vector? formatted-sql) formatted-sql [formatted-sql []]))
+                :param-count (count params)
+                :param-shapes param-shapes
+                :attrs-config-key? (contains? attrs :config)})
+    (let [result (db/execute-one! ds formatted-sql)]
+      (log/debug "update-collection!: result from RETURNING"
+                 {:id            (:id result)
+                  :config        (:config result)
+                  :config-class  (some-> (:config result) class .getName)
+                  :all-keys      (keys result)})
+      (log/info "Updated collection" {:collection-id id})
+      result)))
 
 (defn delete-collection! [ds id]
   (db/execute-one! ds (-> (h/delete-from :collections)
