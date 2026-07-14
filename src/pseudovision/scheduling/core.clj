@@ -555,16 +555,26 @@
                 dur       (item-duration item)
                 to        (t/add-duration cursor-time dur)]
             (if (.isAfter to end)
-              (let [c' (-> cursor
+              ;; The next item wouldn't fit before the boundary. Rather than
+              ;; leaving [cursor-time, end) as a silent, unfillable hole (no
+              ;; item was ever emitted for it), pad it with fallback filler —
+              ;; the same treatment content-exhaustion gets just above. The
+              ;; enumerator is left unadvanced (saved as `e`, not `e'`) so the
+              ;; overflowing item plays next time instead of being skipped.
+              (let [base-cursor (cursor/save-enumerator cursor ckey e)
+                    [fill-events cursor'] (apply-filler db base-cursor slot channel
+                                                        :fallback cursor-time end
+                                                        playout-id opts)
+                    c' (-> cursor'
                            (assoc :next-start end)
-                           (cursor/save-enumerator ckey e)
                            (cursor/bump-guide-group))]
                 (log/info "emit-flood: item overflow"
                          {:slot-id (:schedule-slots/id slot)
-                          :total-events (count events)
+                          :total-events (count (into events fill-events))
                           :fill-reason "overflow"
-                          :overflow-item (:media-items/name item)})
-                [events c'])
+                          :overflow-item (:media-items/name item)
+                          :filler-events (count fill-events)})
+                [(into events fill-events) c'])
               (recur to e'
                      (conj events {:playout-id    playout-id
                                    :media-item-id (:media-items/id item)

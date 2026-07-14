@@ -95,7 +95,22 @@
                        sql/format)))
 
 (defn create-slot! [ds attrs]
-  (let [processed (cond-> attrs
+  (let [;; schedule_slots.anchor defaults to 'sequential' at the DB level when
+        ;; omitted, and fill_mode independently defaults to 'once' — so a slot
+        ;; created without specifying either ends up 'sequential' + 'once',
+        ;; which plays exactly one item and then stops, typically leaving dead
+        ;; air until whatever follows. 'flood' plays sequential content until
+        ;; the next fixed-anchor slot (or a horizon cap), packing the available
+        ;; time with multiple items before padding any remainder with filler —
+        ;; a better default for a sequential slot than 'once'. Only applied
+        ;; when the caller didn't specify a fill mode explicitly.
+        anchor    (or (:anchor attrs) "sequential")
+        attrs     (cond-> attrs
+                    (and (= anchor "sequential")
+                         (nil? (:fill_mode attrs))
+                         (nil? (:fill-mode attrs)))
+                    (assoc :fill-mode "flood"))
+        processed (cond-> attrs
                     (or (:anchor attrs) (:anchor attrs))
                     (update :anchor #(sql-util/->pg-enum "slot_anchor" %))
                     (or (:fill_mode attrs) (:fill-mode attrs))
