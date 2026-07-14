@@ -632,28 +632,28 @@
   "Inserts a new `collections` row and returns the row map (with
   unqualified kebab-case keys, including `:id`).
 
-  IMPORTANT: every INSERT here must end in `(h/returning :*)`. Without
-  it, the next.jdbc driver uses `Statement.RETURN_GENERATED_KEYS` for
-  the INSERT (because `db/execute-one!` always passes `:return-keys
-  true`), which on a jsonb-bearing row silently returns an empty/partial
-  result. The caller would see `(:id result) => nil` and `(:config
-  result) => nil`, the response would serialize the nil config as `{}`
-  (the column's DEFAULT), and the response would look exactly like the
-  bug we hit on 2026-07-13: the POST returns 201 with `config: {}`,
-  and every subsequent `GET /api/media/collections/{id}` shows the
-  same `{}`. The `(h/returning :*)` clause makes the RETURNING
-  explicit so the driver returns the full row, regardless of whether
-  the next.jdbc path uses RETURN_GENERATED_KEYS or RETURNING.
-
-  Same class of bug was already documented on `upsert-media-item!` above
-  (fixed 2026-07-09 for the ON CONFLICT DO UPDATE path; this is the
-  plain-INSERT variant of the same shape)."
+  IMPORTANT: the HoneySQL map built here must be run through `sql/format`
+  before being handed to `db/execute-one!`, the same as every other
+  write in this namespace. `next.jdbc` has no built-in HoneySQL support:
+  it requires `sql-params` to already be a formatted `[sql-string &
+  params]` vector, and throws `sql-params should be a vector containing
+  a SQL string and any parameters` if given the raw map. A previous
+  version of this function passed the unformatted map straight to
+  `db/execute-one!` and theorized the resulting `config: {}` bug was
+  `Statement.RETURN_GENERATED_KEYS` silently returning a partial row;
+  that theory was wrong. The call was failing outright on every request
+  — it just wasn't visible until an earlier diagnostic crash (in code
+  since removed) stopped masking it. `(h/returning :*)` is kept because
+  it's still needed for the full written row (including `config`) to
+  come back, matching `upsert-media-item!`'s `(h/returning :id)` above
+  for the ON CONFLICT path."
   [ds attrs]
   (let [result (db/execute-one! ds (-> (h/insert-into :collections)
                                        (h/values [(cond-> attrs
                                                     (:kind attrs)   (update :kind #(sql-util/->pg-enum "collection_kind" %))
                                                     (:config attrs) (update :config sql-util/->jsonb))])
-                                       (h/returning :*)))]
+                                       (h/returning :*)
+                                       sql/format))]
     (log/info "Created collection"
               {:collection-id (:id result)
                :name          (:name attrs)
@@ -664,17 +664,15 @@
   "Updates a `collections` row and returns the row map (with unqualified
   kebab-case keys, including `:id`).
 
-  Same `(h/returning :*)` requirement as `create-collection!` — see the
-  docstring there for the full rationale. Without the explicit RETURNING,
-  next.jdbc's `RETURN_GENERATED_KEYS` path on an UPDATE with a jsonb
-  SET clause silently returns a partial/empty row, and the response
-  renders `config: {}` for the same reason."
+  Same `sql/format` + `(h/returning :*)` requirement as `create-collection!`
+  — see the docstring there for the full rationale."
   [ds id attrs]
   (let [result (db/execute-one! ds (-> (h/update :collections)
                                        (h/set (cond-> attrs
                                                 (:config attrs) (update :config sql-util/->jsonb)))
                                        (h/where [:= :id id])
-                                       (h/returning :*)))]
+                                       (h/returning :*)
+                                       sql/format))]
     (log/info "Updated collection" {:collection-id id})
     result))
 
