@@ -221,15 +221,50 @@
 ;; ---------------------------------------------------------------------------
 
 (deftest resolve-by-category-selects-top-id
-  (testing "random:<category> returns the show's id alongside the playable row, so category_filters can scope by top"
+  (testing "random:<category> selects the show's id alongside the playable row, so category_filters can scope by top"
     (let [captured (atom nil)]
       (with-redefs [db-core/query (fn [_ sqlvec] (reset! captured sqlvec) [])]
         (#'ds/resolve-by-category nil "Drama")
         (let [[sql _params] @captured]
           (is (re-find #"(?i)\btop\.id\b" sql)
               "the top (show/movie) id is selected alongside play.*")
-          (is (re-find #"(?i)AS _top_id\b|AS \"_top_id\"" sql)
-              "the top id is aliased as _top_id so the Clojure layer can read it"))))))
+          ;; The alias must NOT start with an underscore: db/query uses
+          ;; next.jdbc's as-kebab-maps, which turns `_`→`-`, so `_top_id`
+          ;; would surface as a leading-dash key (`:media-items/-top-id`),
+          ;; never the `:_top-id` the Clojure layer reads. We alias to a
+          ;; plain `top_media_id` and move it onto :_top-id in Clojure.
+          (is (re-find #"(?i)AS top_media_id\b|AS \"top_media_id\"" sql)
+              "the top id is aliased as top_media_id (no leading underscore)")
+          (is (not (re-find #"(?i)AS _top_id\b|AS \"_top_id\"" sql))
+              "must not use the leading-underscore alias that as-kebab-maps mangles"))))))
+
+;; The real bug (Jul 2026): the resolver aliased `[:top.id :_top-id]` and
+;; trusted next.jdbc to surface a bare `:_top-id` key. It does not — an
+;; aliased column comes back qualified by its source table with `_`→`-`
+;; (the same reason `[:mvp.duration :duration]` arrives as
+;; `:media-versions/duration`). So every episode's `:_top-id` was nil,
+;; `top-id-of` fell back to the episode's own id, the show-level
+;; `channel:<slug>` tag was never found, and `random:<category>` slots were
+;; silently skipped. The resolver must therefore normalise `:_top-id` in
+;; Clojure, from the key next.jdbc actually produces.
+(deftest resolve-by-category-normalises-top-id-from-real-jdbc-key
+  (testing "resolve-by-category surfaces :_top-id even though next.jdbc qualifies the aliased column by its source table"
+    (with-redefs [db-core/query
+                  (fn [_ _]
+                    ;; The row shape next.jdbc REALLY returns for an episode:
+                    ;; the aliased top.id lands under the table-qualified,
+                    ;; kebab'd key — NOT a bare :_top-id.
+                    [{:media-items/id 54762
+                      :media-items/kind "episode"
+                      :media-items/top-media-id 51820}])]
+      (let [rows (#'ds/resolve-by-category nil "Sci-Fi & Fantasy")
+            row  (first rows)]
+        (is (= 51820 (:_top-id row))
+            "the show's id is normalised onto :_top-id (not the episode's own id)")
+        (is (= 51820 (#'ds/top-id-of row))
+            "top-id-of reads the show id, so show-level tag lookups scope correctly")
+        (is (not (contains? row :media-items/top-media-id))
+            "the raw aliased key is cleaned up so only :_top-id remains")))))
 
 (deftest resolve-show-episodes-tags-rows-with-show-id
   (testing "every episode row returned by resolve-show-episodes carries :_top-id == the show's id"
