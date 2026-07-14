@@ -215,3 +215,60 @@
       (is (re-find #"(?i)\bRETURNING\s+\*" sql-str)
           "the UPDATE contains RETURNING * — same class of bug as
            create-collection! if missing."))))
+
+;; ---------------------------------------------------------------------------
+;; Response-coercion regression: the `Collection` response schema must allow
+;; arbitrary :config keys, not just a closed `[:map]`. Verified 2026-07-14:
+;; PR #139 restored the SQL path so collections are now STORED with the real
+;; config (e.g. {"query": {"category": "mystery", "channel_tag": "..."}}),
+;; but the API still returned `config: {}` for the same closed-map coercion
+;; reason that PR #133 fixed on the request side. The fix widens the response
+;; schema to `[:map {:closed false}]` (mirror of CollectionCreate). These
+;; tests stub db-media/get-collection to return a row with a populated
+;; config and assert the round-tripped response body preserves every key.
+;; ---------------------------------------------------------------------------
+
+(deftest get-collection-response-preserves-config-keys
+  (testing "GET /api/media/collections/{id} returns the populated :config
+            from the stored row — the response schema must not be a closed
+            :map that silently strips every key under :config."
+    (let [stored-row {:id 99
+                      :kind "smart"
+                      :name "live-probe-139a"
+                      :use-custom-playback-order false
+                      :config {:query {:category "mystery"
+                                       :channel-tag "channel:enigma"}}}]
+      (with-redefs [db-media/get-collection
+                    (fn [_ds _id] stored-row)]
+        (let [resp ((make-test-handler)
+                    (mock/request :get "/api/media/collections/99"))
+              body (parse-json-body resp)]
+          (is (= 200 (:status resp)))
+          (is (= "smart" (:kind body)))
+          (is (= "live-probe-139a" (:name body)))
+          (is (= {:category "mystery"
+                  :channel-tag "channel:enigma"}
+                 (get-in body [:config :query]))
+              "the populated :query map under :config must round-trip
+               through the response coercion — a closed-map response
+               schema would silently return config: {}."))))))
+
+(deftest get-collection-response-preserves-config-with-empty-query
+  (testing "GET /api/media/collections/{id} where :config is itself a
+            non-empty map (but not under :query) — same regression: a
+            closed :map response schema drops every key."
+    (let [stored-row {:id 100
+                      :kind "manual"
+                      :name "playlist-test"
+                      :use-custom-playback-order true
+                      :config {:items [1 2 3] :label "favorites"}}]
+      (with-redefs [db-media/get-collection
+                    (fn [_ds _id] stored-row)]
+        (let [resp ((make-test-handler)
+                    (mock/request :get "/api/media/collections/100"))
+              body (parse-json-body resp)]
+          (is (= 200 (:status resp)))
+          (is (= [1 2 3] (get-in body [:config :items]))
+              ":items under :config must round-trip.")
+          (is (= "favorites" (get-in body [:config :label]))
+              ":label under :config must round-trip."))))))
