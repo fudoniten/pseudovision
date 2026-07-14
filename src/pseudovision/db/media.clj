@@ -473,11 +473,32 @@
    pools today.
 
    Each row carries `:_top-id` — the id of the top-level item (show or movie)
-   it was resolved from — for show-level tag lookups downstream."
+   it was resolved from — for show-level tag lookups downstream.
+
+   `:_top-id` is normalised in Clojure (not read straight off a SQL alias),
+   the same way `list-show-episodes-by-id` assoc's the show id. `db/query`
+   uses `next.jdbc`'s `as-kebab-maps`, which qualifies every column — even an
+   aliased one — by its *source table* and turns `_`→`-`, so a raw
+   `[:top.id :_top-id]` alias would surface as `:media-items/-top-id`, never
+   the bare `:_top-id` that `daily-slots/top-id-of` reads. (This is the same
+   behaviour that makes the `[:mvp.duration :duration]` alias arrive as
+   `:media-versions/duration`.) When the alias silently missed, every episode
+   fell back to its own id, show-level tags like `channel:<slug>` were never
+   found, and `random:<category>` slots were skipped. So we alias to a plain
+   `top_media_id` column and move it onto `:_top-id` below."
   [ds category & {:keys [require-tags]}]
-  (db/query ds
-    (-> (h/select-distinct :play.* [:mvp.duration :duration] [:top.id :_top-id])
-        (h/from [:media-items :top])
+  (mapv (fn [row]
+          (-> row
+              ;; `top_media_id` arrives table-qualified under
+              ;; `:media-items/top-media-id` (top is a media_items alias);
+              ;; tolerate a bare key too in case a driver reports no table
+              ;; for the aliased column.
+              (assoc :_top-id (or (:media-items/top-media-id row)
+                                  (:top-media-id row)))
+              (dissoc :media-items/top-media-id :top-media-id)))
+    (db/query ds
+      (-> (h/select-distinct :play.* [:mvp.duration :duration] [:top.id :top_media_id])
+          (h/from [:media-items :top])
         (h/join [:metadata :mtop] [:= :mtop.media-item-id :top.id])
         (h/left-join [:metadata-tags :t] [:= :t.metadata-id :mtop.id])
         (h/left-join [:media-items :season]
@@ -508,7 +529,7 @@
                        (map exact-tag-exists-subq)
                        require-tags))
         (h/order-by :play.id)
-        sql/format)))
+        sql/format))))
 
 (defn list-items-for-library-path [ds library-path-id]
   (db/query ds (-> (h/select :*)
