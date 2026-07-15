@@ -24,6 +24,18 @@
      ;; lives.
      "ffmpeg")))
 
+(defn- escape-filter-arg
+  "Escapes backslash/colon/quote for safe use inside an ffmpeg filtergraph
+   option value (e.g. a URL or path passed to drawtext/subtitles)."
+  [s]
+  (-> s
+      (str/replace "\\" "\\\\\\\\")
+      (str/replace ":" "\\\\:")
+      (str/replace "'" "\\\\'")))
+
+(defn- chain-filter [chain f]
+  (if (seq chain) (str chain "," f) f))
+
 (defn build-hls-command
   "Builds an FFmpeg command array for HLS streaming.
 
@@ -34,7 +46,13 @@
             :segment-duration <override, else profile :hls>
             :playlist-size     <override, else profile :hls>
             :profile-config <raw ffmpeg_profiles.config — legacy flat or nested;
-                             see pseudovision.ffmpeg.profile>}
+                             see pseudovision.ffmpeg.profile>
+            :audio-stream-index <absolute ffprobe stream index to map for audio,
+                             resolved from the channel's preferred audio
+                             language — see pseudovision.streaming.language;
+                             nil maps ffmpeg's own default (0:a:0?)>
+            :subtitle-burn-in {:stream-index n} to burn that subtitle stream
+                             into the picture, or nil for none>}
 
    The encoder/decoder/filter flags are derived from the profile via
    `pseudovision.ffmpeg.profile`, which selects the software / NVENC / VAAPI
@@ -42,7 +60,8 @@
 
    Returns: String array for ProcessBuilder"
   [source-url output-dir {:keys [start-position-secs segment-duration playlist-size
-                                 profile-config manager-mode? overlay-text]
+                                 profile-config manager-mode? overlay-text
+                                 audio-stream-index subtitle-burn-in]
                           :or   {start-position-secs 0}}]
   (let [ffmpeg-bin (resolve-ffmpeg-path)
         cfg        (profile/resolve-config (or profile-config {}))
@@ -56,19 +75,26 @@
         ;; playlist (hls_list_size 0) and never deletes them itself.
         list-size  (if manager-mode? 0 (or playlist-size (get-in cfg [:hls :playlist-size])))
         vf         (profile/video-filter cfg)
+        ;; Burn the resolved subtitle stream into the picture, if the channel's
+        ;; preferred (or fallback 'en') subtitle language was found — see
+        ;; pseudovision.streaming.language. The `subtitles` filter re-opens
+        ;; source-url itself to read the subtitle stream, independent of -map.
+        vf-subs    (cond-> vf
+                     (:stream-index subtitle-burn-in)
+                     (chain-filter (str "subtitles=filename='"
+                                        (escape-filter-arg source-url)
+                                        "':si=" (:stream-index subtitle-burn-in))))
         ;; Append drawtext overlay when bumper text is provided
         vf'        (if (seq overlay-text)
                      (let [escaped (-> overlay-text
-                                       (str/replace "\\" "\\\\\\\\")
-                                       (str/replace ":" "\\\\:")
-                                       (str/replace "'" "\\\\'")
+                                       escape-filter-arg
                                        (str/replace "%" "\\\\%"))
                            dt (str "drawtext=text=" escaped
                                    ":fontsize=36:fontcolor=white"
                                    ":x=(w-text_w)/2:y=h-text_h-60"
                                    ":borderw=2:bordercolor=black@0.5")]
-                       (if vf (str vf "," dt) dt))
-                     vf)]
+                       (chain-filter vf-subs dt))
+                     vf-subs)]
     (log/debug "Using ffmpeg" {:path ffmpeg-bin :accel (:accel cfg) :initial-burst burst})
     (into-array String
       (-> [ffmpeg-bin
@@ -84,15 +110,21 @@
           (into (profile/input-args cfg))          ; -hwaccel … (before -i)
           (into ["-ss" (str start-position-secs)   ; Start position
                  "-i" source-url])                 ; Input URL
-          ;; Take only the first video + audio track. Auto-mapping otherwise
-          ;; drags in subtitle tracks (e.g. mov_text), which FFmpeg transcodes to
-          ;; a whole second WebVTT HLS rendition and paces alongside the A/V
-          ;; streams — sparse subtitle packets thrash the readrate pacer and
-          ;; inflate startup latency. -sn belt-and-braces drops any others.
-          ;; 0:a:0? — the trailing ? makes the audio map optional so a
-          ;; video-only source does not abort the encoder.
-          (into ["-map" "0:v:0" "-map" "0:a:0?" "-sn"])
-           (cond-> vf' (into ["-vf" vf']))         ; Normalisation + overlay filter chain
+          ;; Take only the first video track and one audio track (the channel's
+          ;; preferred-language match, resolved by the caller; falls back to
+          ;; ffmpeg's own 0:a:0 when no audio-stream-index was resolved).
+          ;; Auto-mapping otherwise drags in subtitle tracks (e.g. mov_text),
+          ;; which FFmpeg transcodes to a whole second WebVTT HLS rendition and
+          ;; paces alongside the A/V streams — sparse subtitle packets thrash
+          ;; the readrate pacer and inflate startup latency. -sn belt-and-braces
+          ;; drops any others (subtitle burn-in, if any, reads the file directly
+          ;; via the `subtitles` filter above and is unaffected by -sn).
+          ;; The trailing ? makes the audio map optional so a video-only source
+          ;; does not abort the encoder.
+          (into ["-map" "0:v:0"
+                 "-map" (if audio-stream-index (str "0:" audio-stream-index "?") "0:a:0?")
+                 "-sn"])
+           (cond-> vf' (into ["-vf" vf']))         ; Normalisation + subtitle/overlay filter chain
           (into (profile/video-encode-args cfg))   ; Video codec + rate control
           (into (profile/audio-encode-args cfg))   ; Audio codec + params
           (into ["-f" "hls"                         ; HLS format

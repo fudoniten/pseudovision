@@ -120,7 +120,9 @@
                              {:start-position-secs (or (:start-position source-info) 0)
                               :profile-config      cfg
                               :manager-mode?       true
-                              :overlay-text        overlay-text}))))
+                              :overlay-text        overlay-text
+                              :audio-stream-index  (:audio-stream-index source-info)
+                              :subtitle-burn-in    (:subtitle-burn-in source-info)}))))
 
 (defn- open-media-view!
   "Records a media_item_views row for a real content encoder; nil for slates."

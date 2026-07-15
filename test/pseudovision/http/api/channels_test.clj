@@ -20,6 +20,7 @@
    :channels/streaming-mode "ts"
    :channels/ffmpeg-profile-id 1
    :channels/subtitle-mode "disabled"
+   :channels/subtitle-default-enabled true
    :channels/stream-selector-mode "auto"
    :channels/is-enabled true
    :channels/show-in-epg true})

@@ -366,6 +366,25 @@
                         (h/limit 1)
                         sql/format))))
 
+(defn list-media-streams-for-item
+  "Returns the media_streams rows (kind, language, title, is-default,
+   is-forced, stream-index) for a media item's first version, ordered by
+   stream_index. `id` may be the internal integer id or a remote_key. Used to
+   resolve a channel's preferred audio/subtitle language against what the
+   file actually contains."
+  [ds id]
+  (db/query-unqualified
+   ds (-> (h/select :ms.kind :ms.language :ms.title :ms.is-default :ms.is-forced :ms.stream-index)
+         (h/from [:media-items :mi])
+         (h/join [:media-versions :mv] [:= :mv.media-item-id :mi.id])
+         (h/join [:media-streams :ms] [:= :ms.media-version-id :mv.id])
+         (h/where (item-ref-match :mi.id :mi.remote-key id)
+                  [:= :mv.id {:select [:%min.id]
+                              :from   [[:media-versions :mv2]]
+                              :where  [:= :mv2.media-item-id :mi.id]}])
+         (h/order-by :ms.stream-index)
+         sql/format)))
+
 ;; ---------------------------------------------------------------------------
 ;; Media item children
 ;; ---------------------------------------------------------------------------

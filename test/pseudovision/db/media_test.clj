@@ -106,6 +106,26 @@
       (is (= ["abc"] params)))))
 
 ;; ---------------------------------------------------------------------------
+;; list-media-streams-for-item
+;; ---------------------------------------------------------------------------
+
+(defn- capture-query-unqualified
+  [f]
+  (let [captured (atom nil)]
+    (with-redefs [db/query-unqualified (fn [_ sql] (reset! captured sql) [])]
+      (f))
+    @captured))
+
+(deftest list-media-streams-for-item-joins-versions-and-streams
+  (testing "joins media_items -> media_versions -> media_streams and pins to the item's first version"
+    (let [[sql & params] (capture-query-unqualified #(sut/list-media-streams-for-item nil 42))]
+      (is (re-find #"(?i)JOIN media_versions" sql))
+      (is (re-find #"(?i)JOIN media_streams" sql))
+      (is (re-find #"(?i)SELECT MIN\(id\)" sql) "pins to the lowest media_version id for the item")
+      (is (re-find #"(?i)ORDER BY ms\.stream_index" sql))
+      (is (= [42 "42"] params)))))
+
+;; ---------------------------------------------------------------------------
 ;; create-collection! / update-collection! — must hand db/execute-one! a
 ;; formatted [sql & params] vector, never the raw HoneySQL map. Regression
 ;; for a bug where the unformatted map was passed straight through: next.jdbc
