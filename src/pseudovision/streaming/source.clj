@@ -9,6 +9,7 @@
             [pseudovision.db.media :as db-media]
             [pseudovision.db.metrics :as db-metrics]
             [pseudovision.media.connection :as conn]
+            [pseudovision.streaming.language :as language]
             [pseudovision.util.time :as t]
             [taoensso.timbre :as log]))
 
@@ -81,13 +82,34 @@
               :start-time (format-time-12h (:playout-events/start-at event))})
            events))))
 
+(defn- resolve-track-selection
+  "Resolves which audio/subtitle track to use for `media-item-id` against
+   `channel`'s preferred-language settings (see pseudovision.streaming.language).
+   Returns a map to merge into a source-info; empty when the item has no
+   media_streams to choose from."
+  [db channel media-item-id]
+  (let [streams (db-media/list-media-streams-for-item db media-item-id)]
+    (if (empty? streams)
+      {}
+      (let [audio    (language/resolve-audio streams (:channels/preferred-audio-language channel))
+            subtitle (language/resolve-subtitle-burn-in
+                      streams
+                      {:preferred-subtitle-language (:channels/preferred-subtitle-language channel)
+                       :subtitle-default-enabled?   (boolean (:channels/subtitle-default-enabled channel))
+                       :subtitle-enabled?           (not= "none" (:channels/subtitle-mode channel))
+                       :audio-matched-preference?   (:matched-preference? audio)})]
+        (cond-> {}
+          (:stream-index audio) (assoc :audio-stream-index (:stream-index audio))
+          subtitle               (assoc :subtitle-burn-in {:stream-index (:stream-index subtitle)}))))))
+
 (defn fallback-stream-source
   "Fallback when no current event is available: the channel's configured filler
    if resolvable, otherwise a generated slate carrying the upcoming-events list."
   [db channel playout-id]
   (if-let [filler-id (:channels/fallback-filler-id channel)]
     (if-let [url (resolve-stream-source db filler-id)]
-      {:source-url url :start-position 0 :type :fallback-filler :media-item-id filler-id}
+      (merge {:source-url url :start-position 0 :type :fallback-filler :media-item-id filler-id}
+             (resolve-track-selection db channel filler-id))
       (do (log/warn "Fallback filler unavailable - using generated slate"
                     {:channel-id (:channels/id channel) :filler-id filler-id})
           {:type :generated-slate :upcoming-events (upcoming-events-for-slate db playout-id)}))
@@ -109,11 +131,12 @@
            (let [media-item-id (:playout-events/media-item-id current-event)
                  source-url    (resolve-stream-source db media-item-id)]
              (if source-url
-               {:source-url     source-url
-                :start-position (calculate-start-position current-event at)
-                :event          current-event
-                :type           :current-event
-                :media-item-id  media-item-id}
+               (merge {:source-url     source-url
+                       :start-position (calculate-start-position current-event at)
+                       :event          current-event
+                       :type           :current-event
+                       :media-item-id  media-item-id}
+                      (resolve-track-selection db channel media-item-id))
                (do (log/error "Failed to resolve stream URL for current event"
                               {:event-id (:playout-events/id current-event)
                                :media-item-id media-item-id})
