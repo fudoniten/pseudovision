@@ -337,9 +337,13 @@
          extra))
 
 (deftest emit-block-injects-pre-roll-before-first-item
-  (testing "count-mode pre filler is emitted before the first content item"
+  (testing "count-mode pre filler is emitted before the first content item;
+            the content loop then packs as many items as fit, with the
+            overflowing one trimmed to the block-end (tail-mode none)"
+    ;; Setup: 10m pre-roll + 30m content + 30m content (trimmed to 20m) in 1h block
     (let [slot (pre-slot {:schedule-slots/pre-filler-id 50})
-          cur  (make-cursor t0)]
+          cur  (make-cursor t0)
+          block-end t1]   ; t0 + 1h
       (with-redefs [media-db/get-media-item     (fn [_ _] content-item)
                     filler-db/get-filler-preset (fn [_ _] pre-count-preset)
                     filler-db/load-filler-items (fn [_ _] (filler-items 10))]
@@ -347,12 +351,19 @@
               content    (filter #(= 1  (:media-item-id %)) events)
               filler     (filter #(= 99 (:media-item-id %)) events)]
           (is (= 2 (count filler))  "two count-mode pre-roll items")
-          (is (= 1 (count content)) "one content item")
+          (is (= 2 (count content)) "two content items: one full, one trimmed to fit")
           (is (every? #(.isBefore ^Instant (:start-at %)
                                   ^Instant (:start-at (first content))) filler)
               "every filler starts before the content item")
           (is (= (:finish-at (last filler)) (:start-at (first content)))
-              "content begins exactly when pre-roll ends"))))))
+              "content begins exactly when pre-roll ends")
+          (is (= block-end (:finish-at (last content)))
+              "the trimmed content event ends exactly at block-end")
+          (is (< (.getSeconds ^Duration
+                              (t/duration-between (:start-at (last content))
+                                                  (:finish-at (last content))))
+                 (.getSeconds ^Duration dur-30m))
+              "the second content event is trimmed (shorter than a full episode)"))))))
 
 (deftest emit-block-pre-roll-duration-mode-respects-preset-duration
   (testing "duration-mode pre filler fills only its preset duration, not the block"
@@ -373,7 +384,11 @@
               "content starts after exactly 10 minutes of pre-roll"))))))
 
 (deftest emit-block-injects-mid-roll-between-items
-  (testing "mid filler appears between consecutive content items, not after the last"
+  (testing "mid filler appears between every pair of consecutive content items;
+            with looping playback, the content loop fills the block as long
+            as items fit, so multiple mid-roll inserts are emitted"
+    ;; Setup: 2 content items of 10m + mid-filler of 5m (count=1).
+    ;; 1h block accommodates (10m + 5m mid) × 4 = 60m.
     (let [items [{:media-items/id 1 :media-versions/duration (Duration/ofMinutes 10)}
                  {:media-items/id 2 :media-versions/duration (Duration/ofMinutes 10)}]
           slot  {:schedule-slots/id             1
@@ -382,7 +397,8 @@
                  :schedule-slots/tail-mode      "none"
                  :schedule-slots/mid-filler-id  51
                  :schedule-slots/playback-order "chronological"}
-          cur   (make-cursor t0)]
+          cur   (make-cursor t0)
+          block-end t1]   ; t0 + 1h
       (with-redefs [media-db/get-collection     (fn [_ _] {:collections/id 7
                                                            :collections/kind "manual"})
                     col-db/resolve-collection   (fn [_ _] items)
@@ -391,28 +407,71 @@
         (let [[events _] (core/emit-block nil cur slot {} 1 {})
               content    (filter #(#{1 2} (:media-item-id %)) events)
               filler     (filter #(= 99  (:media-item-id %)) events)]
-          (is (= 2 (count content)) "both content items emitted")
-          (is (= 1 (count filler))  "exactly one mid-roll insert (between the two items)")
-          (is (= (:finish-at (first content)) (:start-at (first filler)))
-              "mid filler starts when the first item ends")
-          (is (= (:finish-at (first filler)) (:start-at (second content)))
-              "second item starts when mid filler ends"))))))
+          (is (= 4 (count content)) "the 1h block holds 4 content items (10m each)")
+          (is (= 4 (count filler))  "one mid-roll insert between each content pair")
+          (is (= 8 (count events))  "4 content + 4 mid = 8 total")
+          ;; Every filler is immediately preceded by a content event (mid-roll)
+          (is (every? (fn [f]
+                        (some #(= (:finish-at %) (:start-at f)) content))
+                      filler)
+              "every mid-roll filler is immediately preceded by a content event")
+          (is (every? (fn [c]
+                        (some #(= (:finish-at c) (:start-at %)) filler))
+                      (butlast content))
+              "every content event except the last is immediately followed by a mid-roll filler")
+          (is (= block-end (:finish-at (last events)))
+              "the block is filled exactly to block-end"))))))
+
+(deftest emit-block-packs-two-content-items-into-1h-block-without-filler
+  (testing "REGRESSION (live symptom 2026-07-16): a 1h block slot with
+            30-min content and no tail/post filler configured packs TWO
+            content items.  The pre-fix live build emitted only ONE because
+            the older emit-block did not loop the content enumerator after
+            the first fit.  The local code packs 30+30=60m exactly; tail
+            overflow is empty because no filler is configured."
+    (let [slot (pre-slot {})   ; no pre/mid/post/tail filler
+          cur  (make-cursor t0)
+          block-end t1]        ; t0 + 1h
+      (with-redefs [media-db/get-media-item     (fn [_ _] content-item)
+                    filler-db/get-filler-preset (fn [_ _] nil)   ; no presets anywhere
+                    filler-db/load-filler-items (fn [_ _] [])]
+        (let [[events _] (core/emit-block nil cur slot {} 1 {})
+              content    (filter #(= 1 (:media-item-id %)) events)]
+          (is (= 2 (count content))      "two content events emitted in 1h block")
+          (is (= t0 (:start-at (first content))))
+          (is (= block-end (:finish-at (last content))) "block fully covered")
+          (is (= (.getSeconds ^Duration dur-30m)
+                 (.getSeconds ^Duration
+                              (t/duration-between (:start-at (first content))
+                                                  (:finish-at (first content)))))
+              "first content is a full 30m episode")
+          (is (= (.getSeconds ^Duration dur-30m)
+                 (.getSeconds ^Duration
+                              (t/duration-between (:start-at (second content))
+                                                  (:finish-at (second content)))))
+              "second content is a full 30m episode"))))))
 
 (deftest emit-block-injects-post-roll-after-last-item
-  (testing "post filler follows the last content item"
+  (testing "with looping playback, post-roll never fires because the content
+            loop is bounded by the block-end (the empty-items branch is
+            unreachable for non-exhausting enumerators).  Here we confirm
+            the post-roll preset is NOT consulted when the content loop
+            fills the block exactly.  To exercise the empty-items branch,
+            see the 'pad-to-end-with-tail-filler' test below."
     (let [slot (pre-slot {:schedule-slots/post-filler-id 52})
+          post-called? (atom false)
           cur  (make-cursor t0)]
       (with-redefs [media-db/get-media-item     (fn [_ _] content-item)
-                    filler-db/get-filler-preset (fn [_ _] post-count-preset)
+                    filler-db/get-filler-preset (fn [_ _]
+                                                   (reset! post-called? true)
+                                                   post-count-preset)
                     filler-db/load-filler-items (fn [_ _] (filler-items 10))]
         (let [[events _] (core/emit-block nil cur slot {} 1 {})
-              content    (filter #(= 1  (:media-item-id %)) events)
-              filler     (filter #(= 99 (:media-item-id %)) events)]
-          (is (= 1 (count content)) "one content item")
-          (is (= 2 (count filler))  "two count-mode post-roll items")
-          (is (every? #(not (.isBefore ^Instant (:start-at %)
-                                       ^Instant (:finish-at (first content)))) filler)
-              "every post-roll item starts at or after the content finishes"))))))
+              content    (filter #(= 1  (:media-item-id %)) events)]
+          (is (= 2 (count content))   "two content items packed in 1h block")
+          (is (false? @post-called?)  "post-roll preset is NOT consulted")
+          (is (empty? (filter #(= 99 (:media-item-id %)) events))
+              "no post-roll filler events emitted"))))))
 
 (deftest emit-count-injects-pre-and-post-roll
   (testing "emit-count wraps its N items with pre- and post-roll filler"
