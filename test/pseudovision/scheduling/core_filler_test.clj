@@ -41,9 +41,18 @@
 (def ^:private fallback-filler-preset
   {:filler-presets/id 43 :filler-presets/mode "duration" :filler-presets/role "fallback"})
 
-;; Channel with fallback filler configured
+;; Channel with fallback filler configured.
+;; Includes :channels/slug so the channel-catalog fallback in
+;; scheduling.core/load-items does not throw ex-info when a slot has no
+;; collection-id and no media-item-id (the auto-path that PR #145 made
+;; loud).  The empty-block-slot tests below ALSO need to redef
+;; `media-db/resolve-playable-by-channel-tag` to return [] because their
+;; slot deliberately has no source, and the slug means the fallback WILL
+;; be invoked; the assertions remain that no content was emitted.
 (def ^:private channel
-  {:channels/id 1 :channels/fallback-filler-id 43})
+  {:channels/id 1
+   :channels/slug "test"
+   :channels/fallback-filler-id 43})
 
 ;; Slot helpers — no content source means load-items returns []
 (defn- empty-block-slot [dur tail-mode tail-filler-id]
@@ -97,8 +106,9 @@
     ;; Slot: no content, 1h block, tail_mode=filler
     (let [slot (empty-block-slot dur-1h "filler" 42)
           cur  (make-cursor t0)]
-      (with-redefs [filler-db/get-filler-preset (fn [_ _] tail-filler-preset)
-                    filler-db/load-filler-items  (fn [_ _] (filler-items 20))]
+      (with-redefs [media-db/resolve-playable-by-channel-tag  (fn [_ _] [])
+                    filler-db/get-filler-preset              (fn [_ _] tail-filler-preset)
+                    filler-db/load-filler-items              (fn [_ _] (filler-items 20))]
         (let [[events cursor'] (core/emit-block nil cur slot channel 1 {})]
           (is (pos? (count events))          "filler events should be emitted")
           (is (= t0 (:start-at (first events))) "filler starts at block start")
@@ -162,8 +172,9 @@
     (let [slot {:schedule-slots/id 1 :schedule-slots/playback-order "chronological"}
           cur  (make-cursor t0)
           opts {:flood-end t2 :seed 0}]
-      (with-redefs [filler-db/get-filler-preset (fn [_ _] fallback-filler-preset)
-                    filler-db/load-filler-items  (fn [_ _] (filler-items 30))]
+      (with-redefs [media-db/resolve-playable-by-channel-tag  (fn [_ _] [])
+                    filler-db/get-filler-preset              (fn [_ _] fallback-filler-preset)
+                    filler-db/load-filler-items              (fn [_ _] (filler-items 30))]
         (let [[events cursor'] (core/emit-flood nil cur slot channel 1 opts)]
           (is (pos? (count events))           "filler events emitted")
           (is (every? #(= 99 (:media-item-id %)) events) "all events are filler")
@@ -318,8 +329,9 @@
   (testing "filler enumerator position is saved back to the cursor after fill"
     (let [slot (empty-block-slot (Duration/ofMinutes 10) "filler" 42)
           cur  (make-cursor t0)]
-      (with-redefs [filler-db/get-filler-preset (fn [_ _] tail-filler-preset)
-                    filler-db/load-filler-items  (fn [_ _] (filler-items 20))]
+      (with-redefs [media-db/resolve-playable-by-channel-tag  (fn [_ _] [])
+                    filler-db/get-filler-preset              (fn [_ _] tail-filler-preset)
+                    filler-db/load-filler-items              (fn [_ _] (filler-items 20))]
         (let [[_ cur1] (core/emit-block nil cur slot channel 1 {})]
           (is (contains? (:enumerator-states cur1) "filler:tail:42")
               "cursor should have saved enumerator state under the filler preset key"))))))
