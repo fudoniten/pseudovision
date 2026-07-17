@@ -174,7 +174,7 @@
                         (catch java.lang.reflect.InvocationTargetException e
                           (throw (.getCause e)))))))]
     (Proxy/newProxyInstance
-      (.getContextClassLoader (ClassLoader/getSystemClassLoader))
+      (.getContextClassLoader (Thread/currentThread))
       (into-array Class [Connection])
       handler)))
 
