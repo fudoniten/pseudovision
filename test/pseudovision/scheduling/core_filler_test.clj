@@ -7,6 +7,8 @@
             [pseudovision.db.filler :as filler-db]
             [pseudovision.db.media :as media-db]
             [pseudovision.db.collections :as col-db]
+            [pseudovision.media.grout :as grout]
+            [pseudovision.media.grout-source :as grout-source]
             [pseudovision.util.time :as t])
   (:import [java.time Instant Duration]))
 
@@ -212,6 +214,101 @@
         (let [[events cursor'] (core/emit-flood nil cur slot {} 1 opts)]
           (is (= 1 (count events)) "only the one episode that fit is emitted")
           (is (= flood-end (:next-start cursor')) "cursor still advances to flood-end"))))))
+
+;; ---------------------------------------------------------------------------
+;; Mixed-duration packing — the "one episode then dead air" regression
+;;
+;; Real station pools mix runtimes (a 22-min sitcom, an occasional double-length
+;; or a movie).  The pre-fix engine abandoned the rest of a flood window / block
+;; the moment ONE item was too long for the remaining time, stranding every
+;; shorter item still waiting in the pool.  The result was a single episode
+;; followed by dead air.  The fix skips the oversized item and keeps packing.
+;; ---------------------------------------------------------------------------
+
+(defn- mixed-episodes []
+  ;; 22-min, 45-min, 22-min: in a 60-min window the 45-min item can only fit if
+  ;; it plays first; picked second it must be skipped so BOTH 22-min items land.
+  [{:media-items/id 1 :media-versions/duration (Duration/ofMinutes 22)}
+   {:media-items/id 2 :media-versions/duration (Duration/ofMinutes 45)}
+   {:media-items/id 3 :media-versions/duration (Duration/ofMinutes 22)}])
+
+(deftest emit-flood-packs-multiple-episodes-skipping-oversized-item
+  (testing "REGRESSION (dead-air symptom): a flood window packs every episode
+            that fits, skipping the oversized middle item, instead of emitting
+            one episode and abandoning the rest of the window to dead air"
+    (let [slot {:schedule-slots/id 1
+                :schedule-slots/collection-id 7
+                :schedule-slots/playback-order "chronological"}
+          cur  (make-cursor t0)
+          opts {:flood-end t1 :seed 0}]   ; 60-minute flood window, no filler
+      (with-redefs [media-db/get-collection   (fn [_ _] {:collections/id 7
+                                                         :collections/kind "manual"})
+                    col-db/resolve-collection (fn [_ _] (mixed-episodes))]
+        (let [[events _] (core/emit-flood nil cur slot {} 1 opts)
+              content    (filter #(#{1 2 3} (:media-item-id %)) events)]
+          (is (= 2 (count content))
+              "two 22-min episodes packed (the 45-min item is skipped, not blocking)")
+          (is (= #{1 3} (set (map :media-item-id content)))
+              "specifically the two episodes that fit; the oversized one is skipped")
+          (is (= t0 (:start-at (first content))))
+          (is (= (t/add-duration t0 (Duration/ofMinutes 44)) (:finish-at (last content)))
+              "content packs 44 minutes back-to-back (2 × 22m)"))))))
+
+(deftest emit-block-packs-multiple-episodes-skipping-oversized-item
+  (testing "REGRESSION: a fixed-duration block packs every episode that fits,
+            skipping an oversized item, rather than stopping after one"
+    (let [slot {:schedule-slots/id 1
+                :schedule-slots/collection-id 7
+                :schedule-slots/block-duration dur-1h
+                :schedule-slots/tail-mode "filler"   ; no preset → remainder empty
+                :schedule-slots/playback-order "chronological"}
+          cur  (make-cursor t0)]
+      (with-redefs [media-db/get-collection   (fn [_ _] {:collections/id 7
+                                                         :collections/kind "manual"})
+                    col-db/resolve-collection (fn [_ _] (mixed-episodes))
+                    filler-db/get-filler-preset (fn [_ _] nil)]
+        (let [[events _] (core/emit-block nil cur slot {} 1 {})
+              content    (filter #(#{1 2 3} (:media-item-id %)) events)]
+          (is (= 2 (count content))
+              "two 22-min episodes packed into the 1h block; 45-min item skipped")
+          (is (= #{1 3} (set (map :media-item-id content))))
+          (is (= (t/add-duration t0 (Duration/ofMinutes 44)) (:finish-at (last content)))))))))
+
+;; ---------------------------------------------------------------------------
+;; Grout channel-mapped filler fallback — pads gaps with no preset configured
+;;
+;; When a slot/channel has NO filler preset, gap-filling roles (tail/fallback/
+;; post) fall back to whatever Grout has mapped to the channel, so the remainder
+;; of a slot fills instead of going dark.
+;; ---------------------------------------------------------------------------
+
+(deftest emit-flood-fills-remainder-with-grout-when-no-preset
+  (testing "with no filler preset configured, the flood remainder is padded with
+            channel-mapped Grout clips rather than left as dead air"
+    (let [;; one 45-min episode in a 60-min window leaves a 15-min remainder.
+          slot {:schedule-slots/id 1
+                :schedule-slots/media-item-id 1
+                :schedule-slots/playback-order "chronological"}
+          cur  (make-cursor t0)
+          grout-clips [{:media-items/id 99 :media-versions/duration (Duration/ofMinutes 5)}
+                       {:media-items/id 98 :media-versions/duration (Duration/ofMinutes 5)}
+                       {:media-items/id 97 :media-versions/duration (Duration/ofMinutes 5)}]
+          opts {:flood-end t1 :seed 0 :pack-filler? true
+                :grout {:enabled? true :base-url "http://grout"}}]
+      (with-redefs [media-db/get-media-item     (fn [_ _] {:media-items/id 1
+                                                           :media-versions/duration (Duration/ofMinutes 45)})
+                    filler-db/get-filler-preset (fn [_ _] nil)      ; no preset anywhere
+                    grout/enabled?              (fn [_] true)
+                    grout-source/grout-filler-items (fn [_ _ _ _ _ _] grout-clips)]
+        (let [[events _] (core/emit-flood nil cur slot
+                                          {:channels/id 1 :channels/name "Sitcom Spectrum"} 1 opts)
+              content    (filter #(= 1 (:media-item-id %)) events)
+              filler     (filter #(#{97 98 99} (:media-item-id %)) events)]
+          (is (= 1 (count content)) "the one 45-min episode that fits is emitted")
+          (is (pos? (count filler))
+              "the 15-min remainder is padded with channel-mapped Grout filler")
+          (is (every? #(#{97 98 99} (:media-item-id %)) filler)
+              "filler comes from the Grout channel pool"))))))
 
 ;; ---------------------------------------------------------------------------
 ;; emit-block — filler enumerator state persisted in cursor
