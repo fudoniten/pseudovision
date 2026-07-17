@@ -115,16 +115,27 @@
         item, fetched directly.
      3. Channel-catalog fallback (the new path) — when a slot has neither a
         collection-id nor a media-item-id, the schedule is implicitly asking
-        for \"anything tagged for this channel.\"  The slot is resolved
-        against the channel's `channel:<name>` dimension tag through
-        `media-db/resolve-playable-by-channel-tag`.  This is the contract for
-        \"auto\" schedules whose slots carry no explicit content source — the
-        pre-fix `:else []` branch silently returned an empty vector and
-        every such slot produced zero events (see pitfall-51 in the
-        pseudovision-ecosystem-development skill).  A slot whose
-        `required-tags` filter strips every catalog item is still
-        legitimately empty and produces zero events — the fallback only
-        adds the resolution path, not content."
+        for anything tagged for this channel.  The slot is resolved against
+        the channel's `channel:<slug>` dimension tag through
+        `media-db/resolve-playable-by-channel-tag`.  The lookup uses
+        `:channels/slug`, NOT `:channels/name`, because the production
+        `metadata_tags` namespace stores curated lowercase slugs (e.g.
+        `channel:spectrum` for the channel whose display name is
+        'Sitcom Spectrum') — the display-name form returned zero events
+        on every rebuild for the four (auto) channels (verified live
+        2026-07-17; see the #145 regression notes).  If `:channels/slug`
+        is nil, this branch THROWS an `ex-info` carrying `:channel-id`,
+        `:channel-name`, and a `:fix` hint rather than silently returning
+        an empty vector.  Loud error is the contract — the pre-fix code's
+        silent zero-event build was the bug we just fixed; if the data
+        layer breaks again, the deploy log shows it immediately.  This is
+        the contract for (auto) schedules whose slots carry no explicit
+        content source — the pre-fix `:else []` branch silently returned
+        an empty vector and every such slot produced zero events (see
+        pitfall-51 in the pseudovision-ecosystem-development skill).  A
+        slot whose `required-tags` filter strips every catalog item is
+        still legitimately empty and produces zero events — the fallback
+        only adds the resolution path, not content."
   [db slot channel]
   (let [required-tags (or (:schedule-slots/required-tags slot) [])
         excluded-tags (or (:schedule-slots/excluded-tags slot) [])
@@ -150,18 +161,53 @@
                   [item])
 
                 :else
-                (let [{ch-name :channels/name} channel]
-                  (if ch-name
-                    (let [channel-tag (str "channel:" ch-name)]
-                      (log/info "Loading channel-catalog items for slot"
-                               {:slot-id slot-id
-                                :channel-id (:channels/id channel)
-                                :channel-name ch-name
-                                :channel-tag channel-tag})
-                      (media-db/resolve-playable-by-channel-tag db channel-tag))
-                    (do (log/warn "Slot has no content source and no channel; emitting nothing"
-                                  {:slot-id slot-id})
-                        []))))
+                ;; Channel-catalog fallback — see `load-items` docstring.
+                ;; Reads the *slug* field (NOT the display name) because the
+                ;; production tags are stored as curated slugs (e.g.
+                ;; `channel:spectrum` for "Sitcom Spectrum"); using the
+                ;; display name returned 0 items on every rebuild for the
+                ;; four (auto) channels (verified live 2026-07-17 from the
+                ;; PV pod logs).  There is intentionally no fallback to the
+                ;; display name — if a channel has no slug, this branch
+                ;; throws loud so the operator fixes the data instead of
+                ;; letting the build silently emit zero events again.
+                ;;
+                ;; Test fixtures and dev scripts sometimes pass `{}` or
+                ;; `nil` as the channel; those are "no channel in scope"
+                ;; cases, not the data-layer bug PR #145 was created to
+                ;; catch.  Both are treated as "no fallback available"
+                ;; and the function returns [] silently — the pre-fix
+                ;; contract for those callers.
+                (cond
+                  ;; No channel object: there is no slug to look up.
+                  (or (nil? channel) (nil? (:channels/id channel)))
+                  (do (log/warn "Slot has no content source and no channel; emitting nothing"
+                                {:slot-id slot-id})
+                      [])
+
+                  ;; Channel object provided but lacks the curated slug:
+                  ;; this is the data-layer bug; refuse to silently emit
+                  ;; zero events and throw so deploy logs make it obvious.
+                  (nil? (:channels/slug channel))
+                  (do (log/error "Slot is on an auto schedule but its channel has no slug — refusing to silently emit zero events. Set channels.slug for this channel and rerun the rebuild."
+                                {:slot-id slot-id
+                                 :channel-id (:channels/id channel)
+                                 :channel-name (:channels/name channel)})
+                      (throw (ex-info "channel has no slug; cannot run channel-catalog fallback"
+                                      {:slot-id slot-id
+                                       :channel-id (:channels/id channel)
+                                       :channel-name (:channels/name channel)
+                                       :fix "SET channels.slug = '<curated-slug>' WHERE id = <channel-id>"})))
+
+                  :else
+                  (let [slug       (:channels/slug channel)
+                        channel-tag (str "channel:" slug)]
+                    (log/info "Loading channel-catalog items for slot"
+                              {:slot-id slot-id
+                               :channel-id (:channels/id channel)
+                               :channel-slug slug
+                               :channel-tag channel-tag})
+                    (media-db/resolve-playable-by-channel-tag db channel-tag))))
         ;; Apply tag filters if specified
         tagged (if (or (seq required-tags) (seq excluded-tags))
                  (do

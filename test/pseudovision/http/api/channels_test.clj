@@ -16,6 +16,12 @@
    :channels/uuid      #uuid "00000000-0000-0000-0000-000000000001"
    :channels/number    "2"
    :channels/name      "Test Channel"
+   ;; :channels/slug is required by the Channel response schema added in
+   ;; PR #145.  Without it the schema rejects the row and the handler
+   ;; 500s on "Request coercion failed" (which is why #145 was needed —
+   ;; the slug contract enforces data-layer fixes before they hit the
+   ;; scheduling engine).
+   :channels/slug      "test-channel"
    :channels/sort-number 2.0
    :channels/streaming-mode "ts"
    :channels/ffmpeg-profile-id 1

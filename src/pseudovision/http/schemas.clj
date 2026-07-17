@@ -15,6 +15,16 @@
 (def ChannelNumber
   [:string {:min 1 :description "Channel number, e.g. \"2\" or \"4.1\""}])
 
+;; Canonical lowercase key used to resolve a channel's content via the
+;; `channel:<slug>` tag in metadata_tags.  Format constraints are
+;; enforced at the DB layer (the migration adds a CHECK on the column
+;; pattern if needed) and by the loud-error contract in
+;; `scheduling.core/load-items` — see PR #145.
+(def ChannelSlug
+  [:string {:min 1
+            :max 64
+            :description "Canonical lowercase slug; matches metadata_tags.name = 'channel:<slug>'."}])
+
 (def SortNumber
   [:double {:description "Numeric sort order; derived from :number if omitted on create"}])
 
@@ -84,6 +94,7 @@
    [:number                         ChannelNumber]
    [:sort-number                    SortNumber]
    [:name                           :string]
+   [:slug                           :string]
    [:description                    {:optional true} [:maybe :string]]
    [:group-name                     {:optional true} [:maybe :string]]
    [:categories                     {:optional true} [:maybe :string]]
@@ -123,6 +134,13 @@
   [:map
    [:number                         ChannelNumber]
    [:name                           :string]
+   ;; :slug is the canonical key that the channel-catalog fallback in
+   ;; scheduling.core/load-items uses to resolve an `auto` slot's content
+   ;; via the `channel:<slug>` dimension tag.  It is required at create
+   ;; time so a channel can never get into the live cluster without a
+   ;; curated slug — without one, the fallback throws ex-info on every
+   ;; rebuild (see #145).
+   [:slug                           ChannelSlug]
    [:uuid                           {:optional true} :uuid]
    [:sort-number                    {:optional true} SortNumber]
    [:group-name                     {:optional true} [:maybe :string]]
@@ -154,6 +172,7 @@
   [:map
    [:number                         {:optional true} ChannelNumber]
    [:name                           {:optional true} :string]
+   [:slug                           {:optional true} ChannelSlug]
    [:sort-number                    {:optional true} SortNumber]
    [:group-name                     {:optional true} [:maybe :string]]
    [:categories                     {:optional true} [:maybe :string]]
