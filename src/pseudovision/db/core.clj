@@ -166,7 +166,7 @@
    reimplement the ~30 methods of `java.sql.Connection` by hand."
   [^Connection conn]
   (let [handler (proxy [InvocationHandler] []
-                  (invoke [_ _ method args]
+                  (invoke [_proxy method args]
                     (if (= "close" (.getName method))
                       nil
                       (try
