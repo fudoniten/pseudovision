@@ -32,6 +32,7 @@
             [pseudovision.db.playouts  :as playout-db]
             [pseudovision.db.schedules :as schedules-db]
             [pseudovision.db.collections :as col-db]
+            [pseudovision.media.grout        :as grout]
             [pseudovision.media.grout-source :as grout-source]
             [pseudovision.scheduling.cursor      :as cursor]
             [pseudovision.scheduling.enumerators :as enum]
@@ -274,10 +275,43 @@
                              m events))))
     [events cursor]))
 
+(defn- grout-channel-fallback
+  "Last-resort gap fill for a `role` that has NO filler preset configured on the
+   slot or channel.  Rather than leave dead air, pull channel-mapped clips
+   straight from Grout — any media Grout has tagged for this channel that fits
+   the gap [from, to] — and pack the window with them.
+
+   This is the \"filler mapped to channel\" contract: Grout already scopes filler
+   by channel, so a PV channel doesn't need a per-channel filler collection or a
+   `fallback_filler_id` wired up for its gaps to fill.  A synthetic empty preset
+   (no grout-tags) makes the query channel + gap-duration only, i.e. \"any clip
+   for this channel that fits.\"
+
+   Best-effort: returns [[] cursor] (a genuine gap, exactly as before) when Grout
+   is disabled/unreachable, the window is empty, or Grout returns nothing."
+  [db cursor slot channel role from to playout-id opts]
+  (let [grout (:grout opts)]
+    (if (and to
+             (grout/enabled? grout)
+             (.isBefore ^Instant from ^Instant to))
+      (let [items (filterv playable?
+                           (grout-source/grout-filler-items db grout channel from to {}))]
+        (if (seq items)
+          (do (log/info "Filling gap with channel-mapped Grout filler (no preset configured)"
+                        {:slot-id (:schedule-slots/id slot)
+                         :channel (:channels/name channel)
+                         :role    role
+                         :candidates (count items)})
+              (pack-filler cursor slot role from to items playout-id opts))
+          [[] cursor]))
+      [[] cursor])))
+
 (defn- apply-filler
   "Resolves the filler preset for `role`, loads its items, emits filler events,
-   and returns [filler-events updated-cursor].  Returns [[] cursor] when no
-   preset is configured for the role on this slot/channel.
+   and returns [filler-events updated-cursor].  When no preset is configured for
+   the role on this slot/channel, gap-filling roles (:tail, :fallback, :post)
+   fall back to channel-mapped Grout filler (see grout-channel-fallback); other
+   roles, or a disabled/empty Grout, yield [[] cursor] (a genuine gap).
 
    The fill window depends on the role:
      - gap roles (:tail, :fallback) fill the interval [from, to] exactly.
@@ -338,8 +372,15 @@
                               (:events result))
                 cursor' (cursor/save-enumerator cursor ckey (:enumerator result))]
             [events cursor'])))
-      [[] cursor])
-    [[] cursor]))
+      ;; preset-ref resolved but the row vanished — treat as unconfigured.
+      (grout-channel-fallback db cursor slot channel role from to playout-id opts))
+    ;; No preset configured for this role at slot or channel level: for the
+    ;; gap-filling roles, fall back to channel-mapped Grout filler so the gap
+    ;; doesn't become dead air.  Inline roles (:pre, :mid) keep the old "nothing"
+    ;; behaviour — they decorate content, they don't pad dead air.
+    (if (#{:tail :fallback :post} role)
+      (grout-channel-fallback db cursor slot channel role from to playout-id opts)
+      [[] cursor])))
 
 (defn- next-fixed-start
   "Returns the next wall-clock Instant when `slot` would fire on or after `after`.
@@ -464,6 +505,7 @@
     (loop [cursor-time (events-end pre-events from)
            cur         cur0
            e           (cursor/get-enumerator cur0 ckey items order enum-opts)
+           skipped     0
            events      (vec pre-events)]
       (let [remaining (t/duration-between cursor-time block-end)]
         (cond
@@ -480,51 +522,67 @@
                       :fill-mode "completed"})
             [events c'])
 
-          ;; No more content; inject post-roll filler, then pad the rest with
-          ;; tail filler.
-          (empty? (:items e))
-          (let [base-cursor (cursor/save-enumerator cur ckey e)
-                [post-events cur1] (apply-filler db base-cursor slot channel
-                                                 :post cursor-time block-end
-                                                 playout-id opts)
-                post-end (events-end post-events cursor-time)
-                [tail-events cur2] (apply-filler db cur1 slot channel
-                                                 :tail post-end block-end
-                                                 playout-id opts)
-                c' (-> cur2
-                       (assoc :next-start block-end)
-                       (cursor/bump-guide-group))]
-            [(into events (into (vec post-events) tail-events)) c'])
+          ;; Either no content at all, or a full pass over the pool found
+          ;; nothing short enough to still fit the block. How the remainder is
+          ;; handled depends on tail_mode.
+          (or (empty? (:items e))
+              (>= skipped (count (:items e))))
+          (let [tail-mode (:schedule-slots/tail-mode slot "none")]
+            (cond
+              ;; tail_mode none, with content still waiting: trim the next item
+              ;; to fill the block exactly, then replay it in full at the next
+              ;; block start (enumerator saved unadvanced).
+              (and (= "none" tail-mode) (seq (:items e)))
+              (let [[item _] (enum/next-item e)
+                    trimmed  {:playout-id    playout-id
+                              :media-item-id (:media-items/id item)
+                              :kind          (sql-util/->pg-enum "event_kind" "content")
+                              :start-at      cursor-time
+                              :finish-at     block-end
+                              :guide-group   guide
+                              :slot-id       (:schedule-slots/id slot)
+                              :is-manual     false}
+                    c' (-> (cursor/save-enumerator cur ckey e)
+                           (assoc :next-start block-end)
+                           (cursor/bump-guide-group))]
+                [(conj events trimmed) c'])
+
+              ;; tail_mode offline: leave the remainder dark (no filler).
+              (= "offline" tail-mode)
+              (let [c' (-> (cursor/save-enumerator cur ckey e)
+                           (assoc :next-start block-end)
+                           (cursor/bump-guide-group))]
+                [events c'])
+
+              ;; tail_mode filler (or none with nothing left to trim): post-roll
+              ;; then pad the rest with tail filler.
+              :else
+              (let [base-cursor (cursor/save-enumerator cur ckey e)
+                    [post-events cur1] (apply-filler db base-cursor slot channel
+                                                     :post cursor-time block-end
+                                                     playout-id opts)
+                    post-end (events-end post-events cursor-time)
+                    [tail-events cur2] (apply-filler db cur1 slot channel
+                                                     :tail post-end block-end
+                                                     playout-id opts)
+                    c' (-> cur2
+                           (assoc :next-start block-end)
+                           (cursor/bump-guide-group))]
+                [(into events (into (vec post-events) tail-events)) c'])))
 
           :else
           (let [[item e'] (enum/next-item e)
                 dur       (item-duration item)
                 to        (t/add-duration cursor-time dur)]
             (if (.isAfter to block-end)
-              ;; Item overflows the block — respect tail_mode
-              (let [cursor-with-enum (cursor/save-enumerator cur ckey e)
-                    [tail-events cursor-after-tail]
-                    (case (:schedule-slots/tail-mode slot "none")
-                      "filler"
-                      (apply-filler db cursor-with-enum slot channel
-                                    :tail cursor-time block-end playout-id opts)
-                      "offline"
-                      [[] cursor-with-enum]
-                      ;; "none": trim the overflowing item to fill the block
-                      ;; exactly, then replay it in full at the next block start.
-                      [[{:playout-id    playout-id
-                         :media-item-id (:media-items/id item)
-                         :kind          (sql-util/->pg-enum "event_kind" "content")
-                         :start-at      cursor-time
-                         :finish-at     block-end
-                         :guide-group   guide
-                         :slot-id       (:schedule-slots/id slot)
-                         :is-manual     false}]
-                       cursor-with-enum])
-                    c' (-> cursor-after-tail
-                           (assoc :next-start block-end)
-                           (cursor/bump-guide-group))]
-                [(into events tail-events) c'])
+              ;; Too long for what's left of the block. Skip past it and keep
+              ;; packing shorter content — abandoning the block on the first
+              ;; overflow stranded the shorter episodes still in the pool (the
+              ;; "one episode then dead air" symptom). The enumerator advances
+              ;; (e') so the oversized item comes around on a later block;
+              ;; `skipped` bounds the scan to one pool cycle. The final remainder
+              ;; is handled per tail_mode in the branch above.
+              (recur cursor-time cur e' (inc skipped) events)
               ;; Item fits — emit it, then inject mid-roll filler before the
               ;; next item (only when more content remains).
               (let [content {:playout-id    playout-id
@@ -539,7 +597,7 @@
                                         (apply-filler db cur slot channel
                                                       :mid to block-end playout-id opts)
                                         [[] cur])]
-                (recur (events-end mid-events to) curm e'
+                (recur (events-end mid-events to) curm e' 0
                        (into events (into [content] mid-events)))))))))))
 
 (defn emit-flood
@@ -557,6 +615,7 @@
                    (t/add-duration (:next-start cursor) (t/hours->duration 2)))]
     (loop [cursor-time (:next-start cursor)
            e           (cursor/get-enumerator cursor ckey items order enum-opts)
+           skipped     0
            events      []]
       (let [remaining (t/duration-between cursor-time end)]
         (cond
@@ -572,8 +631,11 @@
                       :flood-duration (str (t/duration-between (:next-start cursor) end))})
             [events c'])
 
-          ;; Content exhausted before flood-end — fill the tail with fallback filler
-          (empty? (:items e))
+          ;; Either there is no content at all, or a full pass over the pool
+          ;; found nothing short enough to still fit the shrinking window. Pad
+          ;; the remainder [cursor-time, end) with fallback filler.
+          (or (empty? (:items e))
+              (>= skipped (count (:items e))))
           (let [base-cursor (cursor/save-enumerator cursor ckey e)
                 [fill-events cursor'] (apply-filler db base-cursor slot channel
                                                     :fallback cursor-time end
@@ -581,10 +643,11 @@
                 c' (-> cursor'
                        (assoc :next-start end)
                        (cursor/bump-guide-group))]
-            (log/info "emit-flood: items exhausted"
+            (log/info "emit-flood: content packed, remainder padded"
                      {:slot-id (:schedule-slots/id slot)
                       :total-events (count (into events fill-events))
-                      :fill-reason "items-exhausted"
+                      :fill-reason (if (empty? (:items e)) "items-exhausted" "no-item-fits")
+                      :content-events (count events)
                       :filler-events (count fill-events)})
             [(into events fill-events) c'])
 
@@ -593,27 +656,15 @@
                 dur       (item-duration item)
                 to        (t/add-duration cursor-time dur)]
             (if (.isAfter to end)
-              ;; The next item wouldn't fit before the boundary. Rather than
-              ;; leaving [cursor-time, end) as a silent, unfillable hole (no
-              ;; item was ever emitted for it), pad it with fallback filler —
-              ;; the same treatment content-exhaustion gets just above. The
-              ;; enumerator is left unadvanced (saved as `e`, not `e'`) so the
-              ;; overflowing item plays next time instead of being skipped.
-              (let [base-cursor (cursor/save-enumerator cursor ckey e)
-                    [fill-events cursor'] (apply-filler db base-cursor slot channel
-                                                        :fallback cursor-time end
-                                                        playout-id opts)
-                    c' (-> cursor'
-                           (assoc :next-start end)
-                           (cursor/bump-guide-group))]
-                (log/info "emit-flood: item overflow"
-                         {:slot-id (:schedule-slots/id slot)
-                          :total-events (count (into events fill-events))
-                          :fill-reason "overflow"
-                          :overflow-item (:media-items/name item)
-                          :filler-events (count fill-events)})
-                [(into events fill-events) c'])
-              (recur to e'
+              ;; This item is too long for what's left of the window. Rather
+              ;; than abandoning the rest of the slot to filler — which stranded
+              ;; every shorter item still waiting in the pool and produced the
+              ;; "one episode then dead air" symptom — skip past it and keep
+              ;; packing. The enumerator advances (e') so the oversized item
+              ;; comes around again on a later pass; `skipped` bounds the scan to
+              ;; one full pool cycle so a window that nothing fits can't spin.
+              (recur cursor-time e' (inc skipped) events)
+              (recur to e' 0
                      (conj events {:playout-id    playout-id
                                    :media-item-id (:media-items/id item)
                                    :kind          (sql-util/->pg-enum "event_kind" "content")
