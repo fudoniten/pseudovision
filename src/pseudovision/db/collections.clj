@@ -55,27 +55,31 @@
       (into [:and] clauses))))
 
 (defmethod resolve-collection :smart [ds collection]
-  ;; Supported config keys (all optional; "show-id" and "category" are checked
+  ;; Supported config keys (all optional; :show-id and :category are checked
   ;; first and, when present, short-circuit the rest — they resolve through
   ;; pseudovision.db.media's season-aware / tag-inheritance-aware queries
   ;; (shared with the daily-slots ingest path) instead of the flat query below,
   ;; which only matches tags on the row's OWN metadata and cannot express
   ;; "all episodes of show X" or "all episodes whose SHOW carries genre Y"):
-  ;;   "show-id"       — internal id of a show; resolves to its ordered,
+  ;;   :show-id        — internal id of a show; resolves to its ordered,
   ;;                     season-aware episode list (a named-series strip).
-  ;;   "category"      — a genre/category tag (bare or `genre:`-prefixed);
+  ;;   :category       — a genre/category tag (bare or `genre:`-prefixed);
   ;;                     resolves matching shows (expanded to episodes) and
   ;;                     movies, exactly like a `random:<category>` pool at
   ;;                     air time.
-  ;;   "media-type"    — "movie" | "episode" | "music_video" etc.
-  ;;   "include-tags"  — item must have ALL (or ANY) of these tags
-  ;;   "exclude-tags"  — item must have NONE of these tags
-  ;;   "match"         — "all" (default) | "any"  applies to include-tags
-  ;;   "order-by"      — "id" (default) | "title" | "random" | "year"
-  (let [q           (get-in collection [:collections/config "query"] {})
-        show-id     (get q "show-id")
-        category    (get q "category")
-        channel-tag (get q "channel-tag")]
+  ;;   :media-type     — "movie" | "episode" | "music_video" etc.
+  ;;   :include-tags   — item must have ALL (or ANY) of these tags
+  ;;   :exclude-tags   — item must have NONE of these tags
+  ;;   :match          — "all" (default) | "any"  applies to include-tags
+  ;;   :order-by       — "id" (default) | "title" | "random" | "year"
+  ;;
+  ;; Config keys are keyword-typed because the JSONB column reader in db/core
+  ;; parses every JSON value with csk/->kebab-case-keyword. (Tests must
+  ;; pre-kebab their fixtures too — see test/pseudovision/db/collections_test.clj.)
+  (let [q           (get-in collection [:collections/config :query] {})
+        show-id     (get q :show-id)
+        category    (get q :category)
+        channel-tag (get q :channel-tag)]
     (cond
       show-id
       (do (log/info "Resolving smart collection (show-id)"
@@ -90,11 +94,11 @@
                                          :require-tags (when channel-tag [channel-tag])))
 
       :else
-      (let [media-type   (get q "media-type")
-            include-tags (get q "include-tags" [])
-            exclude-tags (get q "exclude-tags" [])
-            match-mode   (get q "match" "all")
-            order-kw     (case (get q "order-by" "id")
+      (let [media-type   (get q :media-type)
+            include-tags (get q :include-tags [])
+            exclude-tags (get q :exclude-tags [])
+            match-mode   (get q :match "all")
+            order-kw     (case (get q :order-by "id")
                            "title"  :mi.title
                            "year"   :mi.year
                            "random" [[:random]]
@@ -118,8 +122,12 @@
   ;; Items are stored in the config JSONB as an ordered list of collection
   ;; references; each referenced collection is resolved recursively and the
   ;; results are concatenated in index order.
-  (let [items (get-in collection [:collections/config "items"] [])]
-    (mapcat (fn [{content-id "content_id" content-kind "content_kind"}]
+  ;;
+  ;; Config keys are keyword-typed because the JSONB column reader in db/core
+  ;; parses every JSON value with csk/->kebab-case-keyword (which kebab-cases
+  ;; underscores — so the JSON key "content_id" arrives as :content-id).
+  (let [items (get-in collection [:collections/config :items] [])]
+    (mapcat (fn [{content-id :content-id content-kind :content-kind}]
               (let [child (db/query-one ds
                             (-> (h/select :*)
                                 (h/from :collections)
@@ -135,8 +143,12 @@
 (defmethod resolve-collection :multi [ds collection]
   ;; A multi-collection merges several peer collections; each member is
   ;; resolved recursively and the results are concatenated.
-  (let [members (get-in collection [:collections/config "members"] [])]
-    (mapcat (fn [{coll-id "collection_id"}]
+  ;;
+  ;; Config keys are keyword-typed because the JSONB column reader in db/core
+  ;; parses every JSON value with csk/->kebab-case-keyword (which kebab-cases
+  ;; underscores — so the JSON key "collection_id" arrives as :collection-id).
+  (let [members (get-in collection [:collections/config :members] [])]
+    (mapcat (fn [{coll-id :collection-id}]
               (let [child (db/query-one ds
                             (-> (h/select :*)
                                 (h/from :collections)
