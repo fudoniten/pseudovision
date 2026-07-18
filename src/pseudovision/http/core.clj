@@ -372,7 +372,7 @@
     {:tags       ["media"]
      :post {:summary   "Trigger an asynchronous library scan"
             :parameters {:path [:map [:id s/LibraryId]]}
-            :responses {202 {:body s/ScanTriggerResult}
+            :responses {202 {:body s/JobSubmitResponse}
                         404 {:body s/APIError}}
             :handler   (med/trigger-scan-handler ctx)}}]
    ["/api/media/scan-all"
