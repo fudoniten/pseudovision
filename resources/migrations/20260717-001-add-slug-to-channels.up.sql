@@ -31,19 +31,33 @@ ALTER TABLE channels
 -- Run idempotently: 1 UPDATE per channel; the subsequent NOT NULL + UNIQUE
 -- step would fail anyway if any row was missed.
 UPDATE channels SET slug = 'infobytes'      WHERE id = 34 AND slug IS NULL;
+--;;
 UPDATE channels SET slug = 'goldenreels'    WHERE id = 35 AND slug IS NULL;
+--;;
 UPDATE channels SET slug = 'muse'           WHERE id = 36 AND slug IS NULL;
+--;;
 UPDATE channels SET slug = 'spotlight'      WHERE id = 37 AND slug IS NULL;
+--;;
 UPDATE channels SET slug = 'nippon'         WHERE id = 38 AND slug IS NULL;
+--;;
 UPDATE channels SET slug = 'toontown'       WHERE id = 39 AND slug IS NULL;
+--;;
 UPDATE channels SET slug = 'hua'            WHERE id = 40 AND slug IS NULL;
+--;;
 UPDATE channels SET slug = 'tasty'          WHERE id = 41 AND slug IS NULL;
+--;;
 UPDATE channels SET slug = 'enigma'         WHERE id = 42 AND slug IS NULL;
+--;;
 UPDATE channels SET slug = 'prime'          WHERE id = 43 AND slug IS NULL;
+--;;
 UPDATE channels SET slug = 'spectrum'       WHERE id = 44 AND slug IS NULL;
+--;;
 UPDATE channels SET slug = 'britannia'      WHERE id = 45 AND slug IS NULL;
+--;;
 UPDATE channels SET slug = 'galaxy'         WHERE id = 46 AND slug IS NULL;
+--;;
 UPDATE channels SET slug = 'chronicles'     WHERE id = 47 AND slug IS NULL;
+--;;
 
 --;;
 
