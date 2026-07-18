@@ -122,8 +122,12 @@
   ;; Items are stored in the config JSONB as an ordered list of collection
   ;; references; each referenced collection is resolved recursively and the
   ;; results are concatenated in index order.
-  (let [items (get-in collection [:collections/config "items"] [])]
-    (mapcat (fn [{content-id "content_id" content-kind "content_kind"}]
+  ;;
+  ;; Config keys are keyword-typed because the JSONB column reader in db/core
+  ;; parses every JSON value with csk/->kebab-case-keyword (which kebab-cases
+  ;; underscores — so the JSON key "content_id" arrives as :content-id).
+  (let [items (get-in collection [:collections/config :items] [])]
+    (mapcat (fn [{content-id :content-id content-kind :content-kind}]
               (let [child (db/query-one ds
                             (-> (h/select :*)
                                 (h/from :collections)
@@ -139,8 +143,12 @@
 (defmethod resolve-collection :multi [ds collection]
   ;; A multi-collection merges several peer collections; each member is
   ;; resolved recursively and the results are concatenated.
-  (let [members (get-in collection [:collections/config "members"] [])]
-    (mapcat (fn [{coll-id "collection_id"}]
+  ;;
+  ;; Config keys are keyword-typed because the JSONB column reader in db/core
+  ;; parses every JSON value with csk/->kebab-case-keyword (which kebab-cases
+  ;; underscores — so the JSON key "collection_id" arrives as :collection-id).
+  (let [members (get-in collection [:collections/config :members] [])]
+    (mapcat (fn [{coll-id :collection-id}]
               (let [child (db/query-one ds
                             (-> (h/select :*)
                                 (h/from :collections)

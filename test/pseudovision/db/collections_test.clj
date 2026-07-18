@@ -224,3 +224,43 @@
             "show-id branch should join the seasons table")
         (is (not (.contains s "metadata_tags"))
             "show-id branch does not need a metadata_tags join")))))
+
+;; ---------------------------------------------------------------------------
+;; :playlist and :multi regression — same JSONB-key mismatch class as :smart.
+;; csk/->kebab-case-keyword kebabs underscores, so the JSON key "content_id"
+;; arrives as :content-id (not :content_id, and not "content_id").
+;; ---------------------------------------------------------------------------
+
+(deftest playlist-resolves-from-jsonb-round-trip
+  (testing ":playlist with keyword-key config hits the playlist branch and recurses"
+    (let [child-rows (atom [{:collections/id 99 :collections/kind "manual"
+                             :collections/config {}}])
+          coll {:collections/id 73
+                :collections/kind "playlist"
+                :collections/config {:items [{:content-id 1 :content-kind "collection"}
+                                             {:content-id 2 :content-kind "collection"}]}}
+          seen-query-one (atom [])]
+      (with-redefs [db/query-one (fn [_ sql]
+                                   (swap! seen-query-one conj (first sql))
+                                   (first @child-rows))
+                    db/query      (fn [_ _] [])]
+        ;; First iteration consumes the first child; second iteration gets nil.
+        ;; Either way, the test asserts (a) db/query-one was called for each
+        ;; item (proving the destructure worked) and (b) no exception thrown.
+        (sut/resolve-collection nil coll))
+      (is (= 2 (count @seen-query-one))
+          "playlist should call db/query-one once per :items entry"))))
+
+(deftest multi-resolves-from-jsonb-round-trip
+  (testing ":multi with keyword-key config hits the multi branch and recurses"
+    (let [coll {:collections/id 74
+                :collections/kind "multi"
+                :collections/config {:members [{:collection-id 1}
+                                              {:collection-id 2}]}}
+          seen-query-one (atom [])]
+      (with-redefs [db/query-one (fn [_ sql]
+                                   (swap! seen-query-one conj (first sql))
+                                   nil)]
+        (sut/resolve-collection nil coll))
+      (is (= 2 (count @seen-query-one))
+          "multi should call db/query-one once per :members entry"))))
