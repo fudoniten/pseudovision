@@ -735,9 +735,6 @@
   [:map
    [:media-item-id MediaItemRef]])
 
-(def ScanTriggerResult
-  [:map [:message :string]])
-
 ;; ---------------------------------------------------------------------------
 ;; Playouts & events
 ;; ---------------------------------------------------------------------------
@@ -897,7 +894,8 @@
   [:enum {:description "Type of async job"}
    :playout/rebuild
    :playout/ensure-all
-   :media/scan-all])
+   :media/scan-all
+   :media/library-scan])
 
 (def JobStatus
   [:enum {:description "Current job status"}
