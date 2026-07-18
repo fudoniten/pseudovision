@@ -190,20 +190,25 @@
                   :collections/kind "smart"
                   :collections/config {:query {:category "adult_content"
                                                :channel-tag "channel:toontown"}}}
-          captured (atom nil)]
-      (with-redefs [db/query (fn [_ sql] (reset! captured sql) [])]
+          captured (atom [])]
+      (with-redefs [db/query (fn [_ sql] (swap! captured conj sql) [])]
         (sut/resolve-collection nil coll))
-      (let [s (first @captured)]
-        (is (.contains s "adult_content")
-            "category branch should emit a WHERE filter for the category tag")
-        (is (.contains s "channel:toontown")
-            "category branch should emit a WHERE filter for the channel-tag scope")
+      (let [sql      (first @captured)
+            sql-text (or (first sql) "")
+            params   (vec (rest sql))]
+        (is (some? sql) "category branch should issue a SQL query")
+        (is (.contains sql-text "LOWER(t.name)")
+            "category branch should match the tag via LOWER(t.name) (case-insensitive)")
+        (is (some #(= "adult_content" (str %)) params)
+            "category parameter should bind 'adult_content'")
+        (is (some #(= "channel:toontown" (str %)) params)
+            "channel-tag parameter should bind 'channel:toontown' to scope the category to one channel")
         ;; The :else branch's query is `SELECT mi.*, mv.duration FROM
         ;; media_items mi LEFT JOIN media_versions mv ON mv.media_item_id =
         ;; mi.id ORDER BY mi.id` — it does NOT touch media_items twice, so a
         ;; count > 1 of media_items is a strong signal the category branch
         ;; ran (which joins top-level + season + play items).
-        (is (> (count (re-seq #"media_items" s)) 1)
+        (is (> (count (re-seq #"media_items" sql-text)) 1)
             "category branch joins the show/season/play chain (more than one media_items reference)")))))
 
 (deftest smart-show-id-from-jsonb-round-trip
