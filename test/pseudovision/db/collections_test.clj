@@ -165,3 +165,57 @@
         (is (.contains s "channel:hua"))
         (is (> (count (re-seq #"EXISTS" s))
                (count (re-seq #"EXISTS" (first sql-unscoped)))))))))
+
+;; ---------------------------------------------------------------------------
+;; Regression test for live toontown symptom (2026-07-18):
+;; The JSONB column reader in db/core.clj parses every JSON value with
+;; csk/->kebab-case-keyword, so the config map arriving at resolve-collection
+;; is {:query {:category "..." :channel-tag "..."}} — keyword keys, NOT string
+;; keys. The pre-fix code did (get q "category") which returned nil, so the
+;; :else branch fired and returned every media item in the database
+;; (SELECT mi.* FROM media_items mi ...). On the live cluster this manifested
+;; as slot 135 of channel 39 (toontown, collection_id=72 =
+;; auto:category:adult_content:channel:toontown) airing The Fugitive, X-Files
+;; "Ascension", Time Team, Smithsonian's Civil War, retro game ads, and
+;; Cartoon Network bumpers — none of which carry channel:toontown.
+;;
+;; This test feeds resolve-collection a config map shaped EXACTLY like what
+;; db/core's column-reader produces (keyword keys), then asserts the category
+;; branch fires and emits a filter for both the category and the channel-tag.
+;; ---------------------------------------------------------------------------
+
+(deftest smart-resolves-category-with-channel-tag-from-jsonb-round-trip
+  (testing "JSONB-round-trip config (keyword keys, as column reader produces) hits the category branch and emits both category and channel-tag filters"
+    (let [coll   {:collections/id 72
+                  :collections/kind "smart"
+                  :collections/config {:query {:category "adult_content"
+                                               :channel-tag "channel:toontown"}}}
+          captured (atom nil)]
+      (with-redefs [db/query (fn [_ sql] (reset! captured sql) [])]
+        (sut/resolve-collection nil coll))
+      (let [s (first @captured)]
+        (is (.contains s "adult_content")
+            "category branch should emit a WHERE filter for the category tag")
+        (is (.contains s "channel:toontown")
+            "category branch should emit a WHERE filter for the channel-tag scope")
+        ;; The :else branch's query is `SELECT mi.*, mv.duration FROM
+        ;; media_items mi LEFT JOIN media_versions mv ON mv.media_item_id =
+        ;; mi.id ORDER BY mi.id` — it does NOT touch media_items twice, so a
+        ;; count > 1 of media_items is a strong signal the category branch
+        ;; ran (which joins top-level + season + play items).
+        (is (> (count (re-seq #"media_items" s)) 1)
+            "category branch joins the show/season/play chain (more than one media_items reference)")))))
+
+(deftest smart-show-id-from-jsonb-round-trip
+  (testing "JSONB-round-trip config (keyword keys) hits the show-id branch"
+    (let [coll {:collections/id 42
+                :collections/kind "smart"
+                :collections/config {:query {:show-id 7}}}
+          captured (atom nil)]
+      (with-redefs [db/query (fn [_ sql] (reset! captured sql) [])]
+        (sut/resolve-collection nil coll))
+      (let [s (first @captured)]
+        (is (.contains s "season")
+            "show-id branch should join the seasons table")
+        (is (not (.contains s "metadata_tags"))
+            "show-id branch does not need a metadata_tags join")))))
