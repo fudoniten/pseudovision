@@ -216,15 +216,37 @@
 ;; by path off the shared mount with no special-casing, exactly like filler.
 ;; ---------------------------------------------------------------------------
 
+(def ^:private grout-internal-tag-prefixes
+  "Tag prefixes from the Grout intake/audit trail that should NOT be exposed as
+   PV metadata_tags. `parent-directory:` and `filename:` leak the on-disk
+   intake layout (`parent-directory:food-shorts`, `filename:2025-09-26 ...`),
+   `content-type:` is an audit tag describing the intake kind (`filler`,
+   `program`) and is meaningless to the catalog/scheduler. Any new prefix added
+   here will be silently dropped on the next sync — Grout owns these, PV
+   doesn't need them in metadata_tags."
+  #{"parent-directory:" "filename:" "content-type:"})
+
+(defn- grout-internal-tag?
+  "True if a Grout tag is an intake/audit marker that should not be mirrored
+   into PV's metadata_tags. See `grout-internal-tag-prefixes`."
+  [t]
+  (boolean (and (string? t)
+                (some #(str/starts-with? t %) grout-internal-tag-prefixes))))
+
 (defn- program-tags
-  "metadata_tags names for a Grout program: its freeform Grout tags, plus a
-   synthesized `channel:<slug>` tag from the clip's `channel` column so the
-   item lands in the right channel's catalog slice. Grout tags are passed
-   through verbatim (an already-`genre:`-prefixed tag flows straight into the
-   catalog's genre aggregate; a bare tag is still matchable by
-   `random:<tag>`). Deduped; blanks dropped."
+  "metadata_tags names for a Grout program: its freeform Grout tags (with
+   Grout-internal intake/audit tags filtered out — see
+   `grout-internal-tag?`), plus a synthesized `channel:<slug>` tag from the
+   clip's `channel` column so the item lands in the right channel's catalog
+   slice. Tags are passed through verbatim otherwise (an already-`genre:`-
+   prefixed tag flows straight into the catalog's genre aggregate; a bare tag
+   is still matchable by `random:<tag>`). Deduped; blanks dropped."
   [clip]
-  (let [base     (->> (:tags clip) (filter string?) (map str/trim) (remove str/blank?))
+  (let [base     (->> (:tags clip)
+                      (filter string?)
+                      (map str/trim)
+                      (remove str/blank?)
+                      (remove grout-internal-tag?))
         chan     (:channel clip)
         chan-tag (when-not (str/blank? chan) (str "channel:" (tags/kebab-case chan)))]
     (->> (cond-> (vec base) chan-tag (conj chan-tag))
