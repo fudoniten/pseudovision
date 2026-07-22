@@ -101,6 +101,34 @@
   (is (= ["channel:britannia"]
          (#'sut/program-tags {:tags ["channel:britannia"] :channel "britannia"}))))
 
+(deftest program-tags-filters-grout-internal-tags
+  (testing "parent-directory:, filename:, content-type: are intake/audit leaks — never mirror them"
+    ;; The "real" tags are educational / history / etc; the noisy ones
+    ;; like parent-directory:food-shorts get dropped.
+    (is (= ["educational" "history" "channel:chronicles"]
+           (#'sut/program-tags
+            {:tags ["parent-directory:food-shorts"
+                    "educational"
+                    "filename:2025-09-26 AT&T Archives — The Dew Line (2025).mp4"
+                    "content-type:filler"
+                    "history"
+                    "  parent-directory:trimmed-with-whitespace  "]
+             :channel "Chronicles"}))))
+  (testing "filter handles nil/non-string safely"
+    (is (= ["a"]
+           (#'sut/program-tags {:tags ["a" nil 42 "" "  "] :channel nil}))))
+  (testing "all-internal yields only the synthesized channel tag"
+    (is (= ["channel:britannia"]
+           (#'sut/program-tags
+            {:tags ["parent-directory:x" "filename:y.mp4" "content-type:filler"]
+             :channel "Britannia"}))))
+  (testing "prefix boundary check — `filename:` matches but not `filenameless:`"
+    ;; Defensive: we want exact prefix, not substring
+    (is (= ["filenameless-thing" "channel:britannia"]
+           (#'sut/program-tags
+            {:tags ["filenameless-thing" "filename:y.mp4"]
+             :channel "Britannia"})))))
+
 ;; ---------------------------------------------------------------------------
 ;; content sync — sync-program! guard rails + sync-programs! aggregation
 ;; ---------------------------------------------------------------------------
