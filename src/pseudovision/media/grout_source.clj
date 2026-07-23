@@ -35,13 +35,19 @@
 
 (defn- find-or-create!
   "Returns the id of an existing row matching `where`, creating it from `attrs`
-   (with RETURNING) if absent. `id-key` is the qualified id keyword."
+   (with RETURNING) if absent. `id-key` is accepted for documentation only —
+   the returned id is always read with the unqualified `:id` key, because
+   `db/query-one` and `db/execute-one!` use different result-set builders
+   (`as-kebab-maps*` qualified vs `as-unqualified-kebab-maps*`) and the
+   caller-supplied qualified key only matches the lookup branch. Reading
+   `:id` from both branches keeps the insert path from returning nil when
+   it shouldn't."
   [ds table id-key where attrs]
-  (or (id-key (db/query-one ds (-> (h/select :id) (h/from table) (h/where where) sql/format)))
-      (id-key (db/execute-one! ds (-> (h/insert-into table)
-                                      (h/values [attrs])
-                                      (h/returning :*)
-                                      sql/format)))))
+  (or (:id (db/query-one ds (-> (h/select :id) (h/from table) (h/where where) sql/format)))
+      (:id (db/execute-one! ds (-> (h/insert-into table)
+                                    (h/values [attrs])
+                                    (h/returning :*)
+                                    sql/format)))))
 
 (defn- ensure-library-path*!
   "Ensures the singleton Grout media source and the named library / library-path
