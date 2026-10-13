@@ -2,7 +2,7 @@
   "Abstraction over where served HLS segments live and how they are read.
 
    Phase 1 ships a local-disk implementation. The protocol is the seam (see
-   SEAMLESS_TRANSITIONS_PLAN.md §4.4) that lets a later phase move segments to
+   docs/streaming-design.md §4.4) that lets a later phase move segments to
    shared storage (PVC / object store) for distribution WITHOUT touching the
    Channel Stream Manager or the HTTP handlers — both depend only on this
    protocol, never on `io/file` directly."

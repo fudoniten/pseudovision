@@ -1,8 +1,13 @@
-# Seamless Event Transitions (Option B) — Migration Plan
+# Live streaming design — seamless event transitions
 
-Status: proposed
-Scope: the live HLS streaming path (`/stream/{uuid}`) and the FFmpeg profile model
-Related: `TODO.md` §7 (Event Transitions), §10 (raw-TS mode)
+Status: Phases 0–2 and 3-lite are built. Phase 3's hardware checks and Phase 4
+(watchdog) are open and tracked in [PLAN.md](../PLAN.md); Phase 5 (distributed
+transcoding) is deferred.
+Scope: the live HLS streaming path (`/stream/{uuid}`) and the FFmpeg profile model.
+
+This is kept as a separate document because the streaming code cites it by
+section (§4.1, §4.4, §9), and §9's correctness rules must hold for any change to
+the playlist manager.
 
 ---
 
@@ -16,14 +21,14 @@ client-side stream restart**, across mainstream IPTV clients.
 - True single-encoder gapless output (the ErsatzTV "Option C" continuous
   encoder). Rejected — see §3.
 - Adaptive bitrate / multi-rendition HLS.
-- Raw MPEG-TS output mode (`TODO.md` §10). Compatible with this design but
+- Raw MPEG-TS output mode. Compatible with this design but
   tracked separately.
 
 ---
 
-## 2. Where we are today
+## 2. Where we started (before Phase 1)
 
-The current live path (`src/pseudovision/http/api/streaming.clj`):
+The original live path (`src/pseudovision/http/api/streaming.clj`):
 
 - Runs **one FFmpeg process per event**, all writing into a single shared dir
   (`/tmp/pseudovision/streams/{uuid}/`) with fixed names `playlist.m3u8` +
@@ -499,7 +504,7 @@ localized to the manager and far smaller than C's in-stream boundary tracking.
   rendering.
 - **Unit (profiles):** each accel produces a valid command + correct
   normalization filter; software-decode fallback path.
-- **Integration** (extend `integration-tests.nix`, `TODO.md` Test 8): two short
+- **Integration** (extend `integration-tests.nix`): two short
   events; assert a single `#EXT-X-DISCONTINUITY`, monotonic media-sequence,
   continuous segment numbering across the boundary, and no gap in coverage.
 - **Client matrix:** at minimum VLC + ffmpeg as playback validators in CI; spot-

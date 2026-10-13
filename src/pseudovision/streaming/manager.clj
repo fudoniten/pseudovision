@@ -7,7 +7,7 @@
    playout says so or restarts a dead encoder, and (3) ingests newly-finalized
    segments from the current encoder's scratch dir into the channel playlist,
    which keeps a monotonic media-sequence and inserts an #EXT-X-DISCONTINUITY at
-   each encoder boundary (see SEAMLESS_TRANSITIONS_PLAN.md §4.1, §9).
+   each encoder boundary (see docs/streaming-design.md §4.1, §9).
 
    Request threads only read the rendered playlist / segments and bump a separate
    `:last-access` atom, so they never contend with the loop."
