@@ -9,7 +9,7 @@
    one-ffmpeg-per-event design).
 
    All functions here are pure; the manager holds a value of this in its
-   per-channel state. See SEAMLESS_TRANSITIONS_PLAN.md §4.1 and §9."
+   per-channel state. See docs/streaming-design.md §4.1 and §9."
   (:require [clojure.string :as str])
   (:import [java.util Locale]))
 

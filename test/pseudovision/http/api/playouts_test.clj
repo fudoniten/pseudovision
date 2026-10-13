@@ -106,7 +106,7 @@
 
 ;; ---------------------------------------------------------------------------
 ;; Attaching a schedule (PUT) — schedule_id lives on playouts, not channels;
-;; this endpoint was the missing link until 2026-07 (see PLAYOUT_JOBS.md).
+;; this endpoint was the missing link until 2026-07.
 ;; ---------------------------------------------------------------------------
 
 (deftest attach-schedule-creates-playout-row
