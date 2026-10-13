@@ -49,7 +49,6 @@
         sql-map  (-> (h/insert-into :media-sources)
                      (h/values [prepared])
                      sql/format)]
-    (log/info "Creating media source" {:attrs attrs :prepared prepared :sql sql-map})
     (let [result (db/execute-one! ds sql-map)]
       (log/info "Created media source"
                 {:source-id (:media-sources/id result)

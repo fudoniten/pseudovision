@@ -97,3 +97,41 @@
                                    :media-items/kind "other_video"})]
       (is (= 200 status))
       (is (= "Unknown" (:name body))))))
+
+;; ---------------------------------------------------------------------------
+;; The Jellyfin API key must never leave Pseudovision
+;; ---------------------------------------------------------------------------
+
+(def ^:private jellyfin-source
+  {:media-sources/id 10
+   :media-sources/name "jellyfin"
+   :media-sources/kind "jellyfin"
+   :media-sources/connection-config {:connections [{:uri "http://jellyfin:8096"}]
+                                     :api-key "secret-key"}})
+
+(deftest list-sources-omits-api-key
+  (with-redefs [db/count-media-sources (fn [_] 1)
+                db/list-media-sources  (fn [_ _] [jellyfin-source])]
+    (let [handler ((requiring-resolve 'pseudovision.http.api.media/list-sources-handler)
+                   {:db nil})
+          source  (-> (handler {:parameters {:query {}}}) :body :items first)]
+      (testing "connection URIs are still returned"
+        (is (= [{:uri "http://jellyfin:8096"}]
+               (get-in source [:connection-config :connections]))))
+      (testing "the API key is not"
+        (is (not (contains? (:connection-config source) :api-key)))))))
+
+(deftest playback-url-points-at-the-pseudovision-proxy
+  (with-redefs [db/get-media-item-with-source
+                (fn [_ _] (merge jellyfin-source
+                                 {:media-items/id 42
+                                  :media-items/remote-key "abc123"}))]
+    (let [handler ((requiring-resolve 'pseudovision.http.api.media/get-item-playback-url-handler)
+                   {:db nil})
+          resp    (handler {:scheme     :http
+                            :headers    {"host" "pseudovision.local"}
+                            :parameters {:path {:id "42"}}})]
+      (is (= 200 (:status resp)))
+      (is (= "http://pseudovision.local/api/media/items/42/stream"
+             (get-in resp [:body :url])))
+      (is (not (re-find #"api_key|secret-key" (get-in resp [:body :url])))))))
