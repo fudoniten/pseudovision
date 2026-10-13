@@ -37,21 +37,19 @@
 ;; Playback URL helpers
 ;; ---------------------------------------------------------------------------
 
-(defmulti ^:private build-stream-url
-  "Builds a direct-play stream URL for a media item given its source kind.
-   Dispatches on the source kind string."
-  (fn [_item _conn-config kind] kind))
+(def ^:private proxied-source-kinds
+  "Source kinds that `stream-media` can proxy. Playback URLs point clients at
+   that proxy, so the upstream credentials never leave Pseudovision."
+  #{"jellyfin"})
 
-(defmethod build-stream-url "jellyfin" [item conn-config _kind]
-  (let [base-url (conn/active-uri (:connections conn-config))
-        api-key  (:api-key conn-config)
-        item-id  (or (:media-items/remote-key item) (:remote-key item))]
-    (when (and base-url api-key item-id)
-      (str base-url "/Videos/" item-id "/stream?static=true&api_key=" api-key))))
-
-(defmethod build-stream-url :default [_item _conn-config kind]
-  (log/warn "Playback URL not supported for source kind" {:kind kind})
-  nil)
+(defn- redact-source
+  "Strips the upstream API key from a media source's connection-config before
+   it goes out over the API. Clients only ever need the connection URIs; the
+   key stays server-side."
+  [source]
+  (cond-> source
+    (map? (:connection-config source))
+    (update :connection-config dissoc :api-key :api_key)))
 
 (defn list-sources-handler [{:keys [db]}]
   (fn [req]
@@ -59,20 +57,20 @@
           limit  (or (:limit qp) 100)
           offset (or (:offset qp) 0)
           total  (db/count-media-sources db)
-          items  (mapv unqualify-keys (db/list-media-sources db {:limit limit :offset offset}))]
+          items  (mapv (comp redact-source unqualify-keys)
+                       (db/list-media-sources db {:limit limit :offset offset}))]
       {:status 200
        :body (pagination/offset-pagination-response items limit offset total)})))
 
 (defn create-source-handler [{:keys [db]}]
   (fn [req]
     (let [params (get-in req [:parameters :body])
-          _      (log/info "create-source-handler received params" {:params params})
           config (conn/->connection-config params)
-          _      (log/info "connection config" {:config config})
           attrs  (-> (select-keys params [:name :kind :path-replacements])
                      (cond-> config (assoc :connection-config config)))]
-      (log/info "final attrs" {:attrs attrs})
-      {:status 201 :body (db/create-media-source! db attrs)})))
+      (log/info "Creating media source" (select-keys params [:name :kind]))
+      {:status 201
+       :body   (redact-source (unqualify-keys (db/create-media-source! db attrs)))})))
 
 (defn update-source-handler [{:keys [db]}]
   (fn [req]
@@ -80,7 +78,7 @@
           params    (get-in req [:parameters :body])
           attrs     (select-keys params [:name :path-replacements])]
       (if-let [s (db/update-media-source! db source-id attrs)]
-        {:status 200 :body (unqualify-keys s)}
+        {:status 200 :body (redact-source (unqualify-keys s))}
         {:status 404 :body {:error "Media source not found"}}))))
 
 (defn delete-source-handler [{:keys [db]}]
@@ -349,18 +347,23 @@
            :body (pagination/offset-pagination-response items limit offset total)})
         {:status 404 :body {:error "Media item not found"}}))))
 
-(defn- resolve-stream-url [db item-id]
+(defn- resolve-stream-url
+  "Returns {:url :kind} for an item, where :url is Pseudovision's own stream
+   proxy (nil when the source kind can't be proxied). Pointing clients at the
+   proxy rather than the upstream server keeps the upstream API key out of
+   the response."
+  [db item-id base-url]
   (when-let [row (db/get-media-item-with-source db item-id)]
-    (let [kind        (or (some-> row :media-sources/kind str) "")
-          conn-config (or (:media-sources/connection-config row)
-                          (:connection-config row))]
-      {:url  (build-stream-url row conn-config kind)
+    (let [kind (or (some-> row :media-sources/kind str) "")]
+      {:url  (when (proxied-source-kinds kind)
+               (str base-url "/api/media/items/" item-id "/stream"))
        :kind kind})))
 
 (defn get-item-playback-url-handler [{:keys [db]}]
   (fn [req]
-    (let [item-id (get-in req [:parameters :path :id])
-          result  (resolve-stream-url db item-id)]
+    (let [item-id  (get-in req [:parameters :path :id])
+          base-url (str (name (:scheme req)) "://" (get-in req [:headers "host"]))
+          result   (resolve-stream-url db item-id base-url)]
       (cond
         (nil? result)        {:status 404 :body {:error "Media item not found"}}
         (nil? (:url result)) {:status 422 :body {:error (str "Playback URL not supported for source kind: " (:kind result))}}
@@ -377,7 +380,7 @@
         item-id  (or (:media-items/remote-key item) (:remote-key item))]
     (when (and base-url api-key item-id)
       (let [stream-url (str base-url "/Videos/" item-id "/stream?static=true&api_key=" api-key)]
-        (log/info "Proxying stream from Jellyfin" {:url stream-url :item-id item-id})
+        (log/info "Proxying stream from Jellyfin" {:base-url base-url :item-id item-id})
         (try
           (let [response (http/get stream-url
                                    {:as :stream
@@ -393,10 +396,10 @@
                :body (:body response)}
               (do
                 (log/error "Failed to fetch stream from Jellyfin"
-                           {:status status :url stream-url})
+                           {:status status :base-url base-url :item-id item-id})
                 {:status 502 :body {:error "Failed to fetch stream from upstream server"}})))
           (catch Exception e
-            (log/error e "Exception while proxying stream" {:url stream-url})
+            (log/error e "Exception while proxying stream" {:base-url base-url :item-id item-id})
             {:status 502 :body {:error "Failed to proxy stream"}}))))))
 
 (defmethod stream-media :default [_item _conn-config kind _req]
