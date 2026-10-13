@@ -647,18 +647,6 @@
     {:tags ["iptv"]
      :get  {:summary "M3U playlist of all channels with stream URLs"
             :handler (m3u/m3u-handler ctx)}}]
-   ["/media/devices/X-Plex-Client-Profile-Extra"
-    {:tags ["hdhr"]
-     :get  {:summary "HDHomeRun device discovery document"
-            :handler (m3u/hdhr-device-handler ctx)}}]
-   ["/lineup.json"
-    {:tags ["hdhr"]
-     :get  {:summary "HDHomeRun channel lineup"
-            :handler (m3u/hdhr-lineup-handler ctx)}}]
-   ["/lineup_status.json"
-    {:tags ["hdhr"]
-     :get  {:summary "HDHomeRun tuner status"
-            :handler (m3u/hdhr-status-handler ctx)}}]
 
    ;; ── Streaming ───────────────────────────────────────────────────────────
    ["/stream/:uuid"

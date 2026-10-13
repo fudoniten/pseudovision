@@ -179,8 +179,9 @@ for the full schema and the Marquee frontend integration spec.
 |------|-------------|
 | `/iptv/channels.m3u` | M3U playlist for all channels |
 | `/xmltv` or `/epg.xml` | XMLTV EPG (7 day lookahead) |
-| `/lineup.json` | HDHomeRun lineup (for Plex/Emby/Jellyfin auto-discovery) |
 | `/stream/:uuid` | ⚠️ HLS live stream (basic implementation, uses test stream) |
+
+To add the channels to Jellyfin, use Live TV → Tuner Devices → **M3U Tuner** with `/iptv/channels.m3u`, and TV Guide Data Providers → **XMLTV** with `/xmltv`.
 
 ---
 
@@ -226,7 +227,7 @@ src/pseudovision/
       schedules.clj     Schedule/slot API handlers
       playouts.clj      Playout/event API handlers (incl. manual inject)
       epg.clj           XMLTV generation
-      m3u.clj           M3U + HDHomeRun device emulation
+      m3u.clj           M3U playlist
       media.clj         Media/library/collection API handlers
       streaming.clj     HLS live streaming handlers
   ffmpeg/
