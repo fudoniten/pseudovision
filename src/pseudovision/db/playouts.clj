@@ -106,6 +106,19 @@
                    (h/order-by :c.sort-number :pe.start-at)
                    sql/format)))
 
+(defn list-event-spans-after
+  "Returns [start-at finish-at] of every event (manual or not) on a playout that
+   finishes after `after`, in chronological order."
+  [ds playout-id after]
+  (mapv (juxt :playout-events/start-at :playout-events/finish-at)
+        (db/query ds (-> (h/select :start-at :finish-at)
+                         (h/from :playout-events)
+                         (h/where [:and
+                                   [:= :playout-id playout-id]
+                                   [:> :finish-at after]])
+                         (h/order-by :start-at)
+                         sql/format))))
+
 (defn get-current-event
   "Returns the event currently playing on a playout, if any."
   [ds playout-id now]

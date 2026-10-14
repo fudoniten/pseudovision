@@ -52,41 +52,66 @@
 ;; Jellyfin API client
 ;; ---------------------------------------------------------------------------
 
+(defn- jellyfin-request
+  "Performs an authenticated GET against the Jellyfin server.
+   Returns {:status n :body parsed-json}, or {:error e} if the request
+   could not be made at all (DNS, connection refused, timeout)."
+  [base-url path api-key & {:keys [query-params]}]
+  (try
+    (select-keys (http/get (str base-url path)
+                           {:headers          {"X-Emby-Token" api-key}
+                            :query-params     query-params
+                            :as               :json
+                            :throw-exceptions false
+                            :socket-timeout   30000
+                            :connection-timeout 10000})
+                 [:status :body])
+    (catch Exception e
+      (log/warn e "Jellyfin API request failed" {:path path})
+      {:error e})))
+
 (defn- jellyfin-get
   "Performs an authenticated GET against the Jellyfin server.
    Returns the parsed JSON body or nil on failure."
-  [base-url path api-key & {:keys [query-params]}]
-  (try
-    (let [url  (str base-url path)
-          resp (http/get url
-                         {:headers          {"X-Emby-Token" api-key}
-                          :query-params     query-params
-                          :as               :json
-                          :throw-exceptions false
-                          :socket-timeout   30000
-                          :connection-timeout 10000})]
-      (when (<= 200 (:status resp) 299)
-        (:body resp)))
-    (catch Exception e
-      (log/warn e "Jellyfin API request failed" {:path path})
-      nil)))
+  [base-url path api-key & opts]
+  (let [{:keys [status body error]} (apply jellyfin-request base-url path api-key opts)]
+    (cond
+      error                   nil
+      (<= 200 status 299)     body
+      :else (do (log/warn "Jellyfin API returned an error status"
+                          {:path path :status status})
+                nil))))
 
 ;; ---------------------------------------------------------------------------
 ;; Server discovery
 ;; ---------------------------------------------------------------------------
 
 (defn check-server
-  "Verifies connectivity with the Jellyfin server. Returns server info or nil."
+  "Verifies connectivity with the Jellyfin server and returns its server info.
+   Throws ex-info saying why when it can't: the API key was rejected (401/403),
+   the server returned another error status, or it couldn't be reached."
   [base-url api-key]
   (log/info "Checking Jellyfin server connectivity" {:url base-url})
-  (let [result (jellyfin-get base-url "/System/Info" api-key)]
-    (if result
-      (log/info "Jellyfin server check successful"
-                {:url base-url
-                 :server-name (:ServerName result)
-                 :version (:Version result)})
-      (log/warn "Jellyfin server check failed" {:url base-url}))
-    result))
+  (let [{:keys [status body error]} (jellyfin-request base-url "/System/Info" api-key)]
+    (cond
+      error
+      (throw (ex-info (str "Cannot connect to Jellyfin server: " (.getMessage ^Exception error))
+                      {:url base-url} error))
+
+      (#{401 403} status)
+      (throw (ex-info (str "Jellyfin rejected the API key (HTTP " status ")")
+                      {:url base-url :status status}))
+
+      (not (<= 200 status 299))
+      (throw (ex-info (str "Jellyfin returned HTTP " status)
+                      {:url base-url :status status}))
+
+      :else
+      (do (log/info "Jellyfin server check successful"
+                    {:url base-url
+                     :server-name (:ServerName body)
+                     :version (:Version body)})
+          body))))
 
 (defn fetch-libraries
   "Fetches the virtual folder (library) list from Jellyfin."
@@ -570,13 +595,13 @@
               {:source-id source-id
                :has-base-url (boolean base-url)
                :has-api-key (boolean api-key)
-               :connection-config (or (:media-sources/connection-config source)
-                                      (:connection-config source))})
+               :connections (:connections (or (:media-sources/connection-config source)
+                                              (:connection-config source)))})
     (when-not base-url
       (log/error "No active connection for Jellyfin source"
                  {:source-id source-id
-                  :connection-config (or (:media-sources/connection-config source)
-                                         (:connection-config source))})
+                  :connections (:connections (or (:media-sources/connection-config source)
+                                                 (:connection-config source)))})
       (throw (ex-info "No active connection for Jellyfin source"
                       {:source-id source-id})))
     (when-not api-key
@@ -584,6 +609,7 @@
                  {:source-id source-id})
       (throw (ex-info "No API key configured for Jellyfin source"
                       {:source-id source-id})))
+    (check-server base-url api-key)
     (log/info "Discovering Jellyfin libraries" {:url base-url :source-id source-id})
     (let [folders (fetch-libraries base-url api-key)]
       (when-not folders
@@ -618,10 +644,7 @@
       (throw (ex-info "No API key configured for Jellyfin source"
                       {:source-id (:media-sources/id source)})))
 
-    (log/info "Checking Jellyfin server connectivity" {:url base-url})
     (let [server-info (check-server base-url api-key)]
-      (when-not server-info
-        (throw (ex-info "Cannot connect to Jellyfin server" {:url base-url})))
       (log/info "Connected to Jellyfin" {:server-name (:ServerName server-info)
                                          :version     (:Version server-info)}))
 

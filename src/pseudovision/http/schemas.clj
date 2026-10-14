@@ -598,8 +598,13 @@
    [:path-replacements  {:optional true} [:sequential [:map]]]])
 
 (def MediaSourceUpdate
+  "Partial update. :api-key and :connections are merged into the source's
+   existing connection_config, so a key can be rotated without resending
+   the connections (and vice versa)."
   [:map
    [:name               {:optional true} :string]
+   [:api-key            {:optional true} :string]
+   [:connections        {:optional true} [:sequential [:map]]]
    [:path-replacements  {:optional true} [:sequential [:map]]]])
 
 (def MediaLibrary

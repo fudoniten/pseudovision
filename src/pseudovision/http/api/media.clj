@@ -76,8 +76,14 @@
   (fn [req]
     (let [source-id (get-in req [:parameters :path :id])
           params    (get-in req [:parameters :body])
-          attrs     (select-keys params [:name :path-replacements])]
-      (if-let [s (db/update-media-source! db source-id attrs)]
+          conn-keys (select-keys params [:api-key :connections])
+          existing  (when (seq conn-keys) (db/get-media-source db source-id))
+          attrs     (cond-> (select-keys params [:name :path-replacements])
+                      existing (assoc :connection-config
+                                      (merge (:media-sources/connection-config existing)
+                                             conn-keys)))]
+      (if-let [s (when (or existing (empty? conn-keys))
+                   (db/update-media-source! db source-id attrs))]
         {:status 200 :body (redact-source (unqualify-keys s))}
         {:status 404 :body {:error "Media source not found"}}))))
 
@@ -202,7 +208,8 @@
    point: one call instead of a per-library fan-out. Non-Jellyfin libraries
    (e.g. the local `grout-content` library, which is populated by the Grout
    content sync rather than a filesystem scan) are skipped. Returns 202 with
-   the job; poll GET /api/jobs/:job-id for the per-library summary in :result."
+   the job; poll GET /api/jobs/:job-id for the per-library summary in :result.
+   The job fails if any library fails, and still carries the summary."
   [{:keys [db media ffmpeg jobs]}]
   (fn [_req]
     (let [job (runner/submit!
@@ -234,12 +241,23 @@
                                     :kind       (name kind)
                                     :status     "error"
                                     :error      (.getMessage e)})))))
-                         libraries)]
-                    {:libraries (count results)
-                     :scanned   (count (filter #(= "ok" (:status %)) results))
-                     :skipped   (count (filter #(= "skipped" (:status %)) results))
-                     :failed    (count (filter #(= "error" (:status %)) results))
-                     :results   results})))]
+                         libraries)
+                        summary {:libraries (count results)
+                                 :scanned   (count (filter #(= "ok" (:status %)) results))
+                                 :skipped   (count (filter #(= "skipped" (:status %)) results))
+                                 :failed    (count (filter #(= "error" (:status %)) results))
+                                 :results   results}]
+                    (when (pos? (:failed summary))
+                      (throw (ex-info (str (:failed summary) " of "
+                                           (- (:libraries summary) (:skipped summary))
+                                           " Jellyfin libraries failed to scan: "
+                                           (->> results
+                                                (filter #(= "error" (:status %)))
+                                                (map :error)
+                                                distinct
+                                                (str/join "; ")))
+                                      {:job-result summary})))
+                    summary)))]
       {:status 202 :body {:job job}})))
 
 (defn discover-libraries-handler [{:keys [db]}]

@@ -793,6 +793,27 @@
 ;; Public API
 ;; ---------------------------------------------------------------------------
 
+(def ^:private default-max-hole
+  "The longest stretch without events that a resume build accepts before the
+   saved cursor. Days-of-week slots can legitimately leave up to a day empty;
+   anything longer means events were lost after the cursor was saved."
+  (t/hours->duration 24))
+
+(defn covered-until
+  "Given event spans [[start finish] ...] sorted by start, returns the end of
+   the timeline's continuous coverage from `from`: the finish of the last event
+   reached before a gap longer than `max-hole`. Returns `from` if nothing is
+   scheduled within `max-hole` of it."
+  [spans ^Instant from max-hole]
+  (reduce (fn [^Instant edge [^Instant start ^Instant finish]]
+            (cond
+              (.isAfter start (.plus edge ^Duration max-hole)) (reduced edge)
+              (.isAfter finish edge) finish
+              :else edge))
+          from
+          spans))
+
+
 (defn build!
   "Builds the playout, replacing non-manual events from the rebuild point to the
    horizon.  Runs inside a transaction; saves the updated cursor on success.
@@ -835,8 +856,27 @@
         ;; already-generated near-term events (and rotation state) survive. A
         ;; cursor that has slipped into the past (dry channel) is clamped up to
         ;; now so we fill from now instead of the stale past edge.
-        resume-edge (let [e (:next-start saved-cursor)]
-                      (if (and e (.isAfter ^Instant e now)) e now))
+        ;;
+        ;; The cursor is only trusted as far as the timeline actually reaches.
+        ;; If events after now were lost (a hole of more than :max-hole), the
+        ;; cursor has overshot: resuming from it would build nothing, or build
+        ;; past the hole and never fill it. Resume from the start of the hole
+        ;; instead.
+        resume-edge (let [e (:next-start saved-cursor)
+                          e (if (and e (.isAfter ^Instant e now)) e now)]
+                      (if (and saved-cursor (not reset?) (.isAfter ^Instant e now))
+                        (let [covered (covered-until
+                                       (playout-db/list-event-spans-after db playout-id now)
+                                       now
+                                       (get opts :max-hole default-max-hole))]
+                          (if (.isAfter ^Instant e ^Instant covered)
+                            (do (log/warn "Saved cursor is past a hole in the timeline; resuming from the hole"
+                                          {:playout-id playout-id
+                                           :cursor     (str e)
+                                           :hole-start (str covered)})
+                                covered)
+                            e))
+                        e))
         ;; When resetting, start the fresh timeline after any event currently on
         ;; air so the rebuild doesn't overlap (or interrupt) the program playing
         ;; right now; fall back to `now` when nothing is in progress.
@@ -947,9 +987,16 @@
                                              zone-id))
                               [gap-events cursor'']
                               (if gap-end
-                                (apply-filler tx cursor' {} channel
-                                              :fallback (:next-start cursor') gap-end
-                                              playout-id opts')
+                                (let [[evs c] (apply-filler tx cursor' {} channel
+                                                            :fallback (:next-start cursor') gap-end
+                                                            playout-id opts')]
+                                  ;; apply-filler doesn't move :next-start, so
+                                  ;; without this the fixed slot would start at
+                                  ;; the old edge, on top of the gap filler,
+                                  ;; instead of at its anchor time.
+                                  [evs (cond-> c
+                                         (.isAfter ^Instant gap-end (:next-start c))
+                                         (assoc :next-start gap-end))])
                                 [[] cursor'])
                               cursor''' (cursor/advance-slot cursor'' (count slots))]
                           [cursor''' (mod (inc slot-idx) (count slots))
