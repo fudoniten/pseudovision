@@ -67,6 +67,25 @@
           (is (= 90000              (:max-ms opts)))
           (is (true?                (:random opts))))))))
 
+(deftest grout-filler-items-uses-channel-slug
+  (testing "Grout's channel column holds the slug, not the kebab-cased name"
+    (let [captured (atom nil)]
+      (with-redefs [grout/find-filler        (fn [_ opts] (reset! captured opts) [])
+                    sut/ensure-library-path! (fn [_ _] 7)]
+        (sut/grout-filler-items nil enabled-client
+                                {:channels/name "Golden Reels" :channels/slug "goldenreels"}
+                                (Instant/now) (Instant/now) {})
+        (is (= "goldenreels" (:channel @captured)))))))
+
+(deftest grout-bumper-items-uses-channel-slug
+  (let [captured (atom nil)]
+    (with-redefs [grout/find-filler        (fn [_ opts] (reset! captured opts) [])
+                  sut/ensure-library-path! (fn [_ _] 7)]
+      (sut/grout-bumper-items nil enabled-client
+                              {:channels/name "Sitcom Spectrum" :channels/slug "spectrum"}
+                              4000 6000)
+      (is (= "spectrum" (:channel @captured))))))
+
 (deftest grout-filler-items-generic-when-no-channel-name
   (let [captured (atom nil)]
     (with-redefs [grout/find-filler        (fn [_ opts] (reset! captured opts) [])

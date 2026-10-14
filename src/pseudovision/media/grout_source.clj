@@ -176,12 +176,19 @@
 ;; ---------------------------------------------------------------------------
 
 (defn- channel-tag
-  "Derives Grout's `channel` tag from a Pseudovision channel's name
-   (kebab-cased, e.g. \"Britannia\" -> \"britannia\"). Returns nil for a generic
-   / channel-less fill so Grout returns null-channel (generic) filler."
+  "The value Grout stores in its `channel` column for a Pseudovision channel:
+   the channel's slug (e.g. \"goldenreels\" for \"Golden Reels\"), the same
+   op-curated key TS hands Grout as its channel vocabulary. Kebab-casing the
+   display name (\"golden-reels\") matched no channel-scoped clip on any
+   multi-word channel, so those channels only ever got generic filler. Falls
+   back to the kebab-cased name for a slug-less channel map, and returns nil
+   when there is neither, so Grout returns generic (null-channel) filler."
   [channel]
-  (let [nm (:channels/name channel)]
-    (when-not (str/blank? nm) (csk/->kebab-case nm))))
+  (let [slug (:channels/slug channel)
+        nm   (:channels/name channel)]
+    (cond
+      (not (str/blank? slug)) slug
+      (not (str/blank? nm))   (csk/->kebab-case nm))))
 
 (defn grout-filler-items
   "Queries Grout for filler candidates that fit the gap [from, to] on `channel`,
