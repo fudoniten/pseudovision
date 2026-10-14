@@ -135,3 +135,68 @@
       (is (= "http://pseudovision.local/api/media/items/42/stream"
              (get-in resp [:body :url])))
       (is (not (re-find #"api_key|secret-key" (get-in resp [:body :url])))))))
+
+;; ---------------------------------------------------------------------------
+;; Scan failures must be visible, and the key must be rotatable via the API
+;; ---------------------------------------------------------------------------
+
+(deftest scan-all-fails-the-job-when-a-library-fails
+  (with-redefs [db/list-libraries
+                (fn [_ _]
+                  [{:libraries/id 1 :libraries/name "movies" :libraries/media-source-id 10}
+                   {:libraries/id 2 :libraries/name "shows"  :libraries/media-source-id 10}])
+                db/get-media-source
+                (fn [_ _] {:media-sources/kind "jellyfin"})
+                jellyfin/scan-library!
+                (fn [_ _ library]
+                  (when (= "shows" (:libraries/name library))
+                    (throw (ex-info "Jellyfin rejected the API key (HTTP 401)" {}))))]
+    (let [r       (runner/create {})
+          handler (http/make-handler {:db nil :ffmpeg {} :media {} :scheduling {} :jobs r})
+          job-id  (-> (handler (mock/request :post "/api/media/scan-all"))
+                      parse-json-body
+                      (get-in [:job :id]))
+          info    (await-terminal r job-id)]
+      (is (= :failed (:status info)))
+      (is (re-find #"1 of 2 .*rejected the API key" (get-in info [:error :message])))
+      (testing "the per-library summary is kept on the failed job"
+        (is (= 1 (get-in info [:result :scanned])))
+        (is (= 1 (get-in info [:result :failed])))))))
+
+(deftest check-server-says-why-it-failed
+  (testing "a rejected key is reported as such, not as a connection failure"
+    (with-redefs [clj-http.client/get (fn [& _] {:status 401 :body nil})]
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"rejected the API key \(HTTP 401\)"
+                            (jellyfin/check-server "http://jellyfin:8096" "bad-key")))))
+  (testing "an unreachable server is a connection failure"
+    (with-redefs [clj-http.client/get (fn [& _] (throw (java.net.ConnectException "refused")))]
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Cannot connect to Jellyfin server: refused"
+                            (jellyfin/check-server "http://jellyfin:8096" "key")))))
+  (testing "success returns the server info"
+    (with-redefs [clj-http.client/get (fn [& _] {:status 200 :body {:ServerName "jf"}})]
+      (is (= "jf" (:ServerName (jellyfin/check-server "http://jellyfin:8096" "key")))))))
+
+(deftest update-source-rotates-the-api-key
+  (let [written (atom nil)]
+    (with-redefs [db/get-media-source     (fn [_ _] jellyfin-source)
+                  db/update-media-source! (fn [_ _ attrs]
+                                            (reset! written attrs)
+                                            (assoc jellyfin-source
+                                                   :media-sources/connection-config
+                                                   (:connection-config attrs)))]
+      (let [handler ((requiring-resolve 'pseudovision.http.api.media/update-source-handler)
+                     {:db nil})
+            resp    (handler {:parameters {:path {:id 10} :body {:api-key "new-key"}}})]
+        (is (= 200 (:status resp)))
+        (testing "the new key is merged into the existing connection config"
+          (is (= {:connections [{:uri "http://jellyfin:8096"}] :api-key "new-key"}
+                 (:connection-config @written))))
+        (testing "the response still omits the key"
+          (is (not (contains? (get-in resp [:body :connection-config]) :api-key))))))))
+
+(deftest update-source-404s-for-a-missing-source-when-rotating
+  (with-redefs [db/get-media-source     (fn [_ _] nil)
+                db/update-media-source! (fn [& _] (throw (AssertionError. "should not write")))]
+    (let [handler ((requiring-resolve 'pseudovision.http.api.media/update-source-handler)
+                   {:db nil})]
+      (is (= 404 (:status (handler {:parameters {:path {:id 99} :body {:api-key "k"}}})))))))

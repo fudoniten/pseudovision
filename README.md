@@ -183,6 +183,12 @@ schemas in `http/schemas.clj`. It's authoritative; this is a map.
 | Ops | `/health`, `/api/version`, `/api/debug/stream/:uuid` |
 | Dev only | `/api/test/*` creates throwaway test channels and collections |
 
+To rotate a Jellyfin API key, `PUT /api/media/sources/:id` with
+`{"api-key": "<new key>"}`. It's merged into the source's existing connection
+config, so the connections stay as they are. A scan with a bad key fails with
+"Jellyfin rejected the API key", and `POST /api/media/scan-all` fails its job
+when any library fails (the per-library summary stays in the job's `result`).
+
 Responses are kebab-case JSON. Routes migrated to Malli coercion return a
 structured `400` on malformed input instead of a `500`.
 

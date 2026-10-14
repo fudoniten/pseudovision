@@ -19,7 +19,7 @@
       :started-at   \"<iso-8601>\"          ; once running
       :completed-at \"<iso-8601>\"          ; once finished
       :duration-ms  <int>                   ; once running
-      :result       <any>                   ; on :succeeded
+      :result       <any>                   ; on :succeeded (or :failed, if the task supplied one)
       :error        {:message \"...\" :type \"...\"}} ; on :failed"
   (:require [taoensso.timbre :as log]
             [clojure.stacktrace :refer [print-stack-trace]])
@@ -126,7 +126,9 @@
    `task-fn` is called with a single argument, a `report-progress` function.
    Calling it with a map replaces the job's :progress; calling it with a
    function updates :progress atomically. Whatever `task-fn` returns becomes the
-   job's :result on success."
+   job's :result on success. A task that fails but still has a result worth
+   keeping (e.g. a per-item summary) can throw ex-info carrying it under
+   :job-result; it becomes the failed job's :result."
   [runner config task-fn]
   (let [{:keys [type metadata]} (normalize-config config)
         job-id  (str (UUID/randomUUID))
@@ -156,10 +158,13 @@
         (catch Throwable t
           (log/error t "job failed" {:job-id job-id :type type})
           (log/info (with-out-str (print-stack-trace t)))
-          (update-job! runner job-id merge {:status       :failed
-                                            :completed-at (now)
-                                            :error        {:message (.getMessage t)
-                                                           :type    (.getName (class t))}}))))
+          (update-job! runner job-id merge
+                       (cond-> {:status       :failed
+                                :completed-at (now)
+                                :error        {:message (.getMessage t)
+                                               :type    (.getName (class t))}}
+                         (contains? (ex-data t) :job-result)
+                         (assoc :result (:job-result (ex-data t))))))))
     (->public-job new-job)))
 
 (def ^:private max-tracked-jobs
