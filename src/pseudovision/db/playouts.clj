@@ -57,16 +57,15 @@
    reshuffle filler variety or otherwise perturb an already-running channel.
    Does not itself trigger a rebuild; the caller decides when to do that."
   [ds channel-id schedule-id]
-  (jdbc/execute-one! ds
-                     (-> (h/insert-into :playouts)
-                         (h/values [{:channel-id  channel-id
-                                     :schedule-id schedule-id
-                                     :seed        (rand-int Integer/MAX_VALUE)}])
-                         (h/on-conflict :channel-id)
-                         (h/do-update-set :schedule-id)
-                         (h/returning :*)
-                         sql/format)
-                     {:return-keys true}))
+  (db/execute-one! ds
+                   (-> (h/insert-into :playouts)
+                       (h/values [{:channel-id  channel-id
+                                   :schedule-id schedule-id
+                                   :seed        (rand-int Integer/MAX_VALUE)}])
+                       (h/on-conflict :channel-id)
+                       (h/do-update-set :schedule-id)
+                       (h/returning :*)
+                       sql/format)))
 
 (defn update-playout! [ds id attrs]
   (db/execute-one! ds (-> (h/update :playouts)

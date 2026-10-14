@@ -167,22 +167,24 @@
 
 (defn- capture-execute-one-sql
   "Run `f` with `db-core/execute-one!` redefined to capture the first
-   argument (a HoneySQL map) into a dynamic var, then format it via
-   `sql/format` to get the SQL string the driver would actually see.
-   Returns the SQL string."
+   argument — a formatted `[sql-string & params]` vector (the write paths
+   in db.media run their HoneySQL through `sql/format` before handing it
+   to `execute-one!`) — and return the SQL string the driver would
+   actually see."
   [f]
   (let [captured (atom nil)]
     (with-redefs [db-core/execute-one!
-                  (fn [_ds honey-map _opts]
-                    (reset! captured honey-map)
+                  (fn [_ds sql-vec]
+                    (reset! captured sql-vec)
                     ;; Mimic the real builder-fn + return-keys so anything
                     ;; downstream that touches :id/:config behaves
                     ;; realistically, but the test only inspects the SQL.
                     {:id 0 :kind "smart" :name "stub" :config {}})]
       (f)
-      (let [hm @captured]
-        (assert (some? hm) "execute-one! was not called")
-        (first (sql/format hm))))))
+      (let [sv @captured]
+        (assert (some? sv) "execute-one! was not called")
+        (assert (vector? sv) "execute-one! received a formatted [sql & params] vector")
+        (first sv)))))
 
 (deftest create-collection-insert-has-returning-star
   (testing "db-media/create-collection! emits a SQL string with

@@ -145,8 +145,10 @@
               "matches against the `genre:` tag dimension the aggregate emits")
           (is (re-find #"(?i) play\b|AS play" sql)
               "selects a distinct playable row (episode/movie), not the show")
-          (is (some #{"Mystery"} params)
-              "binds the requested category verbatim (legacy case)")
+          (is (some #{"mystery"} params)
+              "binds the lowercased category (matching is case-insensitive
+               via lower(t.name), so the legacy \"Mystery\" form is
+               normalised before binding)")
            (is (some #{"genre:mystery"} params)
                "honours the genre:<name> tag convention"))))))
 

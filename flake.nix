@@ -29,7 +29,9 @@
         };
 
         integrationTests =
-          import ./integration-tests.nix { inherit pkgs pseudovision; };
+          import ./integration-tests.nix {
+            inherit pkgs pseudovision migratusRunner;
+          };
 
         # `nix run .#integration-test` — brings up an ephemeral PostgreSQL,
         # runs migrations and the filler integration test against it, then

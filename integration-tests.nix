@@ -1,4 +1,4 @@
-{ pkgs, pseudovision }:
+{ pkgs, pseudovision, migratusRunner }:
 
 {
   schedule-integration = pkgs.testers.nixosTest {
@@ -28,11 +28,18 @@
         after = [ "postgresql.service" ];
         wants = [ "postgresql.service" ];
         environment = {
-          PSEUDOVISION_PORT = "8080";
+          PSEUDOVISION_HTTP_PORT = "8080";
           PSEUDOVISION_DB_URL = "jdbc:postgresql://localhost:5432/pseudovision";
           PSEUDOVISION_DB_USER = "pseudovision";
           PSEUDOVISION_DB_PASS = "";
         };
+        # The app no longer migrates at startup (that's the migrate init
+        # container's job in the real deployment), so run migrations here
+        # before the server starts — otherwise the schema is empty and every
+        # later SQL in the test fails.
+        preStart = ''
+          ${migratusRunner}/bin/migratus-runner migrate
+        '';
         serviceConfig = {
           ExecStart = "${pseudovision}/bin/pseudovision";
           Restart = "on-failure";
@@ -241,8 +248,11 @@
       ).strip())
 
       # -- Channel 1: for "once" + "count" schedule test
+      # (slug is required at create time — see #145: the channel-catalog
+      # fallback resolves `auto` slots via the `channel:<slug>` tag)
       ch1 = api_post("/api/channels", {
           "name": "Test Channel 1",
+          "slug": "test-channel-1",
           "number": "1",
           "sort_number": 1.0,
           "ffmpeg_profile_id": ffmpeg_id
@@ -253,6 +263,7 @@
       # -- Channel 2: for "block" schedule test
       ch2 = api_post("/api/channels", {
           "name": "Test Channel 2",
+          "slug": "test-channel-2",
           "number": "2",
           "sort_number": 2.0,
           "ffmpeg_profile_id": ffmpeg_id
@@ -263,6 +274,7 @@
       # -- Channel 3: for "flood" schedule test
       ch3 = api_post("/api/channels", {
           "name": "Test Channel 3",
+          "slug": "test-channel-3",
           "number": "3",
           "sort_number": 3.0,
           "ffmpeg_profile_id": ffmpeg_id
@@ -401,9 +413,12 @@
       def get_events(ch_id):
           """Fetch all playout events for a channel."""
           data = api_get(f"/api/channels/{ch_id}/playout/events")
-          # The API returns a list of event maps
-          events = data if isinstance(data, list) else data.get("events", data)
-          return events
+          # The endpoint returns a cursor-paginated envelope:
+          # {"items": [...], "pagination": {...}} — older shapes (a bare
+          # list, or an "events" key) are tolerated for robustness.
+          if isinstance(data, list):
+              return data
+          return data.get("items") or data.get("events") or []
 
 
       def event_start(ev):
@@ -617,15 +632,9 @@
       )
       print("[output] XMLTV EPG returns valid XML ✓")
 
-      # Lineup JSON should list channels
-      lineup = json.loads(server.succeed(
-          f"curl -sf {base}/lineup.json"
-      ))
-      assert isinstance(lineup, list), "Lineup should be a JSON array"
-      assert len(lineup) >= 3, (
-          f"Lineup should have >= 3 channels, got {len(lineup)}"
-      )
-      print("[output] Lineup JSON lists all channels ✓")
+      # NOTE: the HDHomeRun emulation (/lineup.json, /discover.json) was
+      # removed in 6236b1f, so there is no lineup endpoint to check anymore.
+      # The M3U playlist is the channel-list output format that remains.
 
 
       # ================================================================

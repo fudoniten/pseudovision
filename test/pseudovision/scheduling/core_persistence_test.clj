@@ -12,9 +12,12 @@
 
 (def ^:private t0 (Instant/parse "2026-04-27T20:00:00Z"))
 
-;; 30-minute content item, played inside a 1-hour block.
+;; 25-minute content item, played inside a 1-hour block. A duration that
+;; doesn't divide the block evenly leaves a remainder (25+25 = 50min) for
+;; tail filler to pad — a 30-minute item would play twice and fill the
+;; hour exactly, leaving nothing for the filler path to exercise.
 (def ^:private content-item
-  {:media-items/id 1 :media-versions/duration (Duration/ofMinutes 30)})
+  {:media-items/id 1 :media-versions/duration (Duration/ofMinutes 25)})
 
 ;; 5-minute filler bumpers — enough to pad the remaining half hour.
 (defn- filler-items [n]
