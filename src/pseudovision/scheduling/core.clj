@@ -987,9 +987,16 @@
                                              zone-id))
                               [gap-events cursor'']
                               (if gap-end
-                                (apply-filler tx cursor' {} channel
-                                              :fallback (:next-start cursor') gap-end
-                                              playout-id opts')
+                                (let [[evs c] (apply-filler tx cursor' {} channel
+                                                            :fallback (:next-start cursor') gap-end
+                                                            playout-id opts')]
+                                  ;; apply-filler doesn't move :next-start, so
+                                  ;; without this the fixed slot would start at
+                                  ;; the old edge, on top of the gap filler,
+                                  ;; instead of at its anchor time.
+                                  [evs (cond-> c
+                                         (.isAfter ^Instant gap-end (:next-start c))
+                                         (assoc :next-start gap-end))])
                                 [[] cursor'])
                               cursor''' (cursor/advance-slot cursor'' (count slots))]
                           [cursor''' (mod (inc slot-idx) (count slots))
