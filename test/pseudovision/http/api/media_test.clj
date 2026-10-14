@@ -169,7 +169,7 @@
       (is (thrown-with-msg? clojure.lang.ExceptionInfo #"rejected the API key \(HTTP 401\)"
                             (jellyfin/check-server "http://jellyfin:8096" "bad-key")))))
   (testing "an unreachable server is a connection failure"
-    (with-redefs [clj-http.client/get (fn [& _] (throw (java.net.ConnectException "refused")))]
+    (with-redefs [clj-http.client/get (fn [& _] (throw (java.net.ConnectException. "refused")))]
       (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Cannot connect to Jellyfin server: refused"
                             (jellyfin/check-server "http://jellyfin:8096" "key")))))
   (testing "success returns the server info"
