@@ -200,34 +200,27 @@
 ;; ---------------------------------------------------------------------------
 ;; find-or-create! — qualified vs unqualified id bug
 ;;
-;; `db/query-one` returns rows with qualified keys (`{:media-sources/id 2}`)
-;; because it uses `as-kebab-maps*`, but `db/execute-one!` returns rows with
-;; unqualified keys (`{:id 2}`) because it uses `as-unqualified-kebab-maps*`.
-;; A helper that switches between the two MUST look up `:id` from both paths
-;; rather than the caller-supplied qualified key, or the insert branch
-;; silently returns nil. That was the live bug on 2026-07-22: a prior
-;; Grout sync crashed with
-;;   "null value in column 'media_source_id' of relation 'libraries'"
-;; because the libraries insert received a nil `media-source-id`.
+;; `db/query-one` returns rows with table-qualified keys
+;; (`{:media-sources/id 2}`, even for `SELECT id`) because it uses
+;; `as-kebab-maps*`, while `db/execute-one!` returns unqualified keys
+;; (`{:id 2}`). The helper reads `:id`, so both branches must use an
+;; unqualified builder. Two live bugs came from mixing them:
+;;   * 2026-07-22: the insert branch read a qualified key, got nil, and the
+;;     libraries insert violated NOT NULL on media_source_id.
+;;   * 2026-10: the lookup branch used `db/query-one`, so `:id` was always nil
+;;     and every call inserted a new Grout media source, library and path.
 ;; ---------------------------------------------------------------------------
 
 (deftest find-or-create-uses-id-from-both-branches
-  (testing "lookup hit returns the row's id"
-    ;; query-one uses the qualified-builder keymap but the row only
-    ;; contains the column we selected (`:id`), which is unqualified by
-    ;; definition — so `:id` is what we read.
-    (with-redefs [db/query-one  (fn [_ _] {:id 42})
-                  db/execute-one! (fn [& _] (throw (Exception. "no insert expected")))]
+  (testing "lookup hit returns the row's id and does not insert"
+    (with-redefs [db/query-one             (fn [& _] (throw (Exception. "lookup must use an unqualified builder")))
+                  db/query-one-unqualified (fn [_ _] {:id 42})
+                  db/execute-one!          (fn [& _] (throw (Exception. "no insert expected")))]
       (is (= 42 (#'sut/find-or-create! nil :media-sources :media-sources/id
                                        [:= :name "Grout"] {})))))
   (testing "lookup miss → insert; returns row's id (unqualified builder)"
-    ;; Reproduces the live regression: db/query-one returns nil so the helper
-    ;; falls through to db/execute-one!, which uses the unqualified builder
-    ;; and yields {:id 7}. The old code looked up :<table>/id here and
-    ;; silently got nil, which then violated the libraries.media_source_id
-    ;; NOT NULL constraint downstream.
-    (with-redefs [db/query-one  (fn [_ _] nil)
-                  db/execute-one! (fn [_ _] {:id 7})]
+    (with-redefs [db/query-one-unqualified (fn [_ _] nil)
+                  db/execute-one!          (fn [_ _] {:id 7})]
       (is (= 7 (#'sut/find-or-create! nil :media-sources :media-sources/id
                                      [:= :name "Grout"] {})))))
   (testing "lookup miss → insert with genuinely nil id is an unrecoverable error"
@@ -236,8 +229,8 @@
     ;; violate a NOT NULL constraint. nil-forced-from-insert is impossible in
     ;; practice (SERIAL PKs always come back), so any future regression here
     ;; surfaces as a clear failure rather than a partial-catalog write.
-    (with-redefs [db/query-one  (fn [_ _] nil)
-                  db/execute-one! (fn [_ _] nil)]
+    (with-redefs [db/query-one-unqualified (fn [_ _] nil)
+                  db/execute-one!          (fn [_ _] nil)]
       (is (nil? (#'sut/find-or-create! nil :media-sources :media-sources/id
                                        [:= :name "Grout"] {}))))))
 
