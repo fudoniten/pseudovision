@@ -27,6 +27,25 @@
     uri))
 
 ;; ---------------------------------------------------------------------------
+;; Jellyfin auth
+;; ---------------------------------------------------------------------------
+
+(defn jellyfin-auth-headers
+  "Request headers that authenticate `api-key` against Jellyfin. Jellyfin
+   12 disables the legacy forms (`X-Emby-Token`, `X-MediaBrowser-Token` and
+   the `api_key` query parameter) by default and answers them with 401, so
+   this is the standard `Authorization: MediaBrowser Token=\"...\"` header."
+  [api-key]
+  {"Authorization" (str "MediaBrowser Token=\"" api-key "\"")})
+
+(defn jellyfin-stream-url
+  "Direct-stream URL for a Jellyfin item, for clients that can't send headers
+   (ffmpeg). Uses the `ApiKey` query parameter; the legacy `api_key` spelling
+   is rejected by Jellyfin 12."
+  [base-url item-id api-key]
+  (str base-url "/Videos/" item-id "/stream?static=true&ApiKey=" api-key))
+
+;; ---------------------------------------------------------------------------
 ;; Write: request params → connection_config JSONB map
 ;; ---------------------------------------------------------------------------
 

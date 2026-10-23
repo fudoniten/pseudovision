@@ -398,13 +398,14 @@
         api-key  (:api-key conn-config)
         item-id  (or (:media-items/remote-key item) (:remote-key item))]
     (when (and base-url api-key item-id)
-      (let [stream-url (str base-url "/Videos/" item-id "/stream?static=true&api_key=" api-key)]
+      (let [stream-url (str base-url "/Videos/" item-id "/stream?static=true")]
         (log/info "Proxying stream from Jellyfin" {:base-url base-url :item-id item-id})
         (try
           (let [response (http/get stream-url
                                    {:as :stream
                                     :throw-exceptions false
-                                    :headers (select-keys (:headers req) ["range" "Range"])})
+                                    :headers (merge (select-keys (:headers req) ["range" "Range"])
+                                                    (conn/jellyfin-auth-headers api-key))})
                 status (:status response)]
             (if (<= 200 status 299)
               {:status status

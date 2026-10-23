@@ -25,7 +25,7 @@
         api-key     (:api-key conn-config)
         item-id     (or (:media-items/remote-key row) (:remote-key row))]
     (when (and base-url api-key item-id)
-      (let [url (str base-url "/Videos/" item-id "/stream?static=true&api_key=" api-key)]
+      (let [url (conn/jellyfin-stream-url base-url item-id api-key)]
         (log/info "Resolved Jellyfin stream URL"
                   {:media-item-id media-item-id :remote-key item-id :base-url base-url})
         url))))
