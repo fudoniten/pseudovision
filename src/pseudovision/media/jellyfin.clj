@@ -59,7 +59,7 @@
   [base-url path api-key & {:keys [query-params]}]
   (try
     (select-keys (http/get (str base-url path)
-                           {:headers          {"X-Emby-Token" api-key}
+                           {:headers          (conn/jellyfin-auth-headers api-key)
                             :query-params     query-params
                             :as               :json
                             :throw-exceptions false

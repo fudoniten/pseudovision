@@ -174,6 +174,11 @@
     (with-redefs [clj-http.client/get (fn [& _] (throw (java.net.ConnectException. "refused")))]
       (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Cannot connect to Jellyfin server: refused"
                             (jellyfin/check-server "http://jellyfin:8096" "key")))))
+  (testing "authenticates with the Authorization header, not the legacy X-Emby-Token"
+    (let [sent (atom nil)]
+      (with-redefs [clj-http.client/get (fn [_ opts] (reset! sent (:headers opts)) {:status 200 :body {}})]
+        (jellyfin/check-server "http://jellyfin:8096" "k3y")
+        (is (= {"Authorization" "MediaBrowser Token=\"k3y\""} @sent)))))
   (testing "success returns the server info"
     (with-redefs [clj-http.client/get (fn [& _] {:status 200 :body {:ServerName "jf"}})]
       (is (= "jf" (:ServerName (jellyfin/check-server "http://jellyfin:8096" "key")))))))
