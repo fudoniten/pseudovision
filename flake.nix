@@ -117,6 +117,16 @@
               # hardware.graphics, which is absent in a plain image).  Referencing
               # the driver's store path here also pulls it into the image closure.
               # For pre-Broadwell GPUs use intel-vaapi-driver + LIBVA_DRIVER_NAME=i965.
+              # NVENC (NVIDIA).  The device plugin's CDI spec mounts the driver
+              # libraries (libcuda.so.1, libnvidia-encode.so.1) at /usr/lib64
+              # and registers them with an ldconfig hook.  Nix's glibc ignores
+              # /etc/ld.so.cache and never searches /usr/lib64, and ffmpeg's
+              # own RUNPATH points at /run/opengl-driver/lib, which a container
+              # doesn't have -- so without this ffmpeg can't load libcuda and
+              # `-init_hw_device cuda` fails.  start-ffmpeg prepends ffmpeg's
+              # store lib to this rather than replacing it.  Harmless on
+              # non-GPU nodes, where the directory doesn't exist.
+              LD_LIBRARY_PATH = "/usr/lib64";
               LIBVA_DRIVER_NAME = "iHD";
               LIBVA_DRIVERS_PATH = "${pkgs.intel-media-driver}/lib/dri";
             };

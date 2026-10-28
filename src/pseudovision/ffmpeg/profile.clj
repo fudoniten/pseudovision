@@ -30,7 +30,8 @@
   (:require [clojure.java.io :as io]
             [clojure.string :as str]
             [taoensso.timbre :as log])
-  (:import [java.io File]))
+  (:import [java.io File]
+           [java.util.concurrent TimeUnit]))
 
 (def ^:private default-vaapi-device "/dev/dri/renderD128")
 
@@ -69,15 +70,64 @@
                   "unknown"))))
         (range 128 144)))
 
+(defn- probe-ffmpeg-path
+  "The ffmpeg to probe with: FFMPEG_PATH when it names a real file, else a
+   bare \"ffmpeg\" resolved against PATH. A cut-down
+   pseudovision.ffmpeg.hls/resolve-ffmpeg-path, which can't be required from
+   here (hls requires this namespace)."
+  []
+  (let [configured (System/getenv "FFMPEG_PATH")]
+    (if (and (not (str/blank? configured)) (file-exists? configured))
+      configured
+      "ffmpeg")))
+
+(def ^:private nvenc-probe-timeout-secs 20)
+
+(defn- nvenc-usable?
+  "Whether NVENC actually works here, checked with a one-frame encode.
+
+   /dev/nvidia0 alone is not proof: the device node can be injected while the
+   userspace driver (libcuda.so.1, libnvidia-encode.so.1) is missing or sits
+   where this ffmpeg's loader never looks. nixpkgs' glibc ignores
+   /etc/ld.so.cache and doesn't search /usr/lib64, so the CDI-injected driver
+   is only found via LD_LIBRARY_PATH (set in the image, see flake.nix). Without
+   this check such a host advertises :nvenc and every stream then dies at
+   `-init_hw_device cuda` instead of falling back to software."
+  []
+  (try
+    (let [proc (-> (ProcessBuilder.
+                    ^java.util.List
+                    [(probe-ffmpeg-path) "-hide_banner" "-loglevel" "error"
+                     "-init_hw_device" "cuda=cu"
+                     "-f" "lavfi" "-i" "nullsrc=s=256x256"
+                     "-frames:v" "1" "-c:v" "h264_nvenc" "-f" "null" "-"])
+                   (.redirectErrorStream true)
+                   (.start))
+          ;; Drain output on a separate thread so a chatty failure can't fill
+          ;; the pipe and block the process before it exits.
+          out  (future (slurp (.getInputStream proc)))]
+      (if (.waitFor proc nvenc-probe-timeout-secs TimeUnit/SECONDS)
+        (or (zero? (.exitValue proc))
+            (do (log/warn "NVIDIA device present but NVENC probe encode failed; NVENC disabled"
+                          {:exit (.exitValue proc) :output (str/trim (deref out 1000 ""))})
+                false))
+        (do (.destroyForcibly proc)
+            (log/warn "NVENC probe encode timed out; NVENC disabled"
+                      {:timeout-secs nvenc-probe-timeout-secs})
+            false)))
+    (catch Exception e
+      (log/warn e "NVENC probe encode could not run; NVENC disabled")
+      false)))
+
 (defn- accels-from
   "Pure decision: given the DRM render-node drivers and whether an NVIDIA device
    node is present, which accel backends are available.
 
    VAAPI requires a render node that is NOT nvidia-backed (iHD/AMD VAAPI cannot
    drive an NVIDIA node — a render node alone is not enough, which is the bug
-   that made an NVIDIA-only host advertise VAAPI). NVENC requires an actual
-   /dev/nvidia* device (the NVIDIA DRM render node alone, without the injected
-   userspace driver, cannot encode)."
+   that made an NVIDIA-only host advertise VAAPI). NVENC requires a working
+   NVIDIA device: `nvidia-device?` is true only when /dev/nvidia0 exists AND a
+   probe encode succeeded (see `nvenc-usable?`)."
   [render-drivers nvidia-device?]
   (cond-> #{:none}
     (some #(not= % "nvidia") render-drivers) (conj :vaapi)
@@ -87,11 +137,13 @@
   "Probes the host for available hardware-acceleration backends. Returns a set
    always containing :none plus any of :nvenc / :vaapi actually usable here."
   []
-  (accels-from (render-node-drivers) (file-exists? "/dev/nvidia0")))
+  (accels-from (render-node-drivers)
+               (and (file-exists? "/dev/nvidia0") (nvenc-usable?))))
 
 (def available-accels
-  "Memoised set of accel backends available on this host. Detection is a cheap
-   filesystem probe; memoised so it runs once per process."
+  "Memoised set of accel backends available on this host. Detection is a
+   filesystem probe plus, on NVIDIA hosts, a one-frame probe encode; memoised
+   so it runs once per process."
   (memoize detect-accels))
 
 ;; ---------------------------------------------------------------------------
