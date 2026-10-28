@@ -92,6 +92,9 @@
           in helpers.deployContainers {
             name = "pseudovision";
             repo = "registry.kube.sea.fudo.link";
+            # The registry is LAN-only and unauthenticated; without this the helper
+            # refuses to push unless skopeo has a stored login for it.
+            requireAuth = false;
             tags = [ "latest" versionTag ];
             # NB: use pathEnv (not environmentPackages) so these land on the
             # container's $PATH, not just in the image filesystem.  The
@@ -138,6 +141,9 @@
           deployMigrationContainer = helpers.deployContainers {
             name = "pseudovision-migratus";
             repo = "registry.kube.sea.fudo.link";
+            # The registry is LAN-only and unauthenticated; without this the helper
+            # refuses to push unless skopeo has a stored login for it.
+            requireAuth = false;
             tags = [ "latest" ];
             entrypoint =
               let migratus = self.packages."${system}".migratusRunner;
