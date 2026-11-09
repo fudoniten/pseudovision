@@ -190,14 +190,22 @@
     (mapv (fn [r] (reduce (fn [m k] (assoc m k (get r k))) (array-map) cols))
           rows)))
 
+(def ^:private insert-chunk
+  "Rows per INSERT. Each event row binds about 8 parameters and PostgreSQL
+   caps a statement at 65535, so a single INSERT broke at roughly 8000 events,
+   which a 14-day build with short filler can reach."
+  2000)
+
 (defn bulk-insert-events!
-  "Inserts a batch of event maps in one statement."
+  "Inserts event maps in multi-row statements of `insert-chunk` rows."
   [ds events]
   (when (seq events)
-    (jdbc/execute! ds
-                   (-> (h/insert-into :playout-events)
-                       (h/values (uniform-rows events))
-                       sql/format))))
+    (let [rows (uniform-rows events)]
+      (doseq [chunk (partition-all insert-chunk rows)]
+        (jdbc/execute! ds
+                       (-> (h/insert-into :playout-events)
+                           (h/values (vec chunk))
+                           sql/format))))))
 
 (defn update-event! [ds id attrs]
   (db/execute-one! ds (-> (h/update :playout-events)

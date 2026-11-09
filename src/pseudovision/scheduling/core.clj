@@ -64,30 +64,39 @@
     :else
     (str "channel-catalog:" (or (:channels/id channel) "unknown"))))
 
-(defn- get-item-tags
-  "Get all tags for a media item."
-  [db media-item-id]
-  (let [tags (db-core/query db (-> (h/select :mt.name)
-                                   (h/from [:metadata-tags :mt])
-                                   (h/join [:metadata :m] [:= :m.id :mt.metadata-id])
-                                   (h/where [:= :m.media-item-id media-item-id])
-                                   sql/format))]
-    (set (map :metadata-tags/name tags))))
+(def ^:private tag-lookup-chunk
+  "Item ids per tag lookup query, well under PostgreSQL's 65535 bind-parameter
+   limit."
+  5000)
 
-(defn- matches-tag-filters?
-  "Returns true if item matches the required/excluded tag filters.
-   - Must have ALL required tags (AND logic)
-   - Must have NONE of the excluded tags (NOT logic)"
-  [db item required-tags excluded-tags]
-  (if (or (seq required-tags) (seq excluded-tags))
-    (let [item-tags (get-item-tags db (:media-items/id item))]
-      (and
-       ;; Must have all required tags
-       (every? #(contains? item-tags %) required-tags)
-       ;; Must not have any excluded tags
-       (not-any? #(contains? item-tags %) excluded-tags)))
-    ;; If no tag filters, item matches
-    true))
+(defn- tags-by-item
+  "Returns {media-item-id #{tag-name ...}} for `item-ids`, in one query per
+   `tag-lookup-chunk` ids. Replaces a per-item lookup that issued one query for
+   every candidate item on every slot occurrence."
+  [db items]
+  (reduce (fn [acc ids]
+            (reduce (fn [acc r]
+                      (update acc (:metadata/media-item-id r)
+                              (fnil conj #{}) (:metadata-tags/name r)))
+                    acc
+                    (db-core/query db (-> (h/select :m.media-item-id :mt.name)
+                                          (h/from [:metadata-tags :mt])
+                                          (h/join [:metadata :m] [:= :m.id :mt.metadata-id])
+                                          (h/where [:in :m.media-item-id (vec ids)])
+                                          sql/format))))
+          {}
+          (partition-all tag-lookup-chunk (distinct (keep :media-items/id items)))))
+
+(defn- filter-by-tags
+  "Keeps the items that carry ALL of `required-tags` and NONE of
+   `excluded-tags` (tags on the item's own metadata)."
+  [db items required-tags excluded-tags]
+  (let [tag-map (tags-by-item db items)]
+    (filterv (fn [item]
+               (let [item-tags (get tag-map (:media-items/id item) #{})]
+                 (and (every? #(contains? item-tags %) required-tags)
+                      (not-any? #(contains? item-tags %) excluded-tags))))
+             items)))
 
 (defn- playable?
   "True when an item has a known, positive duration.
@@ -217,7 +226,7 @@
                              :required required-tags
                              :excluded excluded-tags
                              :before-count (count items)})
-                   (let [filtered (filterv #(matches-tag-filters? db % required-tags excluded-tags) items)]
+                   (let [filtered (filter-by-tags db (vec items) required-tags excluded-tags)]
                      (log/info "Items after tag filtering"
                               {:slot-id slot-id
                                :after-count (count filtered)
@@ -233,6 +242,40 @@
              {:slot-id slot-id
               :count (count playable)})
     playable))
+
+(defn- memoized
+  "Looks `k` up in the per-build cache atom `cache`, calling `(f)` and storing
+   its result on a miss. Without a cache (unit tests calling the emitters
+   directly) it just calls `(f)`. A throw is not cached."
+  [cache k f]
+  (if cache
+    (if-let [hit (find @cache k)]
+      (val hit)
+      (let [v (f)]
+        (swap! cache assoc k v)
+        v))
+    (f)))
+
+(defn- slot-items
+  "load-items, cached for the length of one build (opts :items-cache).
+
+   A day-based build visits every slot once per day it airs, and each visit
+   used to resolve its collection from scratch: a smart category collection is
+   a multi-join query over every tagged show, plus a tag lookup for every
+   candidate item when the slot has tag filters. Fourteen days of a dozen
+   strips repeated that a couple of hundred times with identical results,
+   since nothing a build does changes collection membership. The cache key is
+   the slot's content source and tag filters, not the slot row itself, because
+   override clipping hands the emitters copies of a slot with a different
+   block duration."
+  [db slot channel opts]
+  (let [coll-id (:schedule-slots/collection-id slot)
+        item-id (:schedule-slots/media-item-id slot)
+        k       [coll-id item-id
+                 (when-not (or coll-id item-id) (:channels/id channel))
+                 (vec (:schedule-slots/required-tags slot))
+                 (vec (:schedule-slots/excluded-tags slot))]]
+    (memoized (:items-cache opts) k #(load-items db slot channel))))
 
 (defn- item-duration
   "Returns the item's playback duration, or zero if the item has not been probed."
@@ -322,6 +365,35 @@
                              m events))))
     [events cursor]))
 
+(defn- grout-candidates
+  "Grout filler candidates for the gap [from, to] on `channel`.
+
+   Inside a build (opts :grout-pools set) the channel's whole pool for the
+   preset's tags is fetched once and cached, then cut down to the clips no
+   longer than the gap, which is what Grout's max_ms did per request. Outside a
+   build it asks Grout directly, as before."
+  [db opts channel from to preset]
+  (if-let [pools (:grout-pools opts)]
+    (let [pool   (memoized pools [:filler (:channels/id channel)
+                                  (vec (:filler-presets/grout-tags preset))]
+                           #(grout-source/grout-filler-pool db (:grout opts) channel preset))
+          gap-ms (when (and from to) (.toMillis (Duration/between ^Instant from ^Instant to)))]
+      (if (and gap-ms (pos? gap-ms))
+        (filterv #(<= (.toMillis ^Duration (item-duration %)) gap-ms) pool)
+        pool))
+    (grout-source/grout-filler-items db (:grout opts) channel from to preset)))
+
+(defn- bumper-candidates-fn
+  "The bumper lookup handed to filler/fill-gap-with-bumper: inside a build, a
+   filter over the channel's cached bumper pool; otherwise nil (fill-gap-with-
+   bumper then asks Grout itself)."
+  [db opts channel]
+  (when-let [pools (:grout-pools opts)]
+    (fn [min-ms max-ms]
+      (filterv #(<= min-ms (.toMillis ^Duration (item-duration %)) max-ms)
+               (memoized pools [:bumper (:channels/id channel)]
+                         #(grout-source/grout-bumper-pool db (:grout opts) channel))))))
+
 (defn- grout-channel-fallback
   "Last-resort gap fill for a `role` that has NO filler preset configured on the
    slot or channel.  Rather than leave dead air, pull channel-mapped clips
@@ -341,8 +413,7 @@
     (if (and to
              (grout/enabled? grout)
              (.isBefore ^Instant from ^Instant to))
-      (let [items (filterv playable?
-                           (grout-source/grout-filler-items db grout channel from to {}))]
+      (let [items (filterv playable? (grout-candidates db opts channel from to {}))]
         (if (seq items)
           (do (log/info "Filling gap with channel-mapped Grout filler (no preset configured)"
                         {:slot-id (:schedule-slots/id slot)
@@ -381,7 +452,8 @@
    ;; falls through to regular filler.
    (when (and (= role :tail) to)
      (when-let [bumper-events (filler/fill-gap-with-bumper
-                               db (:grout opts) channel from to playout-id)]
+                               db (:grout opts) channel from to playout-id
+                               (bumper-candidates-fn db opts channel))]
        (let [guide   (:next-guide-group cursor)
              slot-id (:schedule-slots/id slot)
              events  (mapv #(assoc % :guide-group guide :slot-id slot-id)
@@ -407,7 +479,7 @@
              ;; packer / enumerator below are unchanged.
              items (filterv playable?
                             (if (seq (:filler-presets/grout-tags preset))
-                              (grout-source/grout-filler-items db (:grout opts) channel from until preset)
+                              (grout-candidates db opts channel from until preset)
                               (filler-db/load-filler-items db preset)))]
          (if (and (:pack-filler? opts)
                   (= "duration" (:filler-presets/mode preset)))
@@ -450,7 +522,7 @@
 (defn emit-once
   "Emit one item, return [events cursor]."
   [db cursor slot channel playout-id opts]
-  (let [items   (load-items db slot channel)
+  (let [items   (slot-items db slot channel opts)
         ckey    (collection-key slot channel)
         order   (keyword (or (:schedule-slots/playback-order slot) "chronological"))
         enum-opts {:seed (get opts :seed 0)
@@ -490,7 +562,7 @@
    items, and post-roll filler after the last item, when configured.  A count
    slot has no time deadline, so inline filler is sized purely by its preset."
   [db cursor slot channel playout-id opts]
-  (let [items  (load-items db slot channel)
+  (let [items  (slot-items db slot channel opts)
         ckey   (collection-key slot channel)
         order  (keyword (or (:schedule-slots/playback-order slot) "chronological"))
         enum-opts {:seed (get opts :seed 0)
@@ -541,7 +613,7 @@
    mid-roll filler between items, post-roll filler after the last item, and
    pads any remaining time with tail filler.  Returns [events cursor]."
   [db cursor slot channel playout-id opts]
-  (let [items      (load-items db slot channel)
+  (let [items      (slot-items db slot channel opts)
         ckey       (collection-key slot channel)
         order      (keyword (or (:schedule-slots/playback-order slot) "chronological"))
         enum-opts  {:seed (get opts :seed 0)
@@ -657,7 +729,7 @@
    Returns [events cursor]."
   [db cursor slot channel playout-id {:keys [flood-end] :as opts}]
   ;; Flood fills from :next-start up to flood-end (the next fixed-anchor time).
-  (let [items  (load-items db slot channel)
+  (let [items  (slot-items db slot channel opts)
         ckey   (collection-key slot channel)
         order  (keyword (or (:schedule-slots/playback-order slot) "chronological"))
         enum-opts {:seed (get opts :seed 0)
@@ -852,12 +924,22 @@
    Returns `{:events .. :cursor .. :stalled? bool}`. A slot error throws
    ex-info carrying the events and cursor so far under :events / :cursor."
   [db initial-cur slots channel playout-id horizon opts]
-  (let [zone-id (get opts :zone-id (t/default-zone-id))]
+  (let [zone-id     (get opts :zone-id (t/default-zone-id))
+        on-progress (:on-progress opts)
+        from-s      (.getEpochSecond ^Instant (:next-start initial-cur))
+        span-s      (max 1 (- (.getEpochSecond ^Instant horizon) from-s))]
     (loop [cursor initial-cur
            events []]
       (let [start (:next-start cursor)
             o     (when-not (.isAfter ^Instant start ^Instant horizon)
                     (occ/next-occurrence slots start zone-id))]
+        (when on-progress
+          (on-progress {:phase       "building"
+                        :built-until (str start)
+                        :horizon     (str horizon)
+                        :events      (count events)
+                        :percent     (-> (- (.getEpochSecond ^Instant start) from-s)
+                                         (* 100) (quot span-s) (max 0) (min 100))}))
         (cond
           (.isAfter ^Instant start ^Instant horizon)
           {:events events :cursor cursor :stalled? false}
@@ -970,7 +1052,8 @@
                        resume-edge)
         horizon     (t/add-duration now (t/hours->duration
                                          (get opts :lookahead-hours 72)))
-        opts'       (assoc opts :seed seed)]
+        opts'       (assoc opts :seed seed)
+        started-ms  (System/currentTimeMillis)]
     (log/info "Build starting"
              {:playout-id playout-id
               :channel-id channel-id
@@ -1012,7 +1095,13 @@
                            tx (t/sub-duration now window) horizon)
                   opts'   (assoc opts' :pack-filler? (get opts :pack-filler? true)
                                        :recency-window window
-                                       :filler-airings-atom (atom airings))]
+                                       :filler-airings-atom (atom airings)
+                                       ;; Per-build caches: collection contents
+                                       ;; and Grout pools don't change during
+                                       ;; a build (see slot-items and
+                                       ;; grout-candidates).
+                                       :items-cache (atom {})
+                                       :grout-pools (atom {}))]
             (if (day-based? slots)
               (let [{:keys [events cursor stalled?]}
                     (try
@@ -1034,9 +1123,12 @@
                                              :build-success  (not stalled?)
                                              :build-message  (when stalled?
                                                                "Build stopped: no slot airs within a week")})
-                (log/info "Build complete" {:playout-id playout-id
-                                            :mode       :by-day
-                                            :events     (count events)})
+                (log/info "Build complete" {:playout-id  playout-id
+                                            :mode        :by-day
+                                            :events      (count events)
+                                            :elapsed-ms  (- (System/currentTimeMillis) started-ms)
+                                            :item-pools  (count @(:items-cache opts'))
+                                            :grout-pools (count @(:grout-pools opts'))})
                 (count events))
               (loop [cursor       initial-cur
                      slot-idx     0
@@ -1055,7 +1147,8 @@
                                                    :build-success  true
                                                    :build-message  nil})
                       (log/info "Build complete" {:playout-id playout-id
-                                                  :events     (count events)})
+                                                  :events     (count events)
+                                                  :elapsed-ms (- (System/currentTimeMillis) started-ms)})
                       (count events))
 
                     ;; Safety net: if a full pass over every slot left the cursor
@@ -1145,6 +1238,23 @@
                 (log/error e2 "Could not record build failure" {:playout-id playout-id})))
             (throw e)))))))
 
+(defonce ^:private playout-locks (java.util.concurrent.ConcurrentHashMap.))
+
+(defn- with-playout-lock
+  "Runs `(f)` while holding this process's lock for `playout-id`.
+
+   Two builds of one playout must not overlap: each deletes the future and
+   inserts its own events in a separate transaction, and neither sees the
+   other's uncommitted rows, so both sets survive as overlapping events. That
+   happened when TS gave up waiting on a slow build and the next run started
+   another. The second build now waits, then reads the playout (and cursor)
+   the first one saved."
+  [playout-id f]
+  (let [lock (.computeIfAbsent ^java.util.concurrent.ConcurrentHashMap playout-locks (long playout-id)
+                               (reify java.util.function.Function
+                                 (apply [_ _] (Object.))))]
+    (locking lock (f))))
+
 (defn rebuild-from-now!
   "Wipe the auto-generated timeline from now onward and regenerate it fresh,
    starting the schedule over from its first slot.  Used when configuration
@@ -1161,12 +1271,14 @@
    Returns number of events generated."
   ([ds playout-id horizon-days] (rebuild-from-now! ds playout-id horizon-days nil))
   ([ds playout-id horizon-days opts]
-   (let [playout (playout-db/get-playout ds playout-id)]
-     (if playout
-       (let [result (build! ds (merge opts {:lookahead-hours (* horizon-days 24)
-                                            :reset-cursor?   true}) playout)]
-         (if (= result :no-schedule) 0 result))
-       0))))
+   (with-playout-lock playout-id
+     (fn []
+       (let [playout (playout-db/get-playout ds playout-id)]
+         (if playout
+           (let [result (build! ds (merge opts {:lookahead-hours (* horizon-days 24)
+                                                :reset-cursor?   true}) playout)]
+             (if (= result :no-schedule) 0 result))
+           0))))))
 
 (defn rebuild-horizon!
   "Extend a playout's timeline forward to `new-horizon-days` from now, preserving
@@ -1180,11 +1292,13 @@
   ([ds playout-id current-horizon-days new-horizon-days]
    (rebuild-horizon! ds playout-id current-horizon-days new-horizon-days nil))
   ([ds playout-id _current-horizon-days new-horizon-days opts]
-   (let [playout (playout-db/get-playout ds playout-id)]
-     (if playout
-       (let [result (build! ds (merge opts {:lookahead-hours (* new-horizon-days 24)}) playout)]
-         (if (= result :no-schedule) 0 result))
-       0))))
+   (with-playout-lock playout-id
+     (fn []
+       (let [playout (playout-db/get-playout ds playout-id)]
+         (if playout
+           (let [result (build! ds (merge opts {:lookahead-hours (* new-horizon-days 24)}) playout)]
+             (if (= result :no-schedule) 0 result))
+           0))))))
 
 (defn ensure-horizon!
   "Ensure one channel's playout timeline reaches at least `horizon-days` from now,

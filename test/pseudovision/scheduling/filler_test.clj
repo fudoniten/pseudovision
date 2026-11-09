@@ -159,3 +159,9 @@
         (is (= t0       (:start-at      ev)))
         (is (= gap-end  (:finish-at     ev)))
         (is (false?     (:is-manual     ev)))))))
+
+(deftest bumper-bucket-is-the-largest-that-fits
+  (is (= 5  (#'pseudovision.scheduling.filler/duration-bucket 3)))
+  (is (= 5  (#'pseudovision.scheduling.filler/duration-bucket 7)))
+  (is (= 10 (#'pseudovision.scheduling.filler/duration-bucket 12)))
+  (is (= 15 (#'pseudovision.scheduling.filler/duration-bucket 15))))

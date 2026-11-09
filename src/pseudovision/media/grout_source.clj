@@ -182,6 +182,51 @@
              :media-versions/duration (Duration/ofMillis ms)}))))))
 
 ;; ---------------------------------------------------------------------------
+;; Batch ingest (whole candidate pools)
+;; ---------------------------------------------------------------------------
+
+(def ^:private ingest-lookup-chunk 1000)
+
+(defn- usable-clip? [clip]
+  (and (not (str/blank? (:path clip)))
+       (some-> (:duration-ms clip) pos?)))
+
+(defn- existing-items-by-key
+  "remote_key -> {:media-items/id .. :media-versions/duration ..} for the clips
+   already ingested under `lib-path-id`, one query per chunk of keys."
+  [ds lib-path-id clips]
+  (reduce (fn [acc chunk]
+            (reduce (fn [acc r]
+                      (assoc acc (:media-items/remote-key r)
+                             {:media-items/id          (:media-items/id r)
+                              :media-versions/duration (:media-versions/duration r)}))
+                    acc
+                    (db/query ds (-> (h/select :mi.id :mi.remote-key :mv.duration)
+                                     (h/from [:media-items :mi])
+                                     (h/left-join [:media-versions :mv] [:= :mv.media-item-id :mi.id])
+                                     (h/where [:and
+                                               [:= :mi.library-path-id lib-path-id]
+                                               [:in :mi.remote-key (mapv remote-key chunk)]])
+                                     sql/format))))
+          {}
+          (partition-all ingest-lookup-chunk clips)))
+
+(defn ingest-clips!
+  "Like mapping `ingest-clip!` over `clips`, but looks up the already-ingested
+   ones in bulk, so a pool of N known clips costs N/1000 queries instead of N.
+   Unusable clips (no path, non-positive duration) are dropped."
+  [ds lib-path-id clips]
+  (let [clips    (filterv usable-clip? clips)
+        existing (existing-items-by-key ds lib-path-id clips)]
+    (into []
+          (keep (fn [clip]
+                  (if-let [found (get existing (remote-key clip))]
+                    (update found :media-versions/duration
+                            #(or % (Duration/ofMillis (:duration-ms clip))))
+                    (ingest-clip! ds lib-path-id clip))))
+          clips)))
+
+;; ---------------------------------------------------------------------------
 ;; Filler candidate loading (called by the scheduler)
 ;; ---------------------------------------------------------------------------
 
@@ -262,6 +307,54 @@
             [])
         (let [lib-path-id (ensure-library-path! ds (:media-dir grout))]
           (into [] (keep #(ingest-clip! ds lib-path-id %)) clips))))))
+
+;; ---------------------------------------------------------------------------
+;; Whole-pool loading (one Grout sweep per build)
+;;
+;; grout-filler-items / grout-bumper-items ask Grout for a fresh random sample
+;; on every gap. A 14-day build has hundreds of gaps, and each one cost an HTTP
+;; round trip plus a lookup query per returned clip. The build engine instead
+;; loads a channel's whole pool once per build with these and filters it by gap
+;; length locally (see pseudovision.scheduling.core/grout-candidates).
+;; ---------------------------------------------------------------------------
+
+(def ^:private pool-max-pages
+  "Page cap for a pool sweep (200 clips a page)."
+  10)
+
+(defn grout-filler-pool
+  "Every non-bumper Grout clip usable on `channel` (its own plus generic clips)
+   carrying all of `preset`'s grout-tags, ingested as local media items.
+   Same candidate shape as `grout-filler-items`, without the gap-length cap.
+   Returns [] when Grout is disabled, unreachable or has no match."
+  [ds grout channel preset]
+  (if-not (grout/enabled? grout)
+    []
+    (let [chan  (channel-tag channel)
+          clips (->> (grout/list-all grout
+                                     (cond-> {:tags (:filler-presets/grout-tags preset)}
+                                       chan (assoc :channel chan))
+                                     pool-max-pages)
+                     (remove #(= "bumper" (:kind %))))]
+      (log/info "Loaded Grout filler pool"
+                {:channel chan :tags (:filler-presets/grout-tags preset) :clips (count clips)})
+      (if (empty? clips)
+        []
+        (ingest-clips! ds (ensure-library-path! ds (:media-dir grout)) clips)))))
+
+(defn grout-bumper-pool
+  "Every bumper-kind Grout clip usable on `channel`, ingested as local media
+   items. The bumper counterpart of `grout-filler-pool`."
+  [ds grout channel]
+  (if-not (grout/enabled? grout)
+    []
+    (let [chan  (channel-tag channel)
+          clips (grout/list-all grout (cond-> {:kind "bumper"} chan (assoc :channel chan))
+                                pool-max-pages)]
+      (log/info "Loaded Grout bumper pool" {:channel chan :clips (count clips)})
+      (if (empty? clips)
+        []
+        (ingest-clips! ds (ensure-library-path! ds (:media-dir grout)) clips)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Long-form content sync (program items → catalog + scheduler)
