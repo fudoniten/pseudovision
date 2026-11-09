@@ -5,6 +5,7 @@
             [honey.sql.helpers :as h]
             [pseudovision.db.core :as db]
             [pseudovision.db.media :as media]
+            [pseudovision.util.sql :as sql-util]
             [taoensso.timbre   :as log]))
 
 (defmulti resolve-collection
@@ -16,7 +17,7 @@
   (db/query ds (-> (h/select :mi.* :mv.duration)
                    (h/from [:media-items :mi])
                    (h/join [:collection-items :ci] [:= :ci.media-item-id :mi.id])
-                   (h/left-join [:media-versions :mv] [:= :mv.media-item-id :mi.id])
+                   (h/left-join [:media-versions :mv] [:= :mv.id (media/primary-version-id :mi.id)])
                    (h/where [:= :ci.collection-id (:collections/id collection)])
                    (h/order-by [[:coalesce :ci.custom-order :mi.id]])
                    sql/format)))
@@ -26,12 +27,13 @@
 ;; ---------------------------------------------------------------------------
 
 (defn- tag-exists-subq
-  "HoneySQL EXISTS subquery: does mi.id have a metadata tag matching `name-clause`?"
+  "HoneySQL EXISTS subquery: does mi.id have a tag matching `name-clause`
+   (written against `:mt.name`), counting tags inherited from its season and
+   show? See `media/effective-tag-exists`."
   [name-clause]
   [:exists {:select [1]
-            :from   [[:metadata :m]]
-            :join   [[:metadata-tags :mt] [:= :mt.metadata-id :m.id]]
-            :where  [:and [:= :m.media-item-id :mi.id] name-clause]}])
+            :from   [[:media-item-effective-tags :mt]]
+            :where  [:and [:= :mt.media-item-id :mi.id] name-clause]}])
 
 (defn- smart-tag-clause
   "Returns a HoneySQL WHERE fragment for required/excluded tag lists.
@@ -112,9 +114,9 @@
                    :match match-mode})
         (db/query ds (cond-> (-> (h/select :mi.* :mv.duration)
                                  (h/from [:media-items :mi])
-                                 (h/left-join [:media-versions :mv] [:= :mv.media-item-id :mi.id])
+                                 (h/left-join [:media-versions :mv] [:= :mv.id (media/primary-version-id :mi.id)])
                                  (h/order-by order-kw))
-                       media-type  (h/where [:= :mi.kind (keyword media-type)])
+                       media-type  (h/where [:= :mi.kind (sql-util/->pg-enum "media_item_kind" media-type)])
                        tag-clause  (h/where tag-clause)
                        true        sql/format))))))
 

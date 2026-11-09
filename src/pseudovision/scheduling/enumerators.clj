@@ -27,6 +27,27 @@
     (Collections/shuffle arr rng)
     (vec arr)))
 
+(defn- pass-order
+  "The play order for one pass of a :random enumerator over `n` items:
+   a seeded shuffle, adjusted so the pass doesn't open with the item the
+   previous pass (seed - 1) closed on. Each pass already plays every item once
+   before any repeats, but two independent shuffles could put the same item
+   last and then first, airing it twice in a row.
+
+   Only positions 0 and n/2 are ever swapped, so a pass's last item is always
+   its shuffle's last item, and the previous pass's can be recomputed from its
+   seed alone. With two items the order is fixed, which simply alternates."
+  [n seed]
+  (cond
+    (<= n 1) (vec (range n))
+    (= n 2)  [0 1]
+    :else    (let [order     (shuffled-indices n seed)
+                   prev-last (peek (shuffled-indices n (dec seed)))
+                   mid       (quot n 2)]
+               (if (= (first order) prev-last)
+                 (assoc order 0 (nth order mid) mid (first order))
+                 order))))
+
 (defn- rotate-vec
   "Rotates vector v so that index start becomes the first element."
   [v start]
@@ -52,7 +73,7 @@
   {:items   (vec items)
    :index   0
    :seed    seed
-   :order   (shuffled-indices (count items) seed)
+   :order   (pass-order (count items) seed)
    :playback-order :random})
 
 (defmethod make-enumerator :shuffle [items _ {:keys [seed] :or {seed 0}}]
@@ -108,7 +129,7 @@
         pos (mod index n)
         [order' seed'] (if (zero? pos)
                          (let [new-seed (+ seed 1)]
-                           [(shuffled-indices n new-seed) new-seed])
+                           [(pass-order n new-seed) new-seed])
                          [order seed])
         item (nth items (nth order' pos))]
     [item (assoc e :index (inc index) :order order' :seed seed')]))

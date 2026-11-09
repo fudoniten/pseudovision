@@ -404,3 +404,21 @@
         (is (some #{11} params) "the already-ingested clip gets a title row")
         (is (some #{"Station ident"} params))
         (is (not-any? #{13} params) "freshly ingested clips are titled by ingest-clip! itself")))))
+
+(deftest filler-candidates-flag-generic-clips
+  (testing "clips Grout hands to every channel are flagged so the packer can
+            prefer the channel's own clips"
+    (let [own     {:id "own" :path "/data/own.mp4" :duration-ms 60000 :channel "spectrum" :channels ["spectrum"]}
+          multi   {:id "multi" :path "/data/m.mp4" :duration-ms 60000 :channels ["spectrum" "hua"]}
+          generic {:id "gen" :path "/data/gen.mp4" :duration-ms 60000 :channel nil :channels nil}
+          ids     {"own" 1 "multi" 2 "gen" 3}]
+      (with-redefs [grout/find-filler        (fn [_ _] [own multi generic])
+                    sut/ensure-library-path! (fn [_ _] 7)
+                    sut/ingest-clip!         (fn [_ _ c] {:media-items/id (ids (:id c))
+                                                          :media-versions/duration (Duration/ofMillis 60000)})]
+        (is (= {1 nil 2 nil 3 true}
+               (into {} (map (juxt :media-items/id :grout/generic?))
+                     (sut/grout-filler-items nil enabled-client {:channels/slug "spectrum"}
+                                             (Instant/parse "2026-07-03T10:00:00Z")
+                                             (Instant/parse "2026-07-03T10:05:00Z")
+                                             {}))))))))

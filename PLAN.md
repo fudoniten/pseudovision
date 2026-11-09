@@ -133,6 +133,11 @@ Grout clips over HTTP instead of a shared mount; merging pvcli and
   per-playout advisory lock, and generated events are unique on
   `(playout_id, start_at)`. `GET /api/channels/:id/playout/overlaps` runs the
   same check on demand.
+- 2026-11-09: An item's tags are its own plus its season's and show's,
+  resolved live through the `media_item_effective_tags` view rather than
+  copied onto episodes. An item's length and file come from its longest
+  media version. Generic Grout clips (no channel) are penalised in gap
+  filler so a channel's own clips come first.
 - 2026-10-13: HDHomeRun emulation was removed; Jellyfin uses the M3U tuner and
   XMLTV.
 - Live streaming uses per-event encoders with a PV-owned playlist and overlap

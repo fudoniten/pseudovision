@@ -189,3 +189,40 @@
               "channel-catalog path is NOT taken when media-item-id is set")
           (is (= 7 (:media-item-id (first events)))
               "event carries the resolved media-item id"))))))
+
+;; ---------------------------------------------------------------------------
+;; Tag inheritance and one row per item
+;; ---------------------------------------------------------------------------
+
+(deftest required-tags-match-tags-inherited-from-the-show
+  (testing "an episode passes a channel:<slug> filter when only its show
+            carries the tag. Sitcom Spectrum's 3,133 episodes had no tags of
+            their own, so an own-tags-only filter stripped them all."
+    (let [episode {:media-items/id 70 :media-versions/duration dur-30m}
+          movie   {:media-items/id 71 :media-versions/duration dur-30m}
+          slot    {:schedule-slots/id            102
+                   :schedule-slots/collection-id 5
+                   :schedule-slots/required-tags ["channel:spectrum"]
+                   :schedule-slots/excluded-tags ["holiday"]}]
+      (with-redefs [media-db/get-collection     (fn [_ _] {:collections/id 5 :collections/kind "manual"})
+                    pseudovision.db.collections/resolve-collection (fn [_ _] [episode movie])
+                    ;; The episode's effective tags include its show's.
+                    media-db/effective-tags-by-item
+                    (fn [_ ids]
+                      (is (= [70 71] (vec ids)))
+                      {70 #{"channel:spectrum" "genre:comedy"}
+                       71 #{"channel:spectrum" "holiday"}})]
+        (is (= [70] (mapv :media-items/id (#'core/load-items nil slot test-channel))))))))
+
+(deftest pools-hold-each-item-once
+  (testing "two rows for the same item (e.g. a preview version next to the
+            main cut) become one, so the item doesn't air twice as often"
+    (let [slot {:schedule-slots/id 103 :schedule-slots/collection-id 5}]
+      (with-redefs [media-db/get-collection (fn [_ _] {:collections/id 5 :collections/kind "manual"})
+                    pseudovision.db.collections/resolve-collection
+                    (fn [_ _] [{:media-items/id 9 :media-versions/duration (Duration/ofMinutes 95)}
+                               {:media-items/id 9 :media-versions/duration (Duration/ofSeconds 89)}
+                               {:media-items/id 8 :media-versions/duration dur-30m}])]
+        (is (= [[9 (Duration/ofMinutes 95)] [8 dur-30m]]
+               (mapv (juxt :media-items/id :media-versions/duration)
+                     (#'core/load-items nil slot test-channel))))))))

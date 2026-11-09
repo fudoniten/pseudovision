@@ -640,3 +640,24 @@
           (is (seq filler) "the 10-minute remainder gets Grout filler")
           (is (every? #(not (.isAfter ^Instant (:finish-at %) t1)) events)
               "no filler finishes after the hour"))))))
+
+(deftest packed-filler-prefers-the-channels-own-clips
+  (let [own     {:media-items/id 1 :media-versions/duration (Duration/ofMinutes 5)}
+        generic {:media-items/id 2 :media-versions/duration (Duration/ofMinutes 5)
+                 :grout/generic? true}
+        pick    (fn [items from opts]
+                  (let [[events _] (#'core/pack-filler (cursor/init from) {:schedule-slots/id 1}
+                                                       :tail from (.plusSeconds from 300)
+                                                       items 1 opts)]
+                    (mapv :media-item-id events)))]
+    (testing "a generic Grout clip loses to an equally good, fresh channel clip"
+      (is (every? #(= [1] %)
+                  (for [i (range 50)]
+                    (pick [own generic] (.plusSeconds t0 (* i 600)) {:seed i})))))
+    (testing "it still fills a gap nothing channel-specific fits"
+      (is (= [2] (pick [(assoc own :media-versions/duration (Duration/ofMinutes 6)) generic]
+                       t0 {}))))
+    (testing "and wins once the channel's own clip has aired heavily"
+      (let [airings (atom {1 (vec (repeat 4 t0))})]
+        (is (= [2] (pick [own generic] t0 {:filler-airings-atom airings
+                                           :recency-window (Duration/ofHours 2)})))))))

@@ -112,11 +112,11 @@
                                   :schedule-slots/excluded-tags ["kids"])]
     (with-redefs [media-db/get-collection   (fn [_ _] {:collections/id 7 :collections/kind "manual"})
                   col-db/resolve-collection (fn [_ _] [(episode 1 22) (episode 2 22) (episode 3 22)])
-                  db-core/query             (fn [_ _]
+                  db-core/query-unqualified (fn [_ _]
                                               (swap! queries inc)
-                                              [{:metadata/media-item-id 1 :metadata-tags/name "comedy"}
-                                               {:metadata/media-item-id 2 :metadata-tags/name "comedy"}
-                                               {:metadata/media-item-id 2 :metadata-tags/name "kids"}])]
+                                              [{:media-item-id 1 :name "comedy"}
+                                               {:media-item-id 2 :name "comedy"}
+                                               {:media-item-id 2 :name "kids"}])]
       (is (= [1] (map :media-items/id (#'core/load-items nil slot channel))))
       (is (= 1 @queries) "three candidates, one tag query"))))
 
