@@ -221,9 +221,9 @@
               :handler    (pl/clear-playout-handler ctx)}}]
    ["/api/channels/:channel-id/playout/events"
     {:tags       ["playouts"]
-     :get  {:summary   "List upcoming playout events (cursor-paginated)"
+     :get  {:summary   "List playout events (upcoming, cursor-paginated, or a from/until window)"
             :parameters {:path  [:map [:channel-id s/ChannelId]]
-                         :query s/CursorPaginationQuery}
+                         :query s/PlayoutEventsQuery}
             :responses {200 {:body s/PaginatedPlayoutEvents}
                         404 {:body s/APIError}}
             :handler   (pl/list-events-handler ctx)}

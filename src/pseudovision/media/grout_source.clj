@@ -107,6 +107,33 @@
                                  [:= :mi.remote-key (remote-key clip)]])
                        sql/format)))
 
+(declare display-title)
+
+(def ^:private title-chunk 1000)
+
+(defn- ensure-clip-titles!
+  "Gives each ingested clip a `metadata` row carrying its `display-title`, for
+   the ones that have none yet (ON CONFLICT DO NOTHING, so program items whose
+   metadata Grout sync owns are left alone). Without it, filler and bumper
+   clips have no title and every guide shows them as `grout:<uuid>`.
+   `pairs` is a seq of [media-item-id clip]. Best-effort: a failure is logged,
+   never thrown, so it can't break a build."
+  [ds pairs]
+  (try
+    (doseq [chunk (partition-all title-chunk (filter first pairs))]
+      (db/execute! ds
+        (-> (h/insert-into :metadata)
+            (h/values (mapv (fn [[item-id clip]]
+                              {:media-item-id item-id
+                               :kind          (sql-util/->pg-enum "media_item_kind" "other_video")
+                               :title         (display-title clip)})
+                            chunk))
+            (h/on-conflict :media-item-id)
+            (h/do-nothing)
+            sql/format)))
+    (catch Exception e
+      (log/warn e "Could not write titles for Grout clips" {:count (count pairs)}))))
+
 (defn ingest-clip!
   "Idempotently materialises one Grout clip as a local-path media item under the
    Grout library path. Returns a candidate map shaped for the filler packer
@@ -128,58 +155,63 @@
       (if-let [found (existing-item ds lib-path-id clip)]
         {:media-items/id        (:media-items/id found)
          :media-versions/duration (or (:duration found) (Duration/ofMillis ms))}
-        (jdbc/with-transaction [tx ds]
-          ;; Upsert, not bare insert: concurrent rebuild jobs race here (two
-          ;; daily/quarterly builds can ingest the same grout:<id> clip at the
-          ;; same time, and the pre-check above can't see the other job's
-          ;; uncommitted row). ON CONFLICT (library_path_id, remote_key) — the
-          ;; uq_media_items_library_remote unique index — makes this atomic;
-          ;; DO UPDATE (a no-op re-set) instead of DO NOTHING so RETURNING
-          ;; yields the existing row's :id on the conflict path too.
-          (let [item    (db/execute-one! tx
-                          (-> (h/insert-into :media-items)
-                              (h/values [{:kind            (sql-util/->pg-enum "media_item_kind" "other_video")
-                                          :state           (sql-util/->pg-enum "media_item_state" "normal")
-                                          :library-path-id lib-path-id
-                                          :remote-key      (remote-key clip)}])
-                              (h/on-conflict :library-path-id :remote-key)
-                              (h/do-update-set :remote-key)
-                              (h/returning :*)
-                              sql/format))
-                item-id (:id item)
-                ;; Guard the version: the raced path may land on an item that
-                ;; already has a version, and media-versions has no unique key
-                ;; on media_item_id to catch a duplicate.
-                ver     (or (db/execute-one! tx
-                              (-> (h/select :*)
-                                  (h/from :media-versions)
-                                  (h/where [:= :media-item-id item-id])
-                                  (h/limit 1)
-                                  sql/format))
-                            (db/execute-one! tx
-                              (-> (h/insert-into :media-versions)
-                                  (h/values [{:media-item-id item-id
-                                              :duration (-> (Duration/ofMillis ms)
-                                                            sql-util/duration->pg-interval
-                                                            sql-util/->pg-interval)
-                                              :width  (or (:width clip) 0)
-                                              :height (or (:height clip) 0)}])
-                                  (h/returning :*)
-                                  sql/format)))]
-            (db/execute-one! tx
-              (-> (h/insert-into :media-files)
-                  (h/values [{:media-version-id (:id ver)
-                              :path             path
-                              :path-hash        (path-hash path)}])
-                  (h/on-conflict :path-hash)
-                  (h/do-update-set :media-version-id :path)
-                  sql/format))
-            (log/info "Ingested Grout clip" {:grout-id (:id clip) :media-item-id item-id :path path})
-            ;; Return the same shape callers expect — `item-id` is the local
-            ;; unqualified id (the only kind this function actually has), and
-            ;; `duration` is the resolved Java Duration.
-            {:media-items/id item-id
-             :media-versions/duration (Duration/ofMillis ms)}))))))
+        (let [ingested
+              (jdbc/with-transaction [tx ds]
+                ;; Upsert, not bare insert: concurrent rebuild jobs race here (two
+                ;; daily/quarterly builds can ingest the same grout:<id> clip at the
+                ;; same time, and the pre-check above can't see the other job's
+                ;; uncommitted row). ON CONFLICT (library_path_id, remote_key) — the
+                ;; uq_media_items_library_remote unique index — makes this atomic;
+                ;; DO UPDATE (a no-op re-set) instead of DO NOTHING so RETURNING
+                ;; yields the existing row's :id on the conflict path too.
+                (let [item    (db/execute-one! tx
+                                (-> (h/insert-into :media-items)
+                                    (h/values [{:kind            (sql-util/->pg-enum "media_item_kind" "other_video")
+                                                :state           (sql-util/->pg-enum "media_item_state" "normal")
+                                                :library-path-id lib-path-id
+                                                :remote-key      (remote-key clip)}])
+                                    (h/on-conflict :library-path-id :remote-key)
+                                    (h/do-update-set :remote-key)
+                                    (h/returning :*)
+                                    sql/format))
+                      item-id (:id item)
+                      ;; Guard the version: the raced path may land on an item that
+                      ;; already has a version, and media-versions has no unique key
+                      ;; on media_item_id to catch a duplicate.
+                      ver     (or (db/execute-one! tx
+                                    (-> (h/select :*)
+                                        (h/from :media-versions)
+                                        (h/where [:= :media-item-id item-id])
+                                        (h/limit 1)
+                                        sql/format))
+                                  (db/execute-one! tx
+                                    (-> (h/insert-into :media-versions)
+                                        (h/values [{:media-item-id item-id
+                                                    :duration (-> (Duration/ofMillis ms)
+                                                                  sql-util/duration->pg-interval
+                                                                  sql-util/->pg-interval)
+                                                    :width  (or (:width clip) 0)
+                                                    :height (or (:height clip) 0)}])
+                                        (h/returning :*)
+                                        sql/format)))]
+                  (db/execute-one! tx
+                    (-> (h/insert-into :media-files)
+                        (h/values [{:media-version-id (:id ver)
+                                    :path             path
+                                    :path-hash        (path-hash path)}])
+                        (h/on-conflict :path-hash)
+                        (h/do-update-set :media-version-id :path)
+                        sql/format))
+                  (log/info "Ingested Grout clip" {:grout-id (:id clip) :media-item-id item-id :path path})
+                  ;; Return the same shape callers expect — `item-id` is the local
+                  ;; unqualified id (the only kind this function actually has), and
+                  ;; `duration` is the resolved Java Duration.
+                  {:media-items/id item-id
+                   :media-versions/duration (Duration/ofMillis ms)}))]
+          ;; Outside the transaction: a failed title write must not abort
+          ;; the ingest.
+          (ensure-clip-titles! ds [[(:media-items/id ingested) clip]])
+          ingested)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Batch ingest (whole candidate pools)
@@ -214,17 +246,22 @@
 (defn ingest-clips!
   "Like mapping `ingest-clip!` over `clips`, but looks up the already-ingested
    ones in bulk, so a pool of N known clips costs N/1000 queries instead of N.
-   Unusable clips (no path, non-positive duration) are dropped."
+   Also backfills titles for clips ingested before they were given one (see
+   `ensure-clip-titles!`). Unusable clips (no path, non-positive duration) are
+   dropped."
   [ds lib-path-id clips]
   (let [clips    (filterv usable-clip? clips)
-        existing (existing-items-by-key ds lib-path-id clips)]
-    (into []
-          (keep (fn [clip]
-                  (if-let [found (get existing (remote-key clip))]
-                    (update found :media-versions/duration
-                            #(or % (Duration/ofMillis (:duration-ms clip))))
-                    (ingest-clip! ds lib-path-id clip))))
-          clips)))
+        existing (existing-items-by-key ds lib-path-id clips)
+        pairs    (mapv (fn [clip]
+                         [clip (if-let [found (get existing (remote-key clip))]
+                                 (update found :media-versions/duration
+                                         #(or % (Duration/ofMillis (:duration-ms clip))))
+                                 (ingest-clip! ds lib-path-id clip))])
+                       clips)]
+    (ensure-clip-titles! ds (for [[clip found] pairs
+                                  :when (and found (contains? existing (remote-key clip)))]
+                              [(:media-items/id found) clip]))
+    (into [] (keep second) pairs)))
 
 ;; ---------------------------------------------------------------------------
 ;; Filler candidate loading (called by the scheduler)

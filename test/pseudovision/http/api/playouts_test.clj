@@ -73,6 +73,38 @@
         (is (= 200 (:status resp)))
         (is (= "Test Movie" (get-in body [:items 0 :title])))))))
 
+(deftest list-events-carries-guide-fields-and-window
+  (testing "GET .../playout/events returns library/parent fields, falls back to
+            the remote key for untitled items, and forwards from/until"
+    (let [captured (atom nil)
+          episode  (assoc test-event
+                          :media-items/item-kind       "episode"
+                          :libraries/library-id        4
+                          :libraries/library-name      "TV Shows"
+                          :metadata/parent-title       "Season 2"
+                          :metadata/grandparent-title  "The Show")
+          clip     (-> test-event
+                       (assoc :playout-events/id 279
+                              :metadata/title nil
+                              :media-items/item-remote-key "grout:abc123"))]
+      (with-redefs [ch/get-channel                      (fn [_ id] (when (= id 91) {:channels/id 91}))
+                    ch/get-channel-by-number             (fn [_ _] nil)
+                    pl/get-playout-for-channel            (fn [_ _] test-playout)
+                    pl/get-upcoming-events-with-metadata  (fn [_ _ _ _ & {:as opts}]
+                                                            (reset! captured opts)
+                                                            [episode clip])]
+        (let [handler (make-test-handler)
+              resp    (handler (mock/request :get "/api/channels/91/playout/events?from=2026-06-14T21:00:00Z&until=2026-06-15T00:00:00Z"))
+              body    (parse-json-body resp)
+              [ep cl] (:items body)]
+          (is (= 200 (:status resp)))
+          (is (= (Instant/parse "2026-06-14T21:00:00Z") (:from @captured)))
+          (is (= (Instant/parse "2026-06-15T00:00:00Z") (:until @captured)))
+          (is (= ["episode" 4 "TV Shows" "Season 2" "The Show"]
+                 ((juxt :item-kind :library-id :library-name :parent-title :grandparent-title) ep)))
+          (is (= "grout:abc123" (:title cl)) "untitled items fall back to the remote key")
+          (is (not (contains? cl :item-remote-key))))))))
+
 (deftest list-events-returns-404-without-playout
   (testing "GET /api/channels/:id/playout/events returns 404 when no playout"
     (with-redefs [ch/get-channel             (fn [_ _] nil)
