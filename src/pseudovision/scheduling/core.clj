@@ -65,38 +65,32 @@
     :else
     (str "channel-catalog:" (or (:channels/id channel) "unknown"))))
 
-(def ^:private tag-lookup-chunk
-  "Item ids per tag lookup query, well under PostgreSQL's 65535 bind-parameter
-   limit."
-  5000)
-
-(defn- tags-by-item
-  "Returns {media-item-id #{tag-name ...}} for `item-ids`, in one query per
-   `tag-lookup-chunk` ids. Replaces a per-item lookup that issued one query for
-   every candidate item on every slot occurrence."
-  [db items]
-  (reduce (fn [acc ids]
-            (reduce (fn [acc r]
-                      (update acc (:metadata/media-item-id r)
-                              (fnil conj #{}) (:metadata-tags/name r)))
-                    acc
-                    (db-core/query db (-> (h/select :m.media-item-id :mt.name)
-                                          (h/from [:metadata-tags :mt])
-                                          (h/join [:metadata :m] [:= :m.id :mt.metadata-id])
-                                          (h/where [:in :m.media-item-id (vec ids)])
-                                          sql/format))))
-          {}
-          (partition-all tag-lookup-chunk (distinct (keep :media-items/id items)))))
-
 (defn- filter-by-tags
   "Keeps the items that carry ALL of `required-tags` and NONE of
-   `excluded-tags` (tags on the item's own metadata)."
+   `excluded-tags`. An item's tags include those inherited from its season and
+   show (`media-db/effective-tags-by-item`): channel and category tags are
+   written on the show, so checking only an episode's own metadata stripped
+   every episode from a `channel:<slug>`-filtered slot."
   [db items required-tags excluded-tags]
-  (let [tag-map (tags-by-item db items)]
+  (let [tag-map (media-db/effective-tags-by-item db (keep :media-items/id items))]
     (filterv (fn [item]
                (let [item-tags (get tag-map (:media-items/id item) #{})]
                  (and (every? #(contains? item-tags %) required-tags)
                       (not-any? #(contains? item-tags %) excluded-tags))))
+             items)))
+
+(defn- distinct-items
+  "`items` with repeats of the same media item dropped, first one kept. A
+   pool is a set of things to play; an item listed twice (two versions, or a
+   collection that reaches it twice) aired twice as often, and a short
+   duplicate version could fill every gap on its own."
+  [items]
+  (let [seen (volatile! #{})]
+    (filterv (fn [item]
+               (let [id (:media-items/id item)]
+                 (cond (nil? id)            true
+                       (contains? @seen id) false
+                       :else                (do (vswap! seen conj id) true))))
              items)))
 
 (defn- playable?
@@ -234,7 +228,7 @@
                                :filtered-out (- (count items) (count filtered))})
                      filtered))
                  (vec items))
-        playable (filterv playable? tagged)]
+        playable (distinct-items (filterv playable? tagged))]
     (when (< (count playable) (count tagged))
       (log/warn "Skipping unplayable items with zero/unknown duration"
                 {:slot-id slot-id
@@ -338,6 +332,24 @@
                              :slot-id       slot-id
                              :is-manual     false}))))))
 
+(def ^:private generic-filler-penalty
+  "Recency-style penalty on Grout clips that aren't mapped to any channel.
+   Grout hands those to every channel, so without it a sitcom channel's breaks
+   drew a science talk show as readily as its own clips. With it the packer
+   takes a channel clip over a generic one that fills the gap as well, until
+   the channel clip has aired about twice within the recency window. Generic
+   clips still fill gaps that nothing channel-specific fits as tightly."
+  2.0)
+
+(defn- generic-penalties
+  "item-id -> `generic-filler-penalty` for the generic Grout clips in `items`."
+  [items]
+  (into {}
+        (keep (fn [it]
+                (when (:grout/generic? it)
+                  [(:media-items/id it) generic-filler-penalty])))
+        items))
+
 (defn- pack-filler
   "Variety-oriented fill of [from, until] using the bin-packer.  Selection is
    biased away from items that aired recently anywhere (global recency, carried
@@ -349,9 +361,11 @@
   [cursor slot role from until items playout-id opts]
   (let [airings-atom (:filler-airings-atom opts)
         window       (:recency-window opts)
-        recency      (if (and airings-atom window)
-                       (packing/airing-penalties @airings-atom from window)
-                       {})
+        recency      (merge-with +
+                               (if (and airings-atom window)
+                                 (packing/airing-penalties @airings-atom from window)
+                                 {})
+                               (generic-penalties items))
         seed         (bit-xor (long (get opts :seed 0)) (.getEpochSecond ^Instant from))
         target       (t/duration-between from until)
         picked       (packing/pack target items

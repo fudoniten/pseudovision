@@ -56,3 +56,31 @@
           [item _] (sut/next-item restored)]
       (is (= 3 (:media_items/id item))
           "restoring at index 2 yields the third item"))))
+
+(deftest random-never-repeats-across-pass-boundaries
+  (testing "every pass plays each item once, and no pass opens with the item
+            the previous pass closed on (no back-to-back airing)"
+    (doseq [n [2 3 4 7 20] seed (range 25)]
+      (let [pool  (mapv (fn [i] {:media_items/id i}) (range n))
+            plays (loop [e (sut/make-enumerator pool :random {:seed seed})
+                         acc []]
+                    (if (= (count acc) (* 6 n))
+                      acc
+                      (let [[item e'] (sut/next-item e)]
+                        (recur e' (conj acc (:media_items/id item))))))]
+        (doseq [pass (partition n plays)]
+          (is (= (set (range n)) (set pass))
+              (str "pass is a permutation (n=" n ", seed=" seed ")")))
+        (is (not-any? (fn [[a b]] (= a b)) (partition 2 1 plays))
+            (str "no item airs twice in a row (n=" n ", seed=" seed ")")))))
+
+  (testing "a restored enumerator continues the same order mid-pass"
+    (let [pool (mapv (fn [i] {:media_items/id i}) (range 9))
+          step (fn [e k] (reduce (fn [[acc e] _]
+                                   (let [[item e'] (sut/next-item e)]
+                                     [(conj acc (:media_items/id item)) e']))
+                                 [[] e] (range k)))
+          [_ e]        (step (sut/make-enumerator pool :random {:seed 3}) 13)
+          [straight _] (step e 10)
+          [resumed _]  (step (sut/cursor->enumerator pool (sut/enumerator->cursor e)) 10)]
+      (is (= straight resumed)))))

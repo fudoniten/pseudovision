@@ -30,7 +30,10 @@
                 #(sut/resolve-collection nil (coll "smart" {:query {:media-type "episode"}})))]
       (is (string? (first sql)))
       (is (.contains (first sql) "media_items"))
-      (is (not (.contains (first sql) "metadata_tags"))))))
+      (is (not (.contains (first sql) "metadata_tags")))
+      (is (.contains (first sql) "mi.kind = ?")
+          "media-type binds as a value, not a column name")
+      (is (some #(= "episode" (str %)) (rest sql))))))
 
 (deftest smart-include-tags-all-mode
   (testing "match=all emits one EXISTS per tag"
@@ -171,15 +174,16 @@
                 #(sut/resolve-collection nil (coll "smart" {:query {:category "sitcom"}})))]
       (let [[sql-text & params] sql]
         ;; The category is matched as the tag name OR with `genre:` prefix,
-        ;; so the SQL contains `LOWER(t.name) = ?` four times (bare,
-        ;; genre:bare, kebab-case, genre:kebab-case). It also joins
-        ;; `metadata_tags` aliased `t`, and uses the show/season/play chain.
-        (is (>= (count (re-seq #"LOWER\(t\.name\)" sql-text)) 4)
-            "category branch should emit 4 LOWER(t.name) = ? clauses (bare + genre: + kebab)")
+        ;; so the SQL contains `LOWER(et.name)` four times (bare,
+        ;; genre:bare, kebab-case, genre:kebab-case). Tags are read from the
+        ;; effective-tags view (own + season + show) for each playable item,
+        ;; and the show/season/play chain expands shows to episodes.
+        (is (>= (count (re-seq #"LOWER\(et\.name\)" sql-text)) 4)
+            "category branch should emit 4 LOWER(et.name) clauses (bare + genre: + kebab)")
         (is (some #(= "sitcom" (str %)) params)
             "category parameter should bind 'sitcom'")
-        (is (.contains sql-text "metadata_tags")
-            "category branch should reference the metadata_tags table")
+        (is (.contains sql-text "media_item_effective_tags AS et WHERE (et.media_item_id = play.id)")
+            "category branch should match each playable item's inherited tags")
         (is (>= (count (re-seq #"media_items" sql-text)) 2)
             "category branch joins the show/season/play chain")))))
 
@@ -233,8 +237,8 @@
             sql-text (or (first sql) "")
             params   (vec (rest sql))]
         (is (some? sql) "category branch should issue a SQL query")
-        (is (.contains sql-text "LOWER(t.name)")
-            "category branch should match the tag via LOWER(t.name) (case-insensitive)")
+        (is (.contains sql-text "LOWER(et.name)")
+            "category branch should match the tag via LOWER(et.name) (case-insensitive)")
         (is (some #(= "adult_content" (str %)) params)
             "category parameter should bind 'adult_content'")
         (is (some #(= "channel:toontown" (str %)) params)

@@ -39,8 +39,12 @@
 2. **Channel ids:** `channels.id` is a BIGINT primary key, `channels.uuid` is
    the external id used in `/stream/:uuid`, M3U, and XMLTV, and `channels.slug`
    is the curated name used in `channel:<slug>` tags. Don't mix them up.
-3. **Show tags live on the show.** `channel:*`, `audience:*`, `genre:*` and the
-   like are on the series item, not its episodes; filter by the top-level item.
+3. **Episodes inherit their show's tags.** `channel:*`, `audience:*`,
+   `genre:*` and the like are written on the series item, not its episodes.
+   Read tags through the `media_item_effective_tags` view
+   (`media/effective-tag-exists`, `media/effective-tags-by-item`), which
+   unions an item's own tags with its season's and show's. Querying
+   `metadata_tags` for an episode's own id finds nothing.
 4. **Slots with no collection or item** play everything tagged
    `channel:<slug>`. A channel with no `slug` makes the build throw on purpose
    rather than emit zero events.
@@ -61,6 +65,9 @@
    overlaps (`playout-db/find-overlaps`) and throws if any remain, rolling the
    build back. A new emitter that moves the cursor to a boundary must not
    emit content past it; filler past `to` is clamped in `apply-filler`.
-9. **Streaming needs real hardware to test.** The automated tests have no GPU
+9. **Join media versions through `media/primary-version-id`.** An item can
+   have several versions (a short preview next to the main cut), and a plain
+   join gives one row per version. The primary version is the longest one.
+10. **Streaming needs real hardware to test.** The automated tests have no GPU
    or live FFmpeg; NVENC/VAAPI paths are only covered by command-generation
    tests.

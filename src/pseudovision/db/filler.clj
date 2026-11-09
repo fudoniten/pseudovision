@@ -3,6 +3,7 @@
             [honey.sql.helpers :as h]
             [pseudovision.db.core :as db]
             [pseudovision.db.collections :as col-db]
+            [pseudovision.db.media :as media]
             [pseudovision.util.sql :as sql-util]
             [taoensso.timbre :as log]))
 
@@ -30,7 +31,7 @@
     (let [item (db/query-one ds (-> (h/select :mi.* :mv.duration)
                                     (h/from [:media-items :mi])
                                     (h/left-join [:media-versions :mv]
-                                                 [:= :mv.media-item-id :mi.id])
+                                                 [:= :mv.id (media/primary-version-id :mi.id)])
                                     (h/where [:= :mi.id (:filler-presets/media-item-id preset)])
                                     sql/format))]
       (if item [item] []))

@@ -5,27 +5,19 @@
   (:require [honey.sql         :as sql]
             [honey.sql.helpers :as h]
             [pseudovision.db.core :as db]
+            [pseudovision.db.media :as media]
             [pseudovision.util.sql :as sql-util]))
 
 ;; ---------------------------------------------------------------------------
 ;; Tag-filter helpers (shared with smart-collection logic)
 ;; ---------------------------------------------------------------------------
 
-(defn- tag-exists-subq
-  "Returns an EXISTS subquery for `media_items` aliased as `mi`.
-   Checks whether `mi.id` has a metadata tag matching `tag`.
-   `name-clause` is a HoneySQL predicate against `mt.name`."
-  [name-clause]
-  [:exists {:select [1]
-            :from   [[:metadata :m2]]
-            :join   [[:metadata-tags :mt2] [:= :mt2.metadata-id :m2.id]]
-            :where  [:and [:= :m2.media-item-id :mi.id] name-clause]}])
-
 (defn- tag-filter-clause
-  "Returns a WHERE clause that limits `mi` to items carrying `tag`.
-   Used for channel-scoped catalog slicing."
+  "Returns a WHERE clause that limits `mi` to items carrying `tag`, counting
+   tags inherited from the item's season and show, so a channel-scoped slice
+   counts a tagged show's episodes. Used for channel-scoped catalog slicing."
   [tag]
-  (tag-exists-subq [:= :mt2.name tag]))
+  (media/effective-tag-exists :mi.id [:= :et.name tag]))
 
 ;; ---------------------------------------------------------------------------
 ;; Total counts
@@ -319,7 +311,7 @@
         (-> (h/select [(runtime-bucket-clause) :label]
                      [:%count.* :item_count])
             (h/from [:media-items :mi])
-            (h/join [:media-versions :mv] [:= :mv.media-item-id :mi.id])
+            (h/join [:media-versions :mv] [:= :mv.id (media/primary-version-id :mi.id)])
              (h/where [:and [:= :mi.state (sql-util/->pg-enum "media_item_state" "normal")]
                             [:> :mv.duration [:raw "INTERVAL '0'"]]])
             (cond->

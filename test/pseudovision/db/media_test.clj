@@ -117,13 +117,14 @@
     @captured))
 
 (deftest list-media-streams-for-item-joins-versions-and-streams
-  (testing "joins media_items -> media_versions -> media_streams and pins to the item's first version"
+  (testing "joins media_items -> media_versions -> media_streams and pins to the item's primary version"
     (let [[sql & params] (capture-query-unqualified #(sut/list-media-streams-for-item nil 42))]
       (is (re-find #"(?i)JOIN media_versions" sql))
       (is (re-find #"(?i)JOIN media_streams" sql))
-      (is (re-find #"(?i)SELECT MIN\(id\)" sql) "pins to the lowest media_version id for the item")
+      (is (re-find #"(?i)ORDER BY pv\.duration DESC, pv\.id DESC LIMIT" sql)
+          "pins to the item's longest media version")
       (is (re-find #"(?i)ORDER BY ms\.stream_index" sql))
-      (is (= [42 "42"] params)))))
+      (is (= [42 "42" 1] params)))))
 
 ;; ---------------------------------------------------------------------------
 ;; create-collection! / update-collection! — must hand db/execute-one! a
@@ -175,7 +176,7 @@
 (deftest resolve-playable-by-tag-ignores-separator-style
   (testing "a hyphenated category is matched against a separator-normalised tag name"
     (let [[sql & params] (capture-resolve-by-tag-sql "dark-comedy")]
-      (is (re-find #"(?i)REGEXP_REPLACE\(LOWER\(t\.name\)" sql))
+      (is (re-find #"(?i)REGEXP_REPLACE\(LOWER\(et\.name\)" sql))
       (is (some #{"dark-comedy"} params))
       (is (some #{"genre:dark-comedy"} params))))
   (testing "an underscored category reduces to the same key"
@@ -184,3 +185,48 @@
       (is (some #{"genre:sci-fi-and-fantasy"} params))
       ;; the verbatim lowercase form is still tried
       (is (some #{"sci_fi & fantasy"} params)))))
+
+;; ---------------------------------------------------------------------------
+;; Tag inheritance and primary versions
+;; ---------------------------------------------------------------------------
+
+(defn- capture-query [f]
+  (let [captured (atom nil)]
+    (with-redefs [db/query (fn [_ sql] (reset! captured sql) [])]
+      (f))
+    @captured))
+
+(deftest channel-tag-resolver-matches-inherited-tags
+  (testing "the channel tag is matched against each playable item's
+            effective tags (own + season + show), not one level only"
+    (let [[sql & params] (capture-query #(sut/resolve-playable-by-channel-tag nil "channel:Spectrum"))]
+      (is (re-find #"FROM media_item_effective_tags AS et WHERE \(et\.media_item_id = play\.id\)" sql))
+      (is (some #{"channel:spectrum"} params) "matched case-insensitively"))))
+
+(deftest require-tags-match-inherited-tags
+  (let [[sql & params] (capture-query #(sut/resolve-playable-by-tag nil "sitcom" :require-tags ["channel:spectrum"]))]
+    (is (= 2 (count (re-seq #"media_item_effective_tags" sql)))
+        "category and channel tag are both checked against effective tags")
+    (is (some #{"channel:spectrum"} params))))
+
+(deftest resolvers-use-one-version-per-item
+  (testing "every playable resolver joins only the item's longest version, so
+            a short preview version can't enter a pool as a second item"
+    (doseq [[label f] [["by-tag"         #(sut/resolve-playable-by-tag nil "sitcom")]
+                       ["by-channel-tag" #(sut/resolve-playable-by-channel-tag nil "channel:spectrum")]
+                       ["show episodes"  #(sut/list-show-episodes-by-id nil 12)]]]
+      (let [[sql] (capture-query f)]
+        (is (re-find #"ON mvp?\.id = \(SELECT pv\.id FROM media_versions AS pv WHERE pv\.media_item_id = (play|mi)\.id ORDER BY pv\.duration DESC, pv\.id DESC LIMIT \?\)" sql)
+            label)))))
+
+(deftest effective-tags-by-item-groups-tags
+  (let [captured (atom nil)]
+    (with-redefs [db/query-unqualified (fn [_ sql]
+                                         (reset! captured sql)
+                                         [{:media-item-id 1 :name "channel:spectrum"}
+                                          {:media-item-id 1 :name "genre:comedy"}
+                                          {:media-item-id 2 :name "christmas"}])]
+      (is (= {1 #{"channel:spectrum" "genre:comedy"} 2 #{"christmas"}}
+             (sut/effective-tags-by-item nil [1 2 nil 1])))
+      (is (re-find #"FROM media_item_effective_tags" (first @captured)))
+      (is (= [1 2] (vec (rest @captured))) "ids deduplicated, nils dropped"))))

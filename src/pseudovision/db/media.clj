@@ -8,6 +8,63 @@
             [taoensso.timbre :as log]))
 
 ;; ---------------------------------------------------------------------------
+;; Shared query fragments
+;; ---------------------------------------------------------------------------
+
+(defn primary-version-id
+  "HoneySQL subquery: the id of the media version that represents the item
+   whose id is in column `item-col`. That is the longest version, newest first
+   on a tie.
+
+   An item can have several versions, and joining media_versions directly gave
+   one row per version. A 1.48-minute preview sitting next to the 95-minute
+   main cut of The Cabin in the Woods therefore entered every pool as a second
+   item, and because it fit any gap the block packer aired it 166 times on
+   Sitcom Spectrum. Join versions through this so every item resolves to
+   exactly one row with its real length:
+
+       (h/left-join [:media-versions :mv]
+                    [:= :mv.id (primary-version-id :mi.id)])"
+  [item-col]
+  {:select   [:pv.id]
+   :from     [[:media-versions :pv]]
+   :where    [:= :pv.media-item-id item-col]
+   :order-by [[:pv.duration :desc] [:pv.id :desc]]
+   :limit    1})
+
+(defn effective-tag-exists
+  "HoneySQL EXISTS predicate: does the item whose id is in column `item-col`
+   carry a tag satisfying `name-pred`, counting tags inherited from its parent
+   and grandparent? `name-pred` is written against `:et.name`.
+
+   The `media_item_effective_tags` view unions an item's own tags with its
+   season's and show's, so an episode has every attribute of its show plus any
+   tag of its own."
+  [item-col name-pred]
+  [:exists {:select [1]
+            :from   [[:media-item-effective-tags :et]]
+            :where  [:and [:= :et.media-item-id item-col] name-pred]}])
+
+(defn effective-tags-by-item
+  "Returns {media-item-id #{tag-name ...}} for `item-ids`, including tags
+   inherited from each item's parent and grandparent (see
+   `effective-tag-exists`). Queries in chunks well under PostgreSQL's
+   bind-parameter limit."
+  [ds item-ids]
+  (reduce (fn [acc ids]
+            (reduce (fn [acc r]
+                      (update acc (:media-item-id r) (fnil conj #{}) (:name r)))
+                    acc
+                    ;; Unqualified: a UNION view's columns report no source
+                    ;; table, so qualified keys would depend on the driver.
+                    (db/query-unqualified ds (-> (h/select :et.media-item-id :et.name)
+                                     (h/from [:media-item-effective-tags :et])
+                                     (h/where [:in :et.media-item-id (vec ids)])
+                                     sql/format))))
+          {}
+          (partition-all 5000 (distinct (remove nil? item-ids)))))
+
+;; ---------------------------------------------------------------------------
 ;; Media sources and libraries
 ;; ---------------------------------------------------------------------------
 
@@ -350,24 +407,24 @@
                        sql/format)))
 
 (defn get-media-file-path
-  "Returns the absolute filesystem path backing a media item (its first version's
-   first file), or nil. Used to stream co-mounted local media (e.g. Grout clips)
-   directly, without a remote server URL. `id` may be the internal integer id or
+  "Returns the absolute filesystem path backing a media item (the first file of
+   its primary version, see `primary-version-id`), or nil. Used to stream
+   co-mounted local media (e.g. Grout clips) directly, without a remote server URL. `id` may be the internal integer id or
    a remote_key."
   [ds id]
   (:media-files/path
    (db/query-one ds (-> (h/select :mf.path)
                         (h/from [:media-items :mi])
-                        (h/join [:media-versions :mv] [:= :mv.media-item-id :mi.id])
+                        (h/join [:media-versions :mv] [:= :mv.id (primary-version-id :mi.id)])
                         (h/join [:media-files    :mf] [:= :mf.media-version-id :mv.id])
                         (h/where (item-ref-match :mi.id :mi.remote-key id))
-                        (h/order-by :mv.id :mf.id)
+                        (h/order-by :mf.id)
                         (h/limit 1)
                         sql/format))))
 
 (defn list-media-streams-for-item
   "Returns the media_streams rows (kind, language, title, is-default,
-   is-forced, stream-index) for a media item's first version, ordered by
+   is-forced, stream-index) for a media item's primary version, ordered by
    stream_index. `id` may be the internal integer id or a remote_key. Used to
    resolve a channel's preferred audio/subtitle language against what the
    file actually contains."
@@ -378,9 +435,7 @@
          (h/join [:media-versions :mv] [:= :mv.media-item-id :mi.id])
          (h/join [:media-streams :ms] [:= :ms.media-version-id :mv.id])
          (h/where (item-ref-match :mi.id :mi.remote-key id)
-                  [:= :mv.id {:select [:%min.id]
-                              :from   [[:media-versions :mv2]]
-                              :where  [:= :mv2.media-item-id :mi.id]}])
+                  [:= :mv.id (primary-version-id :mi.id)])
          (h/order-by :ms.stream-index)
          sql/format)))
 
@@ -454,7 +509,7 @@
               (h/left-join [:media-items :season]
                            [:and [:= :season.id :mi.parent-id]
                                  [:= :season.kind (sql-util/->pg-enum "media_item_kind" "season")]])
-              (h/left-join [:media-versions :mv] [:= :mv.media-item-id :mi.id])
+              (h/left-join [:media-versions :mv] [:= :mv.id (primary-version-id :mi.id)])
               (h/where [:and
                         [:= :mi.kind (sql-util/->pg-enum "media_item_kind" "episode")]
                         [:= :mi.state (sql-util/->pg-enum "media_item_state" "normal")]
@@ -464,21 +519,19 @@
               sql/format))))
 
 (defn- exact-tag-exists-subq
-  "HoneySQL EXISTS subquery: does the top-level item (`:mtop`) carry the exact
-   tag `tag-name` (case-insensitive)? Used for extra scoping tags (e.g.
-   `channel:<slug>`) that must ALSO be present, ANDed with the category match
-   in `resolve-playable-by-tag` — unlike the category match, these are exact,
-   not bare-or-`genre:`-prefixed."
+  "HoneySQL EXISTS subquery: does the playable item (`:play`) carry the exact
+   tag `tag-name` (case-insensitive), counting tags inherited from its season
+   and show? Used for scoping tags (e.g. `channel:<slug>`) that must be
+   present, ANDed with the category match in `resolve-playable-by-tag`. Unlike
+   the category match, these are exact, not bare-or-`genre:`-prefixed."
   [tag-name]
-  [:exists {:select [1]
-            :from   [[:metadata-tags :et]]
-            :where  [:and [:= :et.metadata-id :mtop.id]
-                          [:= [:lower :et.name] (str/lower-case tag-name)]]}])
+  (effective-tag-exists :play.id [:= [:lower :et.name] (str/lower-case tag-name)]))
 
 (defn resolve-playable-by-channel-tag
   "Resolves a channel's content via its `channel:<slug>` tag without a category
-   filter.  Every normal-state episode / movie / program whose top-level item
-   carries `channel-tag` is returned, with shows expanded to their
+   filter.  Every normal-state episode / movie / program that carries
+   `channel-tag`, its own or inherited from its season or show (see
+   `effective-tag-exists`), is returned, with shows expanded to their
    season-nested episodes.  Each row carries `:_top-id` (the show or movie id)
    so downstream code can do show-level tag lookups (same convention as
    `resolve-playable-by-tag`).
@@ -506,7 +559,6 @@
     (db/query ds
       (-> (h/select-distinct :play.* [:mvp.duration :duration] [:top.id :top_media_id])
           (h/from [:media-items :top])
-          (h/join [:metadata :mtop] [:= :mtop.media-item-id :top.id])
           (h/left-join [:media-items :season]
                        [:and [:= :season.parent-id :top.id]
                              [:= :season.kind (sql-util/->pg-enum "media_item_kind" "season")]])
@@ -521,14 +573,14 @@
                               [:= :play.kind (sql-util/->pg-enum "media_item_kind" "episode")]
                               [:or [:= :play.parent-id :top.id]
                                    [:= :play.parent-id :season.id]]]])
-          (h/left-join [:media-versions :mvp] [:= :mvp.media-item-id :play.id])
+          (h/left-join [:media-versions :mvp] [:= :mvp.id (primary-version-id :play.id)])
           (h/where [:and
                     [:= :top.state (sql-util/->pg-enum "media_item_state" "normal")]
                     [:= :play.state (sql-util/->pg-enum "media_item_state" "normal")]
                     [:in :top.kind [(sql-util/->pg-enum "media_item_kind" "show")
                                     (sql-util/->pg-enum "media_item_kind" "movie")
                                     (sql-util/->pg-enum "media_item_kind" "program")]]
-                    [(exact-tag-exists-subq channel-tag)]])
+                    (exact-tag-exists-subq channel-tag)])
           (h/order-by :play.id)
           sql/format))))
 
@@ -560,10 +612,12 @@
    hyphen/underscore insensitive, see `category-tag-match`) to concrete
    *playable* items: matching shows are expanded to their (season-nested)
    episodes, matching movies resolve to themselves. Mirrors the matching semantics of a `random:<category>` pool
-   at air time.
+   at air time. Tags are matched against each playable item's effective tags
+   (its own plus its season's and show's), so a show-level tag reaches every
+   episode and an episode-level tag reaches just that episode.
 
    `:require-tags` (optional) — exact tag strings (e.g. `channel:hua`) the
-   top-level item must ALSO carry, ANDed with the category match. Used to
+   playable item must ALSO carry (inherited counts), ANDed with the category match. Used to
    scope a category pool to one channel's own mapped media, same as the
    `channel-tag` scoping of `auto:category:<cat>:<channel-tag>` smart
    collections.
@@ -595,8 +649,6 @@
     (db/query ds
       (-> (h/select-distinct :play.* [:mvp.duration :duration] [:top.id :top_media_id])
           (h/from [:media-items :top])
-        (h/join [:metadata :mtop] [:= :mtop.media-item-id :top.id])
-        (h/left-join [:metadata-tags :t] [:= :t.metadata-id :mtop.id])
         (h/left-join [:media-items :season]
                      [:and [:= :season.parent-id :top.id]
                            [:= :season.kind (sql-util/->pg-enum "media_item_kind" "season")]])
@@ -611,14 +663,14 @@
                             [:= :play.kind (sql-util/->pg-enum "media_item_kind" "episode")]
                             [:or [:= :play.parent-id :top.id]
                                  [:= :play.parent-id :season.id]]]])
-        (h/left-join [:media-versions :mvp] [:= :mvp.media-item-id :play.id])
+        (h/left-join [:media-versions :mvp] [:= :mvp.id (primary-version-id :play.id)])
         (h/where (into [:and
                         [:= :top.state (sql-util/->pg-enum "media_item_state" "normal")]
                         [:= :play.state (sql-util/->pg-enum "media_item_state" "normal")]
                         [:in :top.kind [(sql-util/->pg-enum "media_item_kind" "show")
                                         (sql-util/->pg-enum "media_item_kind" "movie")
                                         (sql-util/->pg-enum "media_item_kind" "program")]]
-                        (category-tag-match :t.name category)]
+                        (effective-tag-exists :play.id (category-tag-match :et.name category))]
                        (map exact-tag-exists-subq)
                        require-tags))
         (h/order-by :play.id)

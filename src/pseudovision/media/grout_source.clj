@@ -219,6 +219,20 @@
 
 (def ^:private ingest-lookup-chunk 1000)
 
+(defn- generic-clip?
+  "True for a clip Grout lets play on any channel (no `channel`, no
+   `channels`). Grout returns these alongside a channel's own clips."
+  [clip]
+  (and (str/blank? (:channel clip)) (empty? (:channels clip))))
+
+(defn- mark-generic
+  "Flags a candidate built from `clip` with `:grout/generic?` so the filler
+   packer can prefer the channel's own clips (see
+   pseudovision.scheduling.core/pack-filler)."
+  [candidate clip]
+  (when candidate
+    (cond-> candidate (generic-clip? clip) (assoc :grout/generic? true))))
+
 (defn- usable-clip? [clip]
   (and (not (str/blank? (:path clip)))
        (some-> (:duration-ms clip) pos?)))
@@ -261,7 +275,7 @@
     (ensure-clip-titles! ds (for [[clip found] pairs
                                   :when (and found (contains? existing (remote-key clip)))]
                               [(:media-items/id found) clip]))
-    (into [] (keep second) pairs)))
+    (into [] (keep (fn [[clip found]] (mark-generic found clip))) pairs)))
 
 ;; ---------------------------------------------------------------------------
 ;; Filler candidate loading (called by the scheduler)
@@ -313,7 +327,7 @@
                        :gap-ms  gap-ms})
             [])
         (let [lib-path-id (ensure-library-path! ds (:media-dir grout))]
-          (into [] (keep #(ingest-clip! ds lib-path-id %)) clips))))))
+          (into [] (keep #(mark-generic (ingest-clip! ds lib-path-id %) %)) clips))))))
 
 (defn grout-bumper-items
   "Queries Grout for **bumper**-kind clips on `channel` whose duration falls
