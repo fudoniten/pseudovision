@@ -280,8 +280,11 @@
          :description "Day-of-week bitmask. Mon=1 Tue=2 Wed=4 Thu=8 Fri=16 Sat=32 Sun=64. 127 = every day."}])
 
 (def IsoDate
+  ;; The pattern is a string, not a #"" regex literal: malli copies the :re
+  ;; child verbatim into the OpenAPI spec's "pattern" field, and Cheshire
+  ;; cannot JSON-encode a java.util.regex.Pattern (breaks GET /openapi.json).
   [:re {:description "Calendar date, YYYY-MM-DD (inclusive slot date bound)"}
-   #"^\d{4}-\d{2}-\d{2}$"])
+   "^\\d{4}-\\d{2}-\\d{2}$"])
 
 (def Slot
   [:map
