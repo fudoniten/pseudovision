@@ -116,10 +116,10 @@
   "Given a target duration in seconds, return the largest standard
    bumper bucket (5/10/15) that fits without exceeding it."
   [target-secs]
-  (->> bumper-durations
-       (filter #(<= % target-secs))
-       last
-       (or 5)))
+  ;; `(->> ... last (or 5))` threaded the bucket in as `(or 5 bucket)`, so
+  ;; every gap asked for a 5s bumper.
+  (or (last (filter #(<= % target-secs) bumper-durations))
+      5))
 
 (defn- item-duration-seconds
   "Extract duration from a media-item row as seconds."
@@ -138,9 +138,13 @@
    ingesting the chosen clip as a local media item exactly like regular Grout
    filler does.
 
+   `candidates-fn` (optional) is `(fn [min-ms max-ms])` returning candidates;
+   the build engine passes one backed by a per-build pool so each small gap
+   doesn't cost a Grout request. Without it Grout is queried directly.
+
    Returns nil when no bumper is suitable (Grout disabled/unreachable, or no
    candidate in range) so the caller can fall back to regular filler."
-  [db grout channel from to playout-id]
+  [db grout channel from to playout-id & [candidates-fn]]
   (let [gap-secs (t/duration->seconds (t/duration-between from to))]
     (when (and (<= gap-secs max-bumper-gap-secs)
                (pos? gap-secs))
@@ -149,7 +153,9 @@
             tolerance 1.0
             min-ms (long (* 1000 (- bucket tolerance)))
             max-ms (long (* 1000 (+ bucket tolerance)))
-            candidates (grout-source/grout-bumper-items db grout channel min-ms max-ms)]
+            candidates (if candidates-fn
+                         (candidates-fn min-ms max-ms)
+                         (grout-source/grout-bumper-items db grout channel min-ms max-ms))]
         (when (seq candidates)
           ;; Pick randomly for variety (no enumerator state needed for bumpers)
           (let [item (rand-nth candidates)

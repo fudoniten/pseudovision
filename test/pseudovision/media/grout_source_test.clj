@@ -346,3 +346,43 @@
            (sut/display-title
             {:id "abc" :channel "britannia"
              :tags ["filename:   " "parent-directory:" "channel:britannia"]})))))
+
+;; ---------------------------------------------------------------------------
+;; ingest-clips! / grout-filler-pool (whole-pool loading for builds)
+;; ---------------------------------------------------------------------------
+
+(deftest ingest-clips-looks-up-known-clips-in-one-query
+  (let [queries (atom 0)
+        singles (atom [])]
+    (with-redefs [db/query        (fn [_ _]
+                                    (swap! queries inc)
+                                    [{:media-items/id 11 :media-items/remote-key "grout:a"
+                                      :media-versions/duration (Duration/ofMillis 5000)}
+                                     {:media-items/id 12 :media-items/remote-key "grout:b"
+                                      :media-versions/duration nil}])
+                  sut/ingest-clip! (fn [_ _ c] (swap! singles conj (:id c))
+                                     {:media-items/id 13
+                                      :media-versions/duration (Duration/ofMillis (:duration-ms c))})]
+      (let [result (sut/ingest-clips! nil 1 [{:id "a" :path "/a.mp4" :duration-ms 5000}
+                                             {:id "b" :path "/b.mp4" :duration-ms 7000}
+                                             {:id "c" :path "/c.mp4" :duration-ms 9000}
+                                             {:id "d" :path ""       :duration-ms 9000}])]
+        (is (= 1 @queries))
+        (is (= ["c"] @singles) "only the unknown, usable clip is ingested one by one")
+        (is (= [11 12 13] (map :media-items/id result)))
+        (is (= (Duration/ofMillis 7000) (:media-versions/duration (second result)))
+            "a known clip with no stored duration falls back to the clip's")))))
+
+(deftest grout-filler-pool-sweeps-channel-without-gap-cap
+  (let [captured (atom nil)]
+    (with-redefs [grout/list-all           (fn [_ opts _] (reset! captured opts)
+                                             [{:id "f" :kind "filler" :path "/f.mp4" :duration-ms 60000}
+                                              {:id "b" :kind "bumper" :path "/b.mp4" :duration-ms 5000}])
+                  sut/ensure-library-path! (fn [_ _] 7)
+                  sut/ingest-clips!        (fn [_ _ clips] (mapv (fn [c] {:id (:id c)}) clips))]
+      (is (= [{:id "f"}]
+             (sut/grout-filler-pool nil enabled-client {:channels/slug "goldenreels"}
+                                    {:filler-presets/grout-tags ["retro"]}))
+          "bumpers are left for the bumper pool")
+      (is (= {:tags ["retro"] :channel "goldenreels"} @captured)
+          "no max_ms: the build cuts the pool to each gap itself"))))

@@ -91,8 +91,9 @@
                      :metadata {:channel-id   channel-id
                                 :from         from
                                 :horizon-days horizon-days}}
-                    (fn [_report-progress]
-                      (let [count (case from
+                    (fn [report-progress]
+                      (let [sched-opts (assoc sched-opts :on-progress report-progress)
+                            count (case from
                                     "now"     (sched/rebuild-from-now! db playout-id horizon-days sched-opts)
                                     "horizon" (sched/rebuild-horizon! db playout-id 7 horizon-days sched-opts)
                                     (sched/rebuild-from-now! db playout-id horizon-days sched-opts))]
