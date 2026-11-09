@@ -856,7 +856,23 @@
    [:preferred-subtitle-language {:optional true} [:maybe :string]]
    [:subtitle-mode               {:optional true} [:maybe SubtitleModeEnum]]
    [:slot-id                     {:optional true} [:maybe :int]]
-   [:is-manual                   {:optional true} :boolean]])
+   [:is-manual                   {:optional true} :boolean]
+   ;; Guide display helpers (GET .../playout/events only)
+   [:item-kind                   {:optional true} [:maybe :string]]
+   [:library-id                  {:optional true} [:maybe :int]]
+   [:library-name                {:optional true} [:maybe :string]]
+   [:parent-title                {:optional true} [:maybe :string]]
+   [:grandparent-title           {:optional true} [:maybe :string]]])
+
+(def PlayoutEventsQuery
+  "GET .../playout/events: cursor pagination, or a time window. With `from`
+   and/or `until` (ISO-8601 instants) the response is the events overlapping
+   [from, until), which is what a guide grid wants; `cursor` is then ignored."
+  [:map
+   [:limit  {:optional true} [:int {:min 1 :max 1000 :description "Maximum number of items to return"}]]
+   [:cursor {:optional true} [:string {:description "Opaque cursor for fetching next page"}]]
+   [:from   {:optional true} [:string {:description "Window start (ISO-8601 instant)"}]]
+   [:until  {:optional true} [:string {:description "Window end, exclusive (ISO-8601 instant)"}]]])
 
 (def PaginatedPlayoutEvents
   "Paginated response for playout events."

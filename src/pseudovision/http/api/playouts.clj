@@ -191,17 +191,21 @@
                   :manual-events-removed wipe-manual?}})))))
 
 (defn- enrich-event
-  "Adds display-friendly fields: resolves title from metadata and adds a
-   relative API link to the media item."
+  "Adds display-friendly fields: resolves the title (custom title, then
+   metadata title, then the item's remote key so an untitled Grout clip shows
+   `grout:<id>` rather than nothing) and adds a relative API link to the media
+   item. The remote key is only used as that fallback, not returned."
   [event]
   (let [base         (unqualify-keys event)
         media-id     (:media-item-id base)
-        title        (:title base)
-        display-name (or (:custom-title base) title)]
-    (assoc base
-           :title          display-name
-           :media-item-link (when media-id
-                              (str "/api/media/items/" media-id)))))
+        display-name (or (not-empty (:custom-title base))
+                         (not-empty (:title base))
+                         (:item-remote-key base))]
+    (-> base
+        (dissoc :item-remote-key)
+        (assoc :title          display-name
+               :media-item-link (when media-id
+                                  (str "/api/media/items/" media-id))))))
 
 (defn list-events-handler [{:keys [db]}]
   (fn [req]
@@ -209,12 +213,14 @@
           qp         (get-in req [:parameters :query])
           limit      (or (:limit qp) 100)
           cursor     (parse-instant (:cursor qp))
+          from       (parse-instant (:from qp))
+          until      (parse-instant (:until qp))
           playout    (and channel-id (db/get-playout-for-channel db channel-id))]
       (if playout
         (let [now    (t/now)
               events (db/get-upcoming-events-with-metadata
                        db (:playouts/id playout) now limit
-                       :cursor cursor)
+                       :cursor cursor :from from :until until)
               items  (mapv enrich-event events)]
           {:status 200
            :body (pagination/cursor-pagination-response

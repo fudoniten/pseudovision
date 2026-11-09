@@ -151,17 +151,45 @@
 
 (defn get-upcoming-events-with-metadata
   "Returns the next N events for a playout with metadata (title, plot, etc).
-   Useful for generating EPG or fallback slates.
+   Useful for generating EPG or fallback slates, and for UI guides.
 
-   If cursor is provided, starts from events after that start-at timestamp."
-  [ds playout-id after limit & {:keys [cursor]}]
-  (db/query ds (-> (h/select :pe.* :m.title :m.plot :m.release-date)
+   Besides the item's own metadata, each row carries what a guide needs to
+   label and colour an event without fetching every media item: the item's
+   kind and remote key, its library (id + name), and its parent's and
+   grandparent's titles (season and show for an episode).
+
+   Window selection, in order of precedence:
+   - `:from`/`:until` (Instants): events overlapping [from, until).
+   - `:cursor` (Instant): events starting after it.
+   - otherwise: events that haven't finished by `after`."
+  [ds playout-id after limit & {:keys [cursor from until]}]
+  (db/query ds (-> (h/select :pe.* :m.title :m.plot :m.release-date
+                             [[:cast :mi.kind :text] :item-kind]
+                             [:mi.remote-key :item-remote-key]
+                             [:l.id :library-id]
+                             [:l.name :library-name]
+                             [:pm.title :parent-title]
+                             [:gpm.title :grandparent-title])
                    (h/from [:playout-events :pe])
-                   (h/left-join [:metadata :m] [:= :m.media-item-id :pe.media-item-id])
-                   (h/where (if cursor
+                   (h/left-join [:metadata :m]      [:= :m.media-item-id :pe.media-item-id]
+                                [:media-items :mi]  [:= :mi.id :pe.media-item-id]
+                                [:library-paths :lp] [:= :lp.id :mi.library-path-id]
+                                [:libraries :l]     [:= :l.id :lp.library-id]
+                                [:media-items :p]   [:= :p.id :mi.parent-id]
+                                [:metadata :pm]     [:= :pm.media-item-id :p.id]
+                                [:metadata :gpm]    [:= :gpm.media-item-id :p.parent-id])
+                   (h/where (cond
+                              (or from until)
+                              (cond-> [:and [:= :pe.playout-id playout-id]]
+                                from  (conj [:> :pe.finish-at from])
+                                until (conj [:< :pe.start-at until]))
+
+                              cursor
                               [:and
                                [:= :pe.playout-id playout-id]
                                [:> :pe.start-at cursor]]
+
+                              :else
                               [:and
                                [:= :pe.playout-id playout-id]
                                [:> :pe.finish-at  after]]))

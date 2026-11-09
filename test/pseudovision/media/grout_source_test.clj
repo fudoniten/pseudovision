@@ -386,3 +386,21 @@
           "bumpers are left for the bumper pool")
       (is (= {:tags ["retro"] :channel "goldenreels"} @captured)
           "no max_ms: the build cuts the pool to each gap itself"))))
+
+(deftest ingest-clips-backfills-titles-for-known-clips
+  (let [written (atom [])]
+    (with-redefs [db/query        (fn [_ _]
+                                    [{:media-items/id 11 :media-items/remote-key "grout:a"
+                                      :media-versions/duration (Duration/ofMillis 5000)}])
+                  db/execute!     (fn [_ sql-vec] (swap! written conj sql-vec) [])
+                  sut/ingest-clip! (fn [_ _ c] {:media-items/id 13
+                                                :media-versions/duration (Duration/ofMillis (:duration-ms c))})]
+      (sut/ingest-clips! nil 1 [{:id "a" :name "Station ident" :path "/a.mp4" :duration-ms 5000}
+                                {:id "c" :path "/c.mp4" :duration-ms 9000}])
+      (is (= 1 (count @written)) "one batched insert for the known clips")
+      (let [[stmt & params] (first @written)]
+        (is (re-find #"(?i)insert into metadata" stmt))
+        (is (re-find #"(?i)on conflict \(media_item_id\) do nothing" stmt))
+        (is (some #{11} params) "the already-ingested clip gets a title row")
+        (is (some #{"Station ident"} params))
+        (is (not-any? #{13} params) "freshly ingested clips are titled by ingest-clip! itself")))))
