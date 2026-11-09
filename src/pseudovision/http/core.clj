@@ -241,6 +241,18 @@
                            404 {:body s/APIError}
                            400 {:body s/APIError}}
               :handler    (pl/clear-events-handler ctx)}}]
+   ["/api/channels/:channel-id/playout/overlaps"
+    {:tags       ["playouts"]
+     :get  {:summary     "List generated events that overlap the next event"
+            :description "Checks the timeline from ?from (default now) and
+                          returns each event that finishes after the next one
+                          starts. Builds run this check before committing, so a
+                          healthy channel returns count 0."
+            :parameters  {:path  [:map [:channel-id s/ChannelId]]
+                          :query s/OverlapsQuery}
+            :responses   {200 {:body s/PlayoutOverlaps}
+                          404 {:body s/APIError}}
+            :handler     (pl/list-overlaps-handler ctx)}}]
    ["/api/channels/:channel-id/playout/events/:id"
     {:tags       ["playouts"]
      :put    {:summary    "Update a manual event"

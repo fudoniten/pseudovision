@@ -56,6 +56,11 @@
    stay monotonic and discontinuity-sequence must increment when a
    discontinuity segment leaves the window; see the correctness rules in
    `docs/streaming-design.md` §9 before touching `streaming/playlist.clj`.
-8. **Streaming needs real hardware to test.** The automated tests have no GPU
+8. **A build's timeline is checked before it commits.** `build!` trims filler
+   that runs into the next event, then checks the stored timeline for
+   overlaps (`playout-db/find-overlaps`) and throws if any remain, rolling the
+   build back. A new emitter that moves the cursor to a boundary must not
+   emit content past it; filler past `to` is clamped in `apply-filler`.
+9. **Streaming needs real hardware to test.** The automated tests have no GPU
    or live FFmpeg; NVENC/VAAPI paths are only covered by command-generation
    tests.

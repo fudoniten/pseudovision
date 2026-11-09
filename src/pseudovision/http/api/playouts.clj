@@ -231,6 +231,32 @@
                        (str start-at))))})
         {:status 404 :body {:error "No playout for this channel"}}))))
 
+(defn list-overlaps-handler
+  "GET /api/channels/:channel-id/playout/overlaps — generated events that run
+   into the event after them, from ?from (default now). Every build runs the
+   same check before it commits, so this should come back empty; use it to
+   confirm a channel's timeline is clean, e.g. after a reset rebuild."
+  [{:keys [db]}]
+  (fn [req]
+    (let [channel-id (resolve-channel-id db (get-in req [:parameters :path :channel-id]))
+          qp         (get-in req [:parameters :query])
+          from       (or (parse-instant (:from qp)) (t/now))
+          limit      (or (:limit qp) 100)
+          playout    (and channel-id (db/get-playout-for-channel db channel-id))]
+      (if playout
+        (let [rows (db/find-overlaps db (:playouts/id playout) from limit)]
+          {:status 200
+           :body   {:from     (str from)
+                    :count    (count rows)
+                    :overlaps (mapv (fn [r]
+                                      (-> r
+                                          (update :start-at str)
+                                          (update :finish-at str)
+                                          (update :next-start-at str)
+                                          (update :overlap-secs double)))
+                                    rows)}})
+        {:status 404 :body {:error "No playout for this channel"}}))))
+
 (defn- ->instant [x]
   (cond
     (nil? x)        nil

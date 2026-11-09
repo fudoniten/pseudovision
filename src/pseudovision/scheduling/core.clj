@@ -39,6 +39,7 @@
             [pseudovision.scheduling.occurrences :as occ]
             [pseudovision.scheduling.filler      :as filler]
             [pseudovision.scheduling.packing     :as packing]
+            [pseudovision.scheduling.validate    :as validate]
             [pseudovision.util.sql  :as sql-util]
             [pseudovision.util.time :as t]
             [taoensso.timbre        :as log])
@@ -298,7 +299,9 @@
    deadline:
      - duration mode      → from + preset duration
      - pad_to_minute mode → next n-minute boundary
-     - count modes        → no intrinsic deadline; fill-gap stops after N items
+     - count modes        → `ceil` itself (nil when there is none); fill-gap
+                            stops after N items or at `ceil`, whichever is
+                            first
    `ceil` (may be nil) caps the window so the insert can't overrun the
    surrounding block."
   [preset from ceil]
@@ -309,10 +312,10 @@
                  "pad_to_minute" (if-let [n (:filler-presets/pad-to-nearest-minute preset)]
                                    (t/ceil-to-n-minutes from n)
                                    (or ceil from))
-                 ;; count / random_count: fill-gap counts items and ignores the
-                 ;; boundary, so any in-range value works.
-                 (or ceil from))]
-    (if (and ceil (.isAfter target ceil)) ceil target)))
+                 ;; count / random_count: fill-gap counts items, stopping
+                 ;; early at the ceiling if there is one.
+                 ceil)]
+    (if (and ceil target (.isAfter ^Instant target ^Instant ceil)) ceil target)))
 
 (defn- lay-out-filler
   "Turns an ordered seq of filler items into back-to-back event maps starting at
@@ -424,7 +427,7 @@
           [[] cursor]))
       [[] cursor])))
 
-(defn- apply-filler
+(defn- apply-filler*
   "Resolves the filler preset for `role`, loads its items, emits filler events,
    and returns [filler-events updated-cursor].  When no preset is configured for
    the role on this slot/channel, gap-filling roles (:tail, :fallback, :post)
@@ -505,6 +508,21 @@
      (if (#{:tail :fallback :post} role)
        (grout-channel-fallback db cursor slot channel role from to playout-id opts)
        [[] cursor]))))
+
+(defn- apply-filler
+  "apply-filler*, with the filler cut so it never runs past `to` (when there
+   is one). Every caller moves the cursor to `to` afterwards whatever the
+   filler's length, so filler that ran long used to overlap the next program:
+   a count-mode preset ignored the gap, the packer rounded clip lengths down to
+   whole seconds, and a bumper could be a second longer than its gap. Clamping
+   here covers every filler path at once."
+  [db cursor slot channel role from to playout-id opts]
+  (let [[events cursor'] (apply-filler* db cursor slot channel role from to playout-id opts)
+        clamped          (validate/clamp-to events to)]
+    (when (not= (count clamped) (count events))
+      (log/debug "Dropped filler that started past its gap"
+                 {:role role :dropped (- (count events) (count clamped))}))
+    [clamped cursor']))
 
 (defn- next-fixed-start
   "Returns the next wall-clock Instant when `slot` would fire on or after `after`.
@@ -979,6 +997,41 @@
                        (assoc cur2 :next-start (or (:end o) (.plusSeconds ^Instant occ-at 60))))]
             (recur cur3 (into events (into gap-events slot-events)))))))))
 
+(defn- write-events!
+  "Writes a build's events and checks the result before the build commits.
+
+   Filler that runs into the event after it is trimmed to end where that event
+   starts (see validate/trim-filler-overruns). After the insert, the playout's
+   timeline from `from` on is checked in the database, so the check also sees
+   rows this build didn't write: an event left playing across the edge, or a
+   second copy written by another build. Any overlap left at that point throws,
+   which rolls the build back and leaves the previous timeline in place; the
+   caller records the message on the playout. Returns the number of events
+   written."
+  [tx playout-id ^Instant from events]
+  (let [overruns (validate/overlaps events)
+        evs      (validate/trim-filler-overruns events)]
+    (when (seq overruns)
+      (log/info "Trimmed overlapping events before writing"
+                {:playout-id playout-id
+                 :overlaps   (count overruns)
+                 :max-secs   (apply max (map #(/ (.toMillis ^Duration (:overlap %)) 1000.0)
+                                             overruns))
+                 :sample     (validate/describe (first overruns))}))
+    (playout-db/bulk-insert-events! tx evs)
+    (when-let [found (seq (playout-db/find-overlaps tx playout-id from))]
+      (let [f   (first found)
+            msg (str "Build rejected: " (count found)
+                     (if (>= (count found) 50) "+" "")
+                     " overlapping events, first a " (:kind f)
+                     " at " (:start-at f) " running "
+                     (:overlap-secs f) "s into a " (:next-kind f)
+                     " at " (:next-start-at f))]
+        (log/error msg {:playout-id playout-id :overlaps (take 10 found)})
+        (throw (ex-info msg {:playout-id playout-id
+                             :overlaps   (vec (take 10 found))}))))
+    (count evs)))
+
 (defn build!
   "Builds the playout, replacing non-manual events from the rebuild point to the
    horizon.  Runs inside a transaction; saves the updated cursor on success.
@@ -1042,14 +1095,15 @@
                                 covered)
                             e))
                         e))
-        ;; When resetting, start the fresh timeline after any event currently on
-        ;; air so the rebuild doesn't overlap (or interrupt) the program playing
-        ;; right now; fall back to `now` when nothing is in progress.
-        rebuild-from (if reset?
-                       (or (some-> (playout-db/get-current-event db playout-id now)
-                                   :playout-events/finish-at)
-                           now)
-                       resume-edge)
+        ;; Start the new timeline after any event that is playing at the edge.
+        ;; On a reset that keeps the program on air. On a resume it matters as
+        ;; much: a cursor fast-forwarded to `now`, or pulled back to a hole, can
+        ;; land inside an event, which the delete below keeps (it starts before
+        ;; the edge) and the new timeline would then be written over its tail.
+        edge         (if reset? now resume-edge)
+        rebuild-from (or (some-> (playout-db/get-event-straddling db playout-id edge)
+                                 :playout-events/finish-at)
+                         edge)
         horizon     (t/add-duration now (t/hours->duration
                                          (get opts :lookahead-hours 72)))
         opts'       (assoc opts :seed seed)
@@ -1068,19 +1122,21 @@
       (do (log/warn "No schedule or slots; nothing to build"
                     {:playout-id playout-id})
           :no-schedule)
-      (let [initial-cur  (if reset?
-                           (cursor/init rebuild-from)
-                           ;; Resume from the saved cursor, but fast-forward its
-                           ;; wall-clock edge up to `resume-edge` (= now for a dry
+      (let [initial-cur  (if (and saved-cursor (not reset?))
+                           ;; Resume from the saved cursor, but move its
+                           ;; wall-clock edge to `rebuild-from` (now for a dry
                            ;; channel) so a stale past position doesn't replay old
                            ;; times. Enumerator states are kept, so rotation
                            ;; continues from where it left off.
-                           (if saved-cursor
-                             (assoc saved-cursor :next-start resume-edge)
-                             (cursor/init now)))
+                           (assoc saved-cursor :next-start rebuild-from)
+                           (cursor/init rebuild-from))
             window       (get opts :recency-window (t/hours->duration 4))]
         (try
           (jdbc/with-transaction [tx db]
+            ;; One build of a playout at a time, across processes too. A second
+            ;; build waits here and then deletes and rewrites what the first
+            ;; one committed instead of writing a second copy beside it.
+            (playout-db/lock-for-build! tx playout-id)
             ;; Remove auto-generated events from the rebuild point forward. On a
             ;; reset that's the in-progress event's finish (preserving what's on
             ;; air); on a resume it's the saved cursor's edge (clamped up to now for
@@ -1109,27 +1165,27 @@
                       (catch clojure.lang.ExceptionInfo e
                         (let [{:keys [events cursor]} (ex-data e)]
                           (when (and events cursor)
-                            (playout-db/bulk-insert-events! tx events)
+                            (playout-db/bulk-insert-events! tx (validate/trim-filler-overruns events))
                             (playout-db/update-playout! tx playout-id
                                                         {:cursor        (cursor/->json cursor)
                                                          :last-built-at now
                                                          :build-success false
                                                          :build-message (ex-message e)})))
                         (throw e)))]
-                (playout-db/bulk-insert-events! tx events)
-                (playout-db/update-playout! tx playout-id
-                                            {:cursor         (cursor/->json cursor)
-                                             :last-built-at  now
-                                             :build-success  (not stalled?)
-                                             :build-message  (when stalled?
-                                                               "Build stopped: no slot airs within a week")})
-                (log/info "Build complete" {:playout-id  playout-id
-                                            :mode        :by-day
-                                            :events      (count events)
-                                            :elapsed-ms  (- (System/currentTimeMillis) started-ms)
-                                            :item-pools  (count @(:items-cache opts'))
-                                            :grout-pools (count @(:grout-pools opts'))})
-                (count events))
+                (let [written (write-events! tx playout-id rebuild-from events)]
+                  (playout-db/update-playout! tx playout-id
+                                              {:cursor         (cursor/->json cursor)
+                                               :last-built-at  now
+                                               :build-success  (not stalled?)
+                                               :build-message  (when stalled?
+                                                                 "Build stopped: no slot airs within a week")})
+                  (log/info "Build complete" {:playout-id  playout-id
+                                              :mode        :by-day
+                                              :events      written
+                                              :elapsed-ms  (- (System/currentTimeMillis) started-ms)
+                                              :item-pools  (count @(:items-cache opts'))
+                                              :grout-pools (count @(:grout-pools opts'))})
+                  written))
               (loop [cursor       initial-cur
                      slot-idx     0
                      cycle-anchor nil
@@ -1139,17 +1195,16 @@
                   (cond
                     (or (nil? slot) (.isAfter start horizon))
                     ;; Done; flush events and save cursor
-                    (do
-                      (playout-db/bulk-insert-events! tx events)
+                    (let [written (write-events! tx playout-id rebuild-from events)]
                       (playout-db/update-playout! tx playout-id
                                                   {:cursor         (cursor/->json cursor)
                                                    :last-built-at  now
                                                    :build-success  true
                                                    :build-message  nil})
                       (log/info "Build complete" {:playout-id playout-id
-                                                  :events     (count events)
+                                                  :events     written
                                                   :elapsed-ms (- (System/currentTimeMillis) started-ms)})
-                      (count events))
+                      written)
 
                     ;; Safety net: if a full pass over every slot left the cursor
                     ;; exactly where it started, the schedule can't make forward
@@ -1163,13 +1218,13 @@
                     (do
                       (log/warn "Build stalled: timeline did not advance over a full slot cycle; aborting"
                                 {:playout-id playout-id :at (str start) :slots (count slots)})
-                      (playout-db/bulk-insert-events! tx events)
-                      (playout-db/update-playout! tx playout-id
-                                                  {:cursor         (cursor/->json cursor)
-                                                   :last-built-at  now
-                                                   :build-success  false
-                                                   :build-message  "Build stalled: no schedulable content advanced the timeline"})
-                      (count events))
+                      (let [written (write-events! tx playout-id rebuild-from events)]
+                        (playout-db/update-playout! tx playout-id
+                                                    {:cursor         (cursor/->json cursor)
+                                                     :last-built-at  now
+                                                     :build-success  false
+                                                     :build-message  "Build stalled: no schedulable content advanced the timeline"})
+                        written))
 
                     ;; Process this slot
                     :else
@@ -1212,7 +1267,7 @@
                                          :error (str e)
                                          :error-type (class e)})
                               (let [error-msg (str "Build failed at slot " slot-idx ": " (ex-message e))]
-                                (playout-db/bulk-insert-events! tx events)
+                                (playout-db/bulk-insert-events! tx (validate/trim-filler-overruns events))
                                 (playout-db/update-playout! tx playout-id
                                                             {:cursor         (cursor/->json cursor)
                                                              :last-built-at  now

@@ -605,3 +605,38 @@
               "timeline opens with pre-roll filler")
           (is (= 99 (:media-item-id (last events)))
               "timeline closes with post-roll filler"))))))
+(deftest emit-block-filler-never-runs-past-the-block
+  (testing "a count-mode tail preset bigger than the remainder stops at block end"
+    (let [slot (block-slot-with-item 1 dur-1h "filler")
+          cur  (make-cursor t0)
+          preset {:filler-presets/id 42 :filler-presets/mode "count"
+                  :filler-presets/count 3 :filler-presets/role "tail"}]
+      (with-redefs [media-db/get-media-item     (fn [_ _] {:media-items/id 1
+                                                           :media-versions/duration (Duration/ofMinutes 25)})
+                    filler-db/get-filler-preset (fn [_ _] preset)
+                    filler-db/load-filler-items (fn [_ _] (filler-items 10))]
+        (let [[events _] (core/emit-block nil cur slot {} 1 {})]
+          (is (every? #(not (.isAfter ^Instant (:finish-at %) t1)) events)
+              "no event finishes after the block ends")))))
+  (testing "Grout post filler with fractional clip lengths ends at the boundary"
+    (let [slot {:schedule-slots/id             1
+                :schedule-slots/media-item-id  1
+                :schedule-slots/block-duration dur-1h
+                :schedule-slots/tail-mode      "filler"
+                :schedule-slots/playback-order "chronological"}
+          cur   (make-cursor t0)
+          clips (for [i (range 20)]
+                  {:media-items/id (+ 100 i)
+                   :media-versions/duration (Duration/ofMillis (+ 60900 (* 4 i)))})
+          opts  {:seed 7 :pack-filler? true :grout {:enabled? true :base-url "http://grout"}}]
+      (with-redefs [media-db/get-media-item     (fn [_ _] {:media-items/id 1
+                                                           :media-versions/duration (Duration/ofMinutes 50)})
+                    filler-db/get-filler-preset (fn [_ _] nil)
+                    grout/enabled?              (fn [_] true)
+                    grout-source/grout-bumper-items (fn [& _] [])
+                    grout-source/grout-filler-items (fn [& _] clips)]
+        (let [[events _] (core/emit-block nil cur slot {:channels/id 1} 1 opts)
+              filler     (remove #(= 1 (:media-item-id %)) events)]
+          (is (seq filler) "the 10-minute remainder gets Grout filler")
+          (is (every? #(not (.isAfter ^Instant (:finish-at %) t1)) events)
+              "no filler finishes after the hour"))))))
