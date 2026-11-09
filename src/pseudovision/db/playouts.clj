@@ -129,6 +129,59 @@
                                  [:>  :finish-at now]])
                        sql/format)))
 
+(defn get-event-straddling
+  "Returns the event (manual or not) on a playout that starts strictly before `at`
+   and finishes after it, if any. A build that starts its new timeline at `at`
+   must start after that event instead, or the event survives the delete and
+   the new timeline is written on top of its tail."
+  [ds playout-id at]
+  (db/query-one ds (-> (h/select :*)
+                       (h/from :playout-events)
+                       (h/where [:and
+                                 [:= :playout-id playout-id]
+                                 [:< :start-at  at]
+                                 [:> :finish-at at]])
+                       (h/order-by [:finish-at :desc])
+                       (h/limit 1)
+                       sql/format)))
+
+(defn lock-for-build!
+  "Takes a transaction-scoped PostgreSQL advisory lock on `playout-id`, so two
+   builds of one playout can't interleave even when they run in different
+   processes (the in-process lock in scheduling.core only covers one JVM).
+   Must be called inside the build's transaction; the lock is released when it
+   commits or rolls back."
+  [tx playout-id]
+  (jdbc/execute-one! tx ["SELECT pg_advisory_xact_lock(?, ?)"
+                         (int 7193) (int playout-id)]))
+
+(def ^:private overlap-sql
+  "Consecutive non-manual events on a playout (in play order) where the first
+   finishes after the next one starts."
+  "SELECT id, kind, start_at, finish_at,
+          next_id, next_kind, next_start_at,
+          EXTRACT(EPOCH FROM (finish_at - next_start_at))::float8 AS overlap_secs
+     FROM (SELECT id, kind::text AS kind, start_at, finish_at,
+                  LEAD(id)         OVER w AS next_id,
+                  LEAD(kind::text) OVER w AS next_kind,
+                  LEAD(start_at)   OVER w AS next_start_at
+             FROM playout_events
+            WHERE playout_id = ? AND NOT is_manual AND finish_at > ?
+           WINDOW w AS (ORDER BY start_at, finish_at, id)) e
+    WHERE finish_at > next_start_at
+    ORDER BY start_at
+    LIMIT ?")
+
+(defn find-overlaps
+  "Returns up to `limit` (default 50) overlaps among a playout's non-manual
+   events that finish after `from`: rows of
+   {:id :kind :start-at :finish-at :next-id :next-kind :next-start-at
+    :overlap-secs}. Manual events are left out, since the builder doesn't pack
+   around them and an operator who injects one over generated events means to."
+  ([ds playout-id from] (find-overlaps ds playout-id from 50))
+  ([ds playout-id from limit]
+   (db/query-unqualified ds [overlap-sql playout-id from limit])))
+
 (defn get-upcoming-events
   "Returns the next N events for a playout starting from `after`.
    Includes any event currently in progress (finish-at > after), not just

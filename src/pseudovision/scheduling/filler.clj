@@ -47,63 +47,69 @@
    `enumerator` — current enumerator state for this preset's collection
    `playout-id` — for stamping on event maps
 
+   `to` may be nil for a count-mode insert with no deadline (a count slot's
+   pre/post roll). When it is set, no item is placed that would finish after
+   it, in either mode: a count-mode preset used to emit all N items regardless,
+   running a fallback break tens of minutes into the next program.
+
    Returns {:events [event-map …] :enumerator updated-enumerator}"
   [from to preset items enumerator playout-id]
-  (let [gap-duration (t/duration-between from to)]
-    (cond
-      ;; Nothing to fill with
-      (empty? items)
-      {:events [] :enumerator enumerator}
+  (cond
+    ;; Nothing to fill with
+    (empty? items)
+    {:events [] :enumerator enumerator}
 
-      ;; duration mode: pick items until we've filled the gap
-      (= "duration" (:filler-presets/mode preset))
-      (loop [cursor  from
-             enum    enumerator
-             events  []]
-        (let [remaining (t/duration-between cursor to)]
-          (if (or (.isNegative remaining)
-                  (.isZero remaining)
-                  (empty? (:items enum)))
-            {:events events :enumerator enum}
-            (let [[item enum'] (enum/next-item enum)
-                  dur          (or (some-> item :media-versions/duration)
-                                   (Duration/ofSeconds 0))
-                  finish       (t/add-duration cursor dur)]
-              (if (.isAfter finish to)
-                ;; This item would overflow the gap; try shorter or stop
-                {:events events :enumerator enum}
-                (recur finish
-                       enum'
-                       (conj events {:playout-id    playout-id
-                                     :media-item-id (:media-items/id item)
-                                     :kind          (sql-util/->pg-enum "event_kind" (:filler-presets/role preset))
-                                     :start-at      cursor
-                                     :finish-at     finish
-                                     :is-manual     false})))))))
+    ;; duration mode: pick items until we've filled the gap
+    (and to (= "duration" (:filler-presets/mode preset)))
+    (loop [cursor  from
+           enum    enumerator
+           events  []]
+      (let [remaining (t/duration-between cursor to)]
+        (if (or (.isNegative remaining)
+                (.isZero remaining)
+                (empty? (:items enum)))
+          {:events events :enumerator enum}
+          (let [[item enum'] (enum/next-item enum)
+                dur          (or (some-> item :media-versions/duration)
+                                 (Duration/ofSeconds 0))
+                finish       (t/add-duration cursor dur)]
+            (if (.isAfter finish to)
+              ;; This item would overflow the gap; try shorter or stop
+              {:events events :enumerator enum}
+              (recur finish
+                     enum'
+                     (conj events {:playout-id    playout-id
+                                   :media-item-id (:media-items/id item)
+                                   :kind          (sql-util/->pg-enum "event_kind" (:filler-presets/role preset))
+                                   :start-at      cursor
+                                   :finish-at     finish
+                                   :is-manual     false})))))))
 
-      ;; count mode: pick exactly N items
-      (= "count" (:filler-presets/mode preset))
-      (let [n (:filler-presets/count preset 1)]
-        (loop [i      0
-               cursor from
-               enum   enumerator
-               events []]
-          (if (>= i n)
-            {:events events :enumerator enum}
-            (let [[item enum'] (enum/next-item enum)
-                  dur          (or (some-> item :media-versions/duration)
-                                   (Duration/ofSeconds 0))
-                  finish       (t/add-duration cursor dur)]
+    ;; count mode: pick exactly N items
+    (= "count" (:filler-presets/mode preset))
+    (let [n (:filler-presets/count preset 1)]
+      (loop [i      0
+             cursor from
+             enum   enumerator
+             events []]
+        (if (>= i n)
+          {:events events :enumerator enum}
+          (let [[item enum'] (enum/next-item enum)
+                dur          (or (some-> item :media-versions/duration)
+                                 (Duration/ofSeconds 0))
+                finish       (t/add-duration cursor dur)]
+            (if (and to (.isAfter ^Instant finish ^Instant to))
+              {:events events :enumerator enum}
               (recur (inc i) finish enum'
                      (conj events {:playout-id    playout-id
                                    :media-item-id (:media-items/id item)
                                    :kind          (sql-util/->pg-enum "event_kind" (:filler-presets/role preset))
                                    :start-at      cursor
                                    :finish-at     finish
-                                   :is-manual     false}))))))
+                                   :is-manual     false})))))))
 
-      :else
-      {:events [] :enumerator enumerator})))
+    :else
+    {:events [] :enumerator enumerator}))
 
 ;; ---------------------------------------------------------------------------
 ;; Bumper gap filling (small cracks between content)
@@ -151,12 +157,15 @@
       (let [bucket (duration-bucket gap-secs)
             ;; Allow 1s tolerance so a 4.8s bumper can fill a 5s gap
             tolerance 1.0
+            gap-ms (.toMillis (t/duration-between from to))
             min-ms (long (* 1000 (- bucket tolerance)))
-            max-ms (long (* 1000 (+ bucket tolerance)))
+            ;; Never longer than the gap itself: the +1s tolerance let a 5.9s
+            ;; bumper into a 5s gap, overlapping the program after it.
+            max-ms (min gap-ms (long (* 1000 (+ bucket tolerance))))
             candidates (if candidates-fn
                          (candidates-fn min-ms max-ms)
                          (grout-source/grout-bumper-items db grout channel min-ms max-ms))]
-        (when (seq candidates)
+        (when (and (<= min-ms max-ms) (seq candidates))
           ;; Pick randomly for variety (no enumerator state needed for bumpers)
           (let [item (rand-nth candidates)
                 dur-secs (item-duration-seconds item)

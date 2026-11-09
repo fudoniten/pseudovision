@@ -202,3 +202,13 @@
       ;; Fill quality stays good throughout.
       (is (every? #(< % 30) leftovers)
           (str "some breaks left too much dead air: " (vec leftovers))))))
+
+(deftest pack-never-overruns-with-fractional-durations
+  (testing "clips with fractional seconds don't add up past the gap"
+    ;; Rounding each 59.9s clip down to 59s let three of them into a 179s gap.
+    (let [items  (for [i (range 6)]
+                   {:media-items/id i :media-versions/duration (Duration/ofMillis 59900)})
+          target (Duration/ofSeconds 179)
+          picked (pack/pack target items :seed 3)]
+      (is (= 2 (count picked)))
+      (is (not (pos? (compare (pack/duration-of picked) target)))))))

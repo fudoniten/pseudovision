@@ -25,8 +25,13 @@
   (:import [java.time Duration]
            [java.util Random]))
 
-(defn- secs ^long [^Duration d]
-  (.getSeconds d))
+(defn- millis
+  "A duration in whole milliseconds. Packing used whole seconds (rounded down)
+   while the events were laid out with each clip's real length, so a break of
+   several clips could finish a few seconds past its gap. Milliseconds match
+   the precision durations are stored with."
+  ^long [^Duration d]
+  (.toMillis d))
 
 (defn duration-of
   "Total wall-clock duration of a playlist (seq of items)."
@@ -57,9 +62,9 @@
    favour less-recently-played items.  Continues until nothing fits.
 
    Returns a vector of indices into the parallel `durs`/`ids` vectors."
-  [^Random rng target-secs durs ids recency allow-repeats?]
+  [^Random rng target-ms durs ids recency allow-repeats?]
   (let [n (count durs)]
-    (loop [remaining (long target-secs)
+    (loop [remaining (long target-ms)
            used      #{}
            picked    []]
       (let [elig (into [] (for [i (range n)
@@ -133,26 +138,26 @@
                    :or   {seed 0 recency {} k 12 allow-repeats? false
                           duration-fn :media-versions/duration
                           id-fn :media-items/id}}]
-  (let [target-secs (secs target)
-        tol-secs    (if tolerance (secs tolerance) 0)
-        usable      (into [] (filter (fn [it]
-                                       (let [d (duration-fn it)]
-                                         (and d
-                                              (pos? (secs d))
-                                              (<= (secs d) target-secs))))
-                                     items))
-        durs        (mapv #(secs (duration-fn %)) usable)
-        ids         (mapv id-fn usable)]
-    (if (or (<= target-secs 0) (empty? usable))
+  (let [target-ms (millis target)
+        tol-ms    (if tolerance (millis tolerance) 0)
+        usable    (into [] (filter (fn [it]
+                                     (let [d (duration-fn it)]
+                                       (and d
+                                            (pos? (millis d))
+                                            (<= (millis d) target-ms))))
+                                   items))
+        durs      (mapv #(millis (duration-fn %)) usable)
+        ids       (mapv id-fn usable)]
+    (if (or (<= target-ms 0) (empty? usable))
       []
       (let [candidates
             (for [c (range (max 1 (long k)))]
               (let [rng      (Random. (bit-xor (long seed)
                                                (* 1099511628211 (inc (long c)))))
-                    idxs     (one-fill rng target-secs durs ids recency allow-repeats?)
-                    used-s   (reduce + 0 (map #(long (nth durs %)) idxs))
-                    leftover (- target-secs used-s)
-                    eff      (max 0 (- leftover tol-secs))
+                    idxs     (one-fill rng target-ms durs ids recency allow-repeats?)
+                    used-ms  (reduce + 0 (map #(long (nth durs %)) idxs))
+                    leftover (- target-ms used-ms)
+                    eff      (max 0 (- leftover tol-ms))
                     rec-cost (reduce + 0.0 (map #(double (get recency (nth ids %) 0)) idxs))]
                 {:idxs idxs :rank [eff rec-cost]}))
             best (reduce (fn [a b]

@@ -95,7 +95,9 @@ Grout clips over HTTP instead of a shared mount; merging pvcli and
 ### Playout
 
 - [ ] De-duplicate concurrent rebuilds of the same channel (return the
-      in-flight job instead of starting a second).
+      in-flight job instead of starting a second). They can no longer
+      double the timeline (advisory lock + unique start), but the second one
+      still waits and rebuilds again.
 - [ ] Clips that Grout supersedes or deletes stay referenceable as filler
       until cleaned up; add a cleanup pass.
 
@@ -125,6 +127,12 @@ Grout clips over HTTP instead of a shared mount; merging pvcli and
 
 - 2026-10-13: The native schedule engine is the only timeline writer; the
   DailySlot ingest goes away.
+- 2026-11-09: A build must not commit a timeline with overlapping events.
+  Filler that runs into the next event is trimmed; any other overlap rolls the
+  build back and records "Build rejected: …" on the playout. Builds take a
+  per-playout advisory lock, and generated events are unique on
+  `(playout_id, start_at)`. `GET /api/channels/:id/playout/overlaps` runs the
+  same check on demand.
 - 2026-10-13: HDHomeRun emulation was removed; Jellyfin uses the M3U tuner and
   XMLTV.
 - Live streaming uses per-event encoders with a PV-owned playlist and overlap

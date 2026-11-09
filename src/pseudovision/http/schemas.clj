@@ -830,6 +830,28 @@
    [:events-deleted        :int]
    [:manual-events-removed :boolean]])
 
+(def OverlapsQuery
+  [:map
+   [:from  {:optional true} Instant]
+   [:limit {:optional true} [:int {:min 1 :max 1000}]]])
+
+(def PlayoutOverlap
+  [:map
+   [:id            :int]
+   [:kind          :string]
+   [:start-at      Instant]
+   [:finish-at     Instant]
+   [:next-id       :int]
+   [:next-kind     :string]
+   [:next-start-at Instant]
+   [:overlap-secs  :double]])
+
+(def PlayoutOverlaps
+  [:map
+   [:from     Instant]
+   [:count    :int]
+   [:overlaps [:vector PlayoutOverlap]]])
+
 (def PlayoutEvent
   [:map
    [:id                          EventId]

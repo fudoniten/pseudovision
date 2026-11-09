@@ -165,3 +165,23 @@
   (is (= 5  (#'pseudovision.scheduling.filler/duration-bucket 7)))
   (is (= 10 (#'pseudovision.scheduling.filler/duration-bucket 12)))
   (is (= 15 (#'pseudovision.scheduling.filler/duration-bucket 15))))
+
+(deftest fill-gap-count-stops-at-the-gap-end
+  (testing "a count preset used as gap filler doesn't run past the gap"
+    (let [items  [item-30m item-30m item-30m]
+          preset {:filler-presets/mode "count" :filler-presets/count 3 :filler-presets/role "fallback"}
+          result (sut/fill-gap t0 t1 preset items (make-enum items) 5)]
+      (is (= 2 (count (:events result))))
+      (is (= t1 (:finish-at (last (:events result)))))))
+  (testing "with no deadline it still emits all N"
+    (let [items  [item-30m item-30m item-30m]
+          preset {:filler-presets/mode "count" :filler-presets/count 3 :filler-presets/role "post"}
+          result (sut/fill-gap t0 nil preset items (make-enum items) 5)]
+      (is (= 3 (count (:events result)))))))
+
+(deftest bumper-is-never-longer-than-its-gap
+  (let [asked (atom nil)
+        gap-end (.plusMillis t0 5500)]
+    (sut/fill-gap-with-bumper nil nil {} t0 gap-end 1
+                              (fn [min-ms max-ms] (reset! asked [min-ms max-ms]) []))
+    (is (= [4000 5500] @asked) "the 5s bucket's +1s tolerance is capped at the gap")))
