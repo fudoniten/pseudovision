@@ -372,6 +372,26 @@
                       (fnil conj []) (:playout-events/finish-at r)))
             {} rows)))
 
+(defn recent-content-airings
+  "Returns the start times of this playout's content events that start at or
+   after `since`. Used for the content repeat window in random blocks (see
+   scheduling.core/plan-random-content): an item that aired on this channel
+   recently is not picked again.
+
+   Result: media_item_id -> vector of start Instants."
+  [ds playout-id since]
+  (let [rows (db/query ds (-> (h/select :media-item-id :start-at)
+                              (h/from :playout-events)
+                              (h/where [:and
+                                        [:= :playout-id playout-id]
+                                        [:= :kind (sql-util/->pg-enum "event_kind" "content")]
+                                        [:>= :start-at since]])
+                              sql/format))]
+    (reduce (fn [acc r]
+              (update acc (:playout-events/media-item-id r)
+                      (fnil conj []) (:playout-events/start-at r)))
+            {} rows)))
+
 ;; ---------------------------------------------------------------------------
 ;; Playout history
 ;; ---------------------------------------------------------------------------

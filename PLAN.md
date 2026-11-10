@@ -138,6 +138,13 @@ Grout clips over HTTP instead of a shared mount; merging pvcli and
   copied onto episodes. An item's length and file come from its longest
   media version. Generic Grout clips (no channel) are penalised in gap
   filler so a channel's own clips come first.
+- 2026-11-10: Random-order blocks and floods no longer search the pool for
+  something that fits the time left (that made a 2-minute trailer fill every
+  gap). They draw at random, stop after 3 draws that don't fit (no limit
+  before the first item), skip items that aired on the channel within
+  `:content-repeat-window-hours` (default 48, capped at half the pool's
+  runtime), and scatter the leftover filler between programs. Chronological
+  and series blocks keep the fit search.
 - 2026-10-13: HDHomeRun emulation was removed; Jellyfin uses the M3U tuner and
   XMLTV.
 - Live streaming uses per-event encoders with a PV-owned playlist and overlap
