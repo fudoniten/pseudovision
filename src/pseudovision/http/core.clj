@@ -382,10 +382,24 @@
    ["/api/media/libraries/:id/scan"
     {:tags       ["media"]
      :post {:summary   "Trigger an asynchronous library scan"
-            :parameters {:path [:map [:id s/LibraryId]]}
+            :description "A Jellyfin scan also prunes items Jellyfin no longer
+                          lists: the first full scan that misses an item hides
+                          it, and a full scan at least 20 hours later deletes
+                          it. Pruning is skipped when the listing is incomplete
+                          and refused when too much is missing at once;
+                          force-prune=true lifts that limit for this scan."
+            :parameters {:path  [:map [:id s/LibraryId]]
+                         :query [:map [:force-prune {:optional true} :boolean]]}
             :responses {202 {:body s/JobSubmitResponse}
                         404 {:body s/APIError}}
             :handler   (med/trigger-scan-handler ctx)}}]
+   ["/api/media/libraries/:id/missing"
+    {:tags       ["media"]
+     :get {:summary   "List items a scan found missing from Jellyfin, waiting to be pruned"
+           :parameters {:path [:map [:id s/LibraryId]]}
+           :responses {200 {:body [:vector s/MissingMediaItem]}
+                       404 {:body s/APIError}}
+           :handler   (med/list-missing-items-handler ctx)}}]
    ["/api/media/scan-all"
     {:tags       ["media"]
      :post {:summary     "Scan every Jellyfin library (async job)"

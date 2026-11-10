@@ -226,3 +226,18 @@
         (is (= [[9 (Duration/ofMinutes 95)] [8 dur-30m]]
                (mapv (juxt :media-items/id :media-versions/duration)
                      (#'core/load-items nil slot test-channel))))))))
+
+(deftest items-marked-missing-are-not-scheduled
+  (testing "an item a Jellyfin scan marked missing (state 'unavailable') is
+            dropped while it waits to be pruned; a normal one still plays"
+    (let [slot {:schedule-slots/id             102
+                :schedule-slots/playback-order "chronological"
+                :schedule-slots/anchor         "sequential"
+                :schedule-slots/fill-mode      "once"}
+          cur  (cursor/init t0)]
+      (with-redefs [media-db/resolve-playable-by-channel-tag
+                    (fn [_ _]
+                      [(assoc catalog-item :media-items/id 6 :media-items/state "unavailable" :_top-id 6)
+                       (assoc catalog-item :media-items/state "normal")])]
+        (let [[events _] (core/emit-once nil cur slot test-channel 1 {})]
+          (is (= [7] (map :media-item-id events))))))))

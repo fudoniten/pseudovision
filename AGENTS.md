@@ -68,6 +68,13 @@
 9. **Join media versions through `media/primary-version-id`.** An item can
    have several versions (a short preview next to the main cut), and a plain
    join gives one row per version. The primary version is the longest one.
-10. **Streaming needs real hardware to test.** The automated tests have no GPU
+10. **Only `state = 'normal'` items are schedulable.** A Jellyfin scan marks
+   items it no longer sees as `unavailable` before deleting them on a later
+   scan (`media/prune.clj`). Catalog queries filter on `mi.state`;
+   `load-items` and `load-filler-items` drop inactive items with
+   `media/active?`. A new item source must do one or the other. A full
+   listing is what makes pruning safe: never feed it items from a partial
+   fetch.
+11. **Streaming needs real hardware to test.** The automated tests have no GPU
    or live FFmpeg; NVENC/VAAPI paths are only covered by command-generation
    tests.

@@ -228,11 +228,16 @@
                                :filtered-out (- (count items) (count filtered))})
                      filtered))
                  (vec items))
-        playable (distinct-items (filterv playable? tagged))]
-    (when (< (count playable) (count tagged))
+        active   (filterv media-db/active? tagged)
+        _        (when (< (count active) (count tagged))
+                   (log/info "Skipping items marked missing from their media source"
+                             {:slot-id slot-id
+                              :dropped (- (count tagged) (count active))}))
+        playable (distinct-items (filterv playable? active))]
+    (when (< (count playable) (count active))
       (log/warn "Skipping unplayable items with zero/unknown duration"
                 {:slot-id slot-id
-                 :dropped (- (count tagged) (count playable))}))
+                 :dropped (- (count active) (count playable))}))
     (log/info "Loaded items for slot (final)"
              {:slot-id slot-id
               :count (count playable)})
