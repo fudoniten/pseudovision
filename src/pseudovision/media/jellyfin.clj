@@ -19,6 +19,7 @@
             [pseudovision.db.core        :as db-core]
             [pseudovision.db.media       :as db]
             [pseudovision.media.connection :as conn]
+            [pseudovision.media.prune     :as prune]
             [pseudovision.util.sql       :as sql-util]
             [taoensso.timbre             :as log])
   (:import [java.security MessageDigest]
@@ -146,31 +147,69 @@
   "Movie,Series,Season,Episode,MusicVideo,Audio,Photo")
 
 (defn- fetch-items-page
-  "Fetches a single page of items from a Jellyfin library."
+  "Fetches a single page of items from a Jellyfin library. Returns the
+   jellyfin-request result: {:status :body} or {:error e}."
   [base-url api-key parent-id start-index limit]
-  (jellyfin-get base-url "/Items" api-key
-                :query-params {"ParentId"         parent-id
-                               "Recursive"        "true"
-                               "Fields"           item-fields
-                               "IncludeItemTypes" include-item-types
-                               "StartIndex"       (str start-index)
-                               "Limit"            (str limit)
-                               "SortBy"           "SortName"
-                               "SortOrder"        "Ascending"}))
+  (jellyfin-request base-url "/Items" api-key
+                    :query-params {"ParentId"         parent-id
+                                   "Recursive"        "true"
+                                   "Fields"           item-fields
+                                   "IncludeItemTypes" include-item-types
+                                   "StartIndex"       (str start-index)
+                                   "Limit"            (str limit)
+                                   "SortBy"           "SortName"
+                                   "SortOrder"        "Ascending"}))
 
-(defn- fetch-all-items
-  "Pages through all items in a Jellyfin library."
+(defn fetch-all-items
+  "Pages through all items in a Jellyfin library.
+
+   Returns {:items [...] :complete? bool :reason string-or-nil}. The listing
+   is complete only when every page came back 2xx with a TotalRecordCount,
+   the total didn't change between pages, and the number of distinct ids
+   fetched equals that total. Pruning trusts only a complete listing: a
+   failed page used to end the loop quietly and look like a short library.
+   The items fetched so far are still returned so the upsert can use them."
   [base-url api-key parent-id]
   (let [page-size 100]
     (loop [start  0
+           total  nil
            result []]
-      (let [page  (fetch-items-page base-url api-key parent-id start page-size)
-            items (get page :Items [])
-            total (get page :TotalRecordCount 0)]
-        (if (or (empty? items) (>= (+ start (count items)) total))
-          (into result items)
-          (recur (+ start (count items))
-                 (into result items)))))))
+      (let [{:keys [status body error]} (fetch-items-page base-url api-key parent-id start page-size)
+            page-total (:TotalRecordCount body)
+            items      (:Items body)
+            stop       (fn [reason]
+                         (log/warn "Jellyfin listing is incomplete; pruning will be skipped"
+                                   {:library-id parent-id :fetched (count result)
+                                    :reason reason})
+                         {:items result :complete? false :reason reason})]
+        (cond
+          error
+          (stop (str "request failed at item " start ": " (.getMessage ^Exception error)))
+
+          (not (<= 200 status 299))
+          (stop (str "Jellyfin returned HTTP " status " at item " start))
+
+          (or (not (integer? page-total)) (not (sequential? items)))
+          (stop (str "malformed page at item " start))
+
+          (and total (not= total page-total))
+          (stop (str "library changed during the scan (" total " then " page-total " items)"))
+
+          :else
+          (let [result (into result items)
+                fetched (count result)]
+            (cond
+              (< fetched page-total)
+              (if (empty? items)
+                (stop (str "Jellyfin stopped returning items at " fetched " of " page-total))
+                (recur fetched page-total result))
+
+              (not= page-total (count (into #{} (map :Id) result)))
+              (stop (str "fetched " (count (into #{} (map :Id) result))
+                         " distinct items but Jellyfin reported " page-total))
+
+              :else
+              {:items result :complete? true :reason nil})))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Type mapping
@@ -632,10 +671,21 @@
 ;; ---------------------------------------------------------------------------
 
 (defn scan-library!
-  "Scans a single library from a Jellyfin media source and upserts all items.
+  "Scans a single library from a Jellyfin media source and upserts all items,
+   then prunes items Jellyfin no longer lists (see pseudovision.media.prune).
    `source` must be a media_sources row with connection_config.
-   `library` must have :external_id set to the Jellyfin library ID."
-  [db source library]
+   `library` must have :external_id set to the Jellyfin library ID.
+
+   `opts`:
+     :prune  — map merged over prune/default-opts; `{:force? true}` skips the
+               too-many-missing guard, `{:enabled? false}` skips pruning.
+
+   Returns {:synced :skipped :repaired :errors :total :prune report}. The
+   prune report has :status \"skipped\" with a :reason when the listing was
+   incomplete. Upsert errors don't block pruning: what's pruned depends only
+   on the listing, not on which items saved."
+  ([db source library] (scan-library! db source library nil))
+  ([db source library opts]
   (let [{:keys [base-url api-key]} (conn/<-connection-config source)]
     (when-not base-url
       (throw (ex-info "No active connection for Jellyfin source"
@@ -661,7 +711,7 @@
       (log/info "Fetching items from Jellyfin library"
                 {:library-id jf-library-id :library-name (:libraries/name library)})
 
-      (let [items  (fetch-all-items base-url api-key jf-library-id)
+      (let [{:keys [items complete? reason]} (fetch-all-items base-url api-key jf-library-id)
             ;; Sort so parents (shows) come before children (seasons → episodes)
             sorted (sort-by (fn [item]
                               (case (:Type item)
@@ -699,5 +749,15 @@
                            {:id (:Id item) :name (:Name item)})
                 (swap! results update :errors inc))))
           (log/info "Jellyfin library scan complete"
-                    (assoc @results :total (count sorted)))
-          @results)))))
+                    (assoc @results :total (count sorted) :complete? complete?))
+          (let [prune-opts (:prune opts)
+                skip       (cond
+                             (false? (:enabled? prune-opts)) "pruning disabled for this scan"
+                             (not complete?)                 (str "incomplete listing: " reason))
+                report     (if skip
+                             (do (log/info "Skipping prune" {:library-path-id lp-id :reason skip})
+                                 {:status "skipped" :reason skip})
+                             (prune/prune-library-path! db lp-id
+                                                        (into #{} (map :Id) items)
+                                                        prune-opts))]
+            (assoc @results :total (count sorted) :prune report))))))))

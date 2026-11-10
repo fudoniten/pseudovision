@@ -17,26 +17,29 @@
                          sql/format))))
 
 (defn load-filler-items
-  "Returns the ordered seq of media items for a filler preset's content source."
+  "Returns the ordered seq of media items for a filler preset's content source.
+   Items marked missing from their media source are left out."
   [ds preset]
-  (cond
-    (:filler-presets/collection-id preset)
-    (let [coll (db/query-one ds (-> (h/select :*)
-                                    (h/from :collections)
-                                    (h/where [:= :id (:filler-presets/collection-id preset)])
-                                    sql/format))]
-      (if coll (col-db/resolve-collection ds coll) []))
+  (filterv
+   media/active?
+   (cond
+     (:filler-presets/collection-id preset)
+     (let [coll (db/query-one ds (-> (h/select :*)
+                                     (h/from :collections)
+                                     (h/where [:= :id (:filler-presets/collection-id preset)])
+                                     sql/format))]
+       (if coll (col-db/resolve-collection ds coll) []))
 
-    (:filler-presets/media-item-id preset)
-    (let [item (db/query-one ds (-> (h/select :mi.* :mv.duration)
-                                    (h/from [:media-items :mi])
-                                    (h/left-join [:media-versions :mv]
-                                                 [:= :mv.id (media/primary-version-id :mi.id)])
-                                    (h/where [:= :mi.id (:filler-presets/media-item-id preset)])
-                                    sql/format))]
-      (if item [item] []))
+     (:filler-presets/media-item-id preset)
+     (let [item (db/query-one ds (-> (h/select :mi.* :mv.duration)
+                                     (h/from [:media-items :mi])
+                                     (h/left-join [:media-versions :mv]
+                                                  [:= :mv.id (media/primary-version-id :mi.id)])
+                                     (h/where [:= :mi.id (:filler-presets/media-item-id preset)])
+                                     sql/format))]
+       (if item [item] []))
 
-    :else []))
+     :else [])))
 
 ;; ---------------------------------------------------------------------------
 ;; CRUD

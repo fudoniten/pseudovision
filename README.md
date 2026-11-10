@@ -88,6 +88,21 @@ PV scans media sources (Jellyfin) into libraries of `media_items`, each with
 dimensions as prefixed tags (`channel:hua`, `audience:kids`, `genre:comedy`).
 Tags that describe a show live on the show, not on its episodes.
 
+A Jellyfin scan also prunes items that were deleted from Jellyfin, in two
+steps. The first full scan that no longer lists an item marks it missing
+(`state = 'unavailable'`, `missing_since` set), which hides it from the
+catalog and from new builds. A full scan at least 20 hours later that still
+doesn't list it deletes it, along with the playout events that play it; the
+next horizon top-up fills the hole. An item that reappears in between goes
+back to normal. Pruning never runs on a partial listing (a failed page, an
+error status, a count that doesn't match Jellyfin's total) and is refused when
+Jellyfin lists nothing or more than 20% (or 500) of a library's items are
+missing at once. Items pinned by a schedule slot or filler preset stay marked
+and are reported instead of deleted. Each scan job's `result` carries the
+prune report; `GET /api/media/libraries/:id/missing` lists what's waiting, and
+`POST /api/media/libraries/:id/scan?force-prune=true` accepts an intended
+large deletion. See `media/prune.clj`.
+
 ### Collections
 
 A collection is a named source of items for a slot or filler preset:
@@ -174,7 +189,7 @@ schemas in `http/schemas.clj`. It's authoritative; this is a map.
 | Channels | `/api/channels`, `/api/channels/:id` |
 | Schedules & slots | `/api/schedules`, `/api/schedules/:id/slots`, `/api/schedules/:id/slot-order` |
 | Playout | `/api/channels/:id/playout` (GET; PUT attaches a schedule; POST rebuilds; DELETE clears), `/api/channels/:id/playout/events` (list, inject, bulk delete), `/api/playouts/ensure` |
-| Media | `/api/media/sources`, `/api/media/libraries`, `/api/media/items/:id` (+ `/children`, `/stream`, `/playback-url`), `/api/media/collections`, `/api/media-items/:id/tags`, `/api/tags` |
+| Media | `/api/media/sources`, `/api/media/libraries` (+ `/:id/scan`, `/:id/missing`), `/api/media/scan-all`, `/api/media/items/:id` (+ `/children`, `/stream`, `/playback-url`), `/api/media/collections`, `/api/media-items/:id/tags`, `/api/tags` |
 | Filler & ffmpeg | `/api/filler-presets`, `/api/ffmpeg/profiles` |
 | Catalog (for TS) | `GET /api/catalog/aggregate` (`?channel=` or `?tag=`), `POST /api/sync/grout` |
 | Jobs & metrics | `/api/jobs`, `/api/metrics/channels`, `/api/metrics/media-items` |

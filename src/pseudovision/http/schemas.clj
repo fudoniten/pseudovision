@@ -585,6 +585,14 @@
 
 (def MediaSourceId [:int {:min 1}])
 (def LibraryId     [:int {:min 1}])
+
+(def MissingMediaItem
+  [:map {:description "An item a Jellyfin scan found missing and hid; a later scan deletes it once the grace period passes"}
+   [:id            :int]
+   [:kind          :string]
+   [:remote-key    [:maybe :string]]
+   [:missing-since {:description "When a scan first found it missing (ISO-8601)"} :any]
+   [:title         [:maybe :string]]])
 (def CollectionId  [:int {:min 1}])
 
 (def MediaSourceKind

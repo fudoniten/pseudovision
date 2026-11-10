@@ -11,6 +11,16 @@
 ;; Shared query fragments
 ;; ---------------------------------------------------------------------------
 
+(defn active?
+  "False for an item that is not in the 'normal' state, such as one a
+   Jellyfin scan marked missing (see pseudovision.media.prune). Items without
+   a :media-items/state key (rows selected without mi.*) count as active.
+   The scheduling and filler paths drop inactive items so a missing item is
+   not scheduled while it waits to be pruned."
+  [item]
+  (let [state (:media-items/state item)]
+    (or (nil? state) (= "normal" (str state)))))
+
 (defn primary-version-id
   "HoneySQL subquery: the id of the media version that represents the item
    whose id is in column `item-col`. That is the longest version, newest first

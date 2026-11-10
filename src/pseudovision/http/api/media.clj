@@ -5,6 +5,7 @@
             [pseudovision.jobs.runner       :as runner]
             [pseudovision.media.scanner     :as scanner]
             [pseudovision.media.jellyfin    :as jellyfin]
+            [pseudovision.media.prune       :as prune]
             [pseudovision.media.connection  :as conn]
             [pseudovision.util.pagination   :as pagination]
             [taoensso.timbre                :as log]))
@@ -179,9 +180,15 @@
         {:status 200
          :body (pagination/offset-pagination-response items limit offset total)}))))
 
-(defn trigger-scan-handler [{:keys [db media ffmpeg jobs]}]
+(defn trigger-scan-handler
+  "POST /api/media/libraries/:id/scan — scan one library as an async job.
+   A Jellyfin scan also prunes items Jellyfin no longer lists (see
+   pseudovision.media.prune); `?force-prune=true` lifts the too-many-missing
+   guard for this scan when a large deletion is intended."
+  [{:keys [db media ffmpeg jobs]}]
   (fn [req]
     (let [library-id (get-in req [:parameters :path :id])
+          force?     (true? (get-in req [:parameters :query :force-prune]))
           library    (db/get-library db library-id)]
       (if library
         (let [source (db/get-media-source db (:libraries/media-source-id library))
@@ -191,15 +198,19 @@
                       {:type :media/library-scan
                        :metadata {:library-id library-id :kind kind}}
                       (fn [_report-progress]
-                        (log/info "Starting library scan" {:library-id library-id :kind kind})
-                        (case kind
-                          :jellyfin (jellyfin/scan-library! db source library)
-                          (scanner/scan-library! db media ffmpeg library))
-                        (log/info "Library scan completed" {:library-id library-id :kind kind})
-                        {:library-id library-id
-                         :library    (:libraries/name library)
-                         :kind       (name kind)
-                         :status     "ok"}))]
+                        (log/info "Starting library scan" {:library-id library-id :kind kind
+                                                           :force-prune force?})
+                        (let [result (case kind
+                                       :jellyfin (jellyfin/scan-library! db source library
+                                                                         {:prune {:force? force?}})
+                                       (scanner/scan-library! db media ffmpeg library))]
+                          (log/info "Library scan completed" {:library-id library-id :kind kind})
+                          (cond-> {:library-id library-id
+                                   :library    (:libraries/name library)
+                                   :kind       (name kind)
+                                   :status     "ok"}
+                            (map? result) (assoc :scan (dissoc result :prune))
+                            (:prune result) (assoc :prune (:prune result))))))]
           {:status 202 :body {:job job}})
         {:status 404 :body {:error "Library not found"}}))))
 
@@ -229,11 +240,12 @@
                                 :kind       (name kind)
                                 :status     "skipped"}
                                (try
-                                 (jellyfin/scan-library! db source library)
-                                 {:library-id (:libraries/id library)
-                                  :library    (:libraries/name library)
-                                  :kind       (name kind)
-                                  :status     "ok"}
+                                 (let [result (jellyfin/scan-library! db source library)]
+                                   {:library-id (:libraries/id library)
+                                    :library    (:libraries/name library)
+                                    :kind       (name kind)
+                                    :status     "ok"
+                                    :prune      (:prune result)})
                                  (catch Exception e
                                    (log/error e "scan-all: library scan failed"
                                               {:library-id (:libraries/id library)})
@@ -243,10 +255,14 @@
                                     :status     "error"
                                     :error      (.getMessage e)})))))
                          libraries)
+                        prunes  (keep :prune results)
                         summary {:libraries (count results)
                                  :scanned   (count (filter #(= "ok" (:status %)) results))
                                  :skipped   (count (filter #(= "skipped" (:status %)) results))
                                  :failed    (count (filter #(= "error" (:status %)) results))
+                                 :pruned    {:marked  (reduce + (keep :marked prunes))
+                                             :deleted (reduce + (keep :deleted prunes))
+                                             :refused (count (filter #(= "refused" (:status %)) prunes))}
                                  :results   results}]
                     (when (pos? (:failed summary))
                       (throw (ex-info (str (:failed summary) " of "
@@ -260,6 +276,16 @@
                                       {:job-result summary})))
                     summary)))]
       {:status 202 :body {:job job}})))
+
+(defn list-missing-items-handler
+  "GET /api/media/libraries/:id/missing — items a Jellyfin scan found missing
+   and hid, waiting for a later scan to confirm and delete them."
+  [{:keys [db]}]
+  (fn [req]
+    (let [library-id (get-in req [:parameters :path :id])]
+      (if (db/get-library db library-id)
+        {:status 200 :body (prune/list-missing db library-id)}
+        {:status 404 :body {:error "Library not found"}}))))
 
 (defn discover-libraries-handler [{:keys [db]}]
   (fn [req]
