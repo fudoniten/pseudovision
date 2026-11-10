@@ -33,6 +33,7 @@
        #'playout-db/find-overlaps                   (fn [& _] [])
        #'playout-db/delete-non-manual-events-after! (fn [& _] nil)
        #'playout-db/recent-filler-airings           (fn [& _] [])
+       #'playout-db/recent-content-airings          (fn [& _] {})
        #'playout-db/bulk-insert-events!             (fn [& _] nil)
        #'playout-db/update-playout!                 (fn [_ _ attrs]
                                                       (swap! updates conj
@@ -68,6 +69,7 @@
         #'playout-db/find-overlaps                   (fn [& _] [])
         #'playout-db/delete-non-manual-events-after! (fn [_ _ from] (swap! log update :deleted-from conj from))
         #'playout-db/recent-filler-airings           (fn [& _] [])
+        #'playout-db/recent-content-airings          (fn [& _] {})
         #'playout-db/bulk-insert-events!             (fn [_ evs] (swap! log update :inserted into evs))
         #'playout-db/update-playout!                 (fn [_ _ attrs] (swap! log update :updates conj attrs))}
        overrides)

@@ -11,6 +11,17 @@
   (when m
     (reduce-kv (fn [acc k v] (assoc acc (keyword (name k)) v)) {} m)))
 
+(defn- build-opts
+  "The options every playout build gets: the Grout client, plus scheduling
+   settings from config (:content-repeat-window-hours, the random-block repeat
+   window; the builder's default applies when it's absent)."
+  [scheduling grout]
+  (cond-> {:grout grout}
+    (:content-repeat-window-hours scheduling)
+    (assoc :content-repeat-window
+           (java.time.Duration/ofMinutes
+            (long (* 60 (:content-repeat-window-hours scheduling)))))))
+
 (defn- resolve-channel-id
   "Resolves a path parameter to the internal channel ID. The value is always an
    integer (enforced by the Malli schema), but it may refer to a channel number
@@ -47,7 +58,7 @@
    Does not itself rebuild the timeline — POST .../playout afterwards (or
    pass ?rebuild=true) to regenerate events against the newly-attached
    schedule."
-  [{:keys [db jobs grout]}]
+  [{:keys [db jobs grout scheduling]}]
   (fn [req]
     (let [channel-id  (resolve-channel-id db (get-in req [:parameters :path :channel-id]))
           schedule-id (get-in req [:parameters :body :schedule-id])
@@ -63,7 +74,7 @@
              {:type     :playout/rebuild
               :metadata {:channel-id channel-id :from "now" :horizon-days horizon-days}}
              (fn [_report-progress]
-               (let [count (sched/rebuild-from-now! db (:playouts/id playout) horizon-days {:grout grout})]
+               (let [count (sched/rebuild-from-now! db (:playouts/id playout) horizon-days (build-opts scheduling grout))]
                  {:message          "Rebuild complete"
                   :events-generated count
                   :horizon-days     horizon-days
@@ -75,14 +86,14 @@
    asynchronous job rather than blocking the request. Returns 202 with the
    initial job record; poll `GET /api/jobs/:job-id` for progress and the final
    `:result` ({:events-generated N :horizon-days D :from \"now\"|\"horizon\"})."
-  [{:keys [db jobs grout]}]
+  [{:keys [db jobs grout scheduling]}]
   (fn [req]
     (let [channel-id   (resolve-channel-id db (get-in req [:parameters :path :channel-id]))
           playout      (and channel-id (db/get-playout-for-channel db channel-id))
           qp           (get-in req [:parameters :query])
           from         (or (:from qp) "now")
           horizon-days (or (:horizon qp) 14)
-          sched-opts   {:grout grout}]
+          sched-opts   (build-opts scheduling grout)]
       (if playout
         (let [playout-id (:playouts/id playout)
               job (runner/submit!
@@ -122,7 +133,7 @@
    Like the per-channel rebuild this can take a while, so it runs as an async
    job: returns 202 with the job record; poll GET /api/jobs/:job-id for the
    per-channel summary in :result."
-  [{:keys [db jobs grout]}]
+  [{:keys [db jobs grout scheduling]}]
   (fn [req]
     (let [horizon-days (or (get-in req [:parameters :query :horizon]) 7)
           job (runner/submit!
@@ -130,7 +141,7 @@
                 {:type     :playout/ensure-all
                  :metadata {:horizon-days horizon-days}}
                 (fn [_report-progress]
-                  (sched/ensure-all-horizons! db horizon-days {:grout grout})))]
+                  (sched/ensure-all-horizons! db horizon-days (build-opts scheduling grout))))]
       {:status 202 :body {:job job}})))
 
 (defn- parse-instant [s]

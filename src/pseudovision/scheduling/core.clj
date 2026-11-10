@@ -548,6 +548,217 @@
     (t/next-dow-occurrence tod dow-mask after zone-id)))
 
 ;; ---------------------------------------------------------------------------
+;; Random blocks: pick content without hunting for fits, then scatter filler
+;; ---------------------------------------------------------------------------
+
+(def ^:private random-max-misses
+  "How many draws in a row that don't fit the time left a random block makes
+   before it stops picking content and fills the rest with filler.
+
+   Searching the whole pool for something that fits is what made very short
+   items (a trailer, a 2-minute short) air over and over: with 14 minutes
+   left, the search walked past every episode to the one item that fit, then
+   did the same with 13 minutes left. A few tries keeps the choice random, so a
+   short is picked about as often as its share of the pool."
+  3)
+
+(def default-content-repeat-window
+  "How long an item picked by a random block stays ineligible on the same
+   channel, unless the build options give :content-repeat-window. It is capped
+   per pool (see effective-repeat-window)."
+  (t/hours->duration 48))
+
+(defn- content-key
+  "The id an item's airings are recorded under."
+  [item]
+  (:media-items/id item))
+
+(defn effective-repeat-window
+  "The repeat window for a pool: the configured `window`, capped at half the
+   pool's total runtime. A small pool (a 5-episode random strip) would
+   otherwise run out of eligible items within a day and turn into filler; the
+   cap lets it rotate as often as its size allows, while a large pool gets the
+   full window."
+  ^Duration [^Duration window items]
+  (let [half (.dividedBy ^Duration (reduce (fn [^Duration acc it] (.plus acc ^Duration (item-duration it)))
+                                           Duration/ZERO items)
+                         2)]
+    (if (neg? (compare half window)) half window)))
+
+(defn- aired-within?
+  "Whether `airings` (a seq of Instants) holds one within `window` of `at`."
+  [airings ^Instant at ^Duration window]
+  (let [w (.toMillis window)]
+    (boolean (some (fn [^Instant a]
+                     (< (Math/abs (- (.toEpochMilli a) (.toEpochMilli at))) w))
+                   airings))))
+
+(defn plan-random-content
+  "Chooses the content for a random-order window [from, end).
+
+   Draws from the enumerator in order and keeps a draw when it fits the time
+   left and hasn't aired within `window` of where it would start (`airings`:
+   item-id -> start Instants, this build's earlier picks included). A draw on
+   cooldown is passed over. A draw that doesn't fit counts as a miss; after
+   `max-misses` misses in a row the plan stops and the rest of the window goes
+   to filler. Until the first item is placed there is no miss limit, so the
+   whole pool is searched once and a block isn't left all filler just because
+   the first draw was a movie. A full pool's worth of draws without a pick also
+   stops it.
+
+   Returns {:items [item ...] :enumerator e' :end Instant}, where :end is where
+   the planned content finishes."
+  [e ^Instant from ^Instant end {:keys [airings window max-misses]
+                                 :or   {airings {} max-misses random-max-misses}}]
+  (let [pool-n (count (:items e))]
+    (loop [t       from
+           e       e
+           drawn   0
+           misses  0
+           airings airings
+           picked  []]
+      (if (or (not (.isBefore t end))
+              (zero? pool-n)
+              (>= drawn pool-n)
+              (and (seq picked) (>= misses max-misses)))
+        {:items picked :enumerator e :end t}
+        (let [[item e'] (enum/next-item e)
+              to        (t/add-duration t (item-duration item))]
+          (cond
+            (and window (aired-within? (get airings (content-key item)) t window))
+            (recur t e' (inc drawn) misses airings picked)
+
+            (.isAfter ^Instant to end)
+            (recur t e' (inc drawn) (inc misses) airings picked)
+
+            :else
+            (recur to e' 0 0
+                   (update airings (content-key item) (fnil conj []) t)
+                   (conj picked item))))))))
+
+(defn- event-duration
+  ^Duration [ev]
+  (Duration/between ^Instant (:start-at ev) ^Instant (:finish-at ev)))
+
+(defn retime-events
+  "Lays `events` out back to back from `from`, keeping each one's length."
+  [^Instant from events]
+  (loop [t from, evs (seq events), out []]
+    (if-not evs
+      out
+      (let [ev  (first evs)
+            fin (t/add-duration t (event-duration ev))]
+        (recur fin (next evs) (conj out (assoc ev :start-at t :finish-at fin)))))))
+
+(defn scatter-filler
+  "Spreads `filler` events at random across the breaks after each of the
+   `content` events, so a random block's leftover time becomes several short
+   breaks between programs rather than one long break at the end. `trailing`
+   events (post-roll) stay right after the last content event. The block still
+   opens on content. Filler keeps its packed order within a break. Seeded, so
+   rebuilds reproduce the same layout. Returns the events retimed from `from`."
+  [^Instant from content trailing filler seed]
+  (if (empty? content)
+    (retime-events from (concat trailing filler))
+    (let [n      (count content)
+          rng    (java.util.Random. (long seed))
+          groups (reduce (fn [g ev] (update g (.nextInt rng n) conj ev))
+                         (vec (repeat n []))
+                         filler)
+          seq'   (mapcat (fn [i c]
+                           (concat [c]
+                                   (when (= i (dec n)) trailing)
+                                   (nth groups i)))
+                         (range) content)]
+      (retime-events from seq'))))
+
+(defn- random-plan?
+  "Whether a block/flood slot fills through plan-random-content: random or
+   shuffle order, and no mid-roll preset (mid-roll is sized per insert, which
+   the up-front plan can't account for)."
+  [slot order]
+  (and (#{:random :shuffle} order)
+       (nil? (filler/resolve-filler-preset :mid slot nil))))
+
+(defn- content-event [playout-id item from to guide slot]
+  {:playout-id    playout-id
+   :media-item-id (:media-items/id item)
+   :kind          (sql-util/->pg-enum "event_kind" "content")
+   :start-at      from
+   :finish-at     to
+   :guide-group   guide
+   :slot-id       (:schedule-slots/id slot)
+   :is-manual     false})
+
+(defn- emit-random-window
+  "Fills [from, end) for a random-order block or flood slot: content from
+   plan-random-content, then filler for the time left, scattered between the
+   programs. `mode` is :block (post + tail filler, honouring tail_mode) or
+   :flood (fallback filler). `lead-events` (pre-roll) come first and `cur` is
+   the cursor after them. Returns [events cursor]; the caller sets :next-start
+   and the guide group."
+  [db cur slot channel playout-id opts mode from end lead-events]
+  (let [items     (slot-items db slot channel opts)
+        ckey      (collection-key slot channel)
+        order     (keyword (or (:schedule-slots/playback-order slot) "chronological"))
+        e         (cursor/get-enumerator cur ckey items order
+                                         {:seed (get opts :seed 0)})
+        guide     (:next-guide-group cur)
+        atom*     (:content-airings-atom opts)
+        window    (some-> (get opts :content-repeat-window default-content-repeat-window)
+                          (effective-repeat-window items))
+        plan      (plan-random-content e from end {:airings (if atom* @atom* {})
+                                                   :window  window})
+        content   (:items plan)
+        e'        (:enumerator plan)
+        c-events  (retime-events from
+                                 (map (fn [it] (assoc (content-event playout-id it from
+                                                                     (t/add-duration from (item-duration it))
+                                                                     guide slot)
+                                                      ::content true))
+                                      content))
+        c-end     (:end plan)
+        base      (cursor/save-enumerator cur ckey e')
+        tail-mode (:schedule-slots/tail-mode slot "none")
+        seed      (bit-xor (long (get opts :seed 0)) (.getEpochSecond ^Instant from))
+        [events cur']
+        (cond
+          (not (.isBefore ^Instant c-end ^Instant end))
+          [c-events base]
+
+          (= :flood mode)
+          (let [[fill c] (apply-filler db base slot channel :fallback c-end end playout-id opts)]
+            [(scatter-filler from c-events [] fill seed) c])
+
+          ;; tail_mode none: the next draw runs into the end of the block and
+          ;; replays in full next time (enumerator saved unadvanced).
+          (and (= "none" tail-mode) (seq items))
+          (let [[item _] (enum/next-item e')]
+            [(conj c-events (content-event playout-id item c-end end guide slot)) base])
+
+          (= "offline" tail-mode)
+          [c-events base]
+
+          :else
+          (let [[post c1] (apply-filler db base slot channel :post c-end end playout-id opts)
+                post-end  (events-end post c-end)
+                [tail c2] (apply-filler db c1 slot channel :tail post-end end playout-id opts)]
+            [(scatter-filler from c-events post tail seed) c2]))]
+    ;; Record where each program finally landed (after the scatter) so later
+    ;; random windows in this build keep their distance from it.
+    (when atom*
+      (swap! atom* (fn [m] (reduce (fn [acc ev]
+                                     (update acc (:media-item-id ev) (fnil conj []) (:start-at ev)))
+                                   m (filter ::content events)))))
+    (log/info "random window filled"
+              {:slot-id        (:schedule-slots/id slot)
+               :mode           mode
+               :content-events (count content)
+               :filler-events  (- (count events) (count content))
+               :repeat-window  (str window)})
+    [(into (vec lead-events) (map #(dissoc % ::content)) events) cur']))
+
+;; ---------------------------------------------------------------------------
 ;; Event emission for each fill mode
 ;; ---------------------------------------------------------------------------
 
@@ -658,103 +869,108 @@
         ;; by the block end so it can't consume the whole block.
         [pre-events cur0] (apply-filler db cursor slot channel
                                         :pre from block-end playout-id opts)]
-    (loop [cursor-time (events-end pre-events from)
-           cur         cur0
-           e           (cursor/get-enumerator cur0 ckey items order enum-opts)
-           skipped     0
-           events      (vec pre-events)]
-      (let [remaining (t/duration-between cursor-time block-end)]
-        (cond
-          ;; Block finished
-          (or (.isNegative remaining) (.isZero remaining))
-          (let [c' (-> cur
-                       (assoc :next-start block-end)
-                       (cursor/save-enumerator ckey e)
-                       (cursor/bump-guide-group))]
-            (log/info "emit-block: block filled"
-                     {:slot-id (:schedule-slots/id slot)
-                      :block-duration (str block-dur)
-                      :total-events (count events)
-                      :fill-mode "completed"})
-            [events c'])
+    (if (random-plan? slot order)
+      (let [[events c] (emit-random-window db cur0 slot channel playout-id opts :block
+                                           (events-end pre-events from) block-end
+                                           pre-events)]
+        [events (-> c (assoc :next-start block-end) (cursor/bump-guide-group))])
+      (loop [cursor-time (events-end pre-events from)
+             cur         cur0
+             e           (cursor/get-enumerator cur0 ckey items order enum-opts)
+             skipped     0
+             events      (vec pre-events)]
+        (let [remaining (t/duration-between cursor-time block-end)]
+          (cond
+            ;; Block finished
+            (or (.isNegative remaining) (.isZero remaining))
+            (let [c' (-> cur
+                         (assoc :next-start block-end)
+                         (cursor/save-enumerator ckey e)
+                         (cursor/bump-guide-group))]
+              (log/info "emit-block: block filled"
+                       {:slot-id (:schedule-slots/id slot)
+                        :block-duration (str block-dur)
+                        :total-events (count events)
+                        :fill-mode "completed"})
+              [events c'])
 
-          ;; Either no content at all, or a full pass over the pool found
-          ;; nothing short enough to still fit the block. How the remainder is
-          ;; handled depends on tail_mode.
-          (or (empty? (:items e))
-              (>= skipped (count (:items e))))
-          (let [tail-mode (:schedule-slots/tail-mode slot "none")]
-            (cond
-              ;; tail_mode none, with content still waiting: trim the next item
-              ;; to fill the block exactly, then replay it in full at the next
-              ;; block start (enumerator saved unadvanced).
-              (and (= "none" tail-mode) (seq (:items e)))
-              (let [[item _] (enum/next-item e)
-                    trimmed  {:playout-id    playout-id
-                              :media-item-id (:media-items/id item)
-                              :kind          (sql-util/->pg-enum "event_kind" "content")
-                              :start-at      cursor-time
-                              :finish-at     block-end
-                              :guide-group   guide
-                              :slot-id       (:schedule-slots/id slot)
-                              :is-manual     false}
-                    c' (-> (cursor/save-enumerator cur ckey e)
-                           (assoc :next-start block-end)
-                           (cursor/bump-guide-group))]
-                [(conj events trimmed) c'])
+            ;; Either no content at all, or a full pass over the pool found
+            ;; nothing short enough to still fit the block. How the remainder is
+            ;; handled depends on tail_mode.
+            (or (empty? (:items e))
+                (>= skipped (count (:items e))))
+            (let [tail-mode (:schedule-slots/tail-mode slot "none")]
+              (cond
+                ;; tail_mode none, with content still waiting: trim the next item
+                ;; to fill the block exactly, then replay it in full at the next
+                ;; block start (enumerator saved unadvanced).
+                (and (= "none" tail-mode) (seq (:items e)))
+                (let [[item _] (enum/next-item e)
+                      trimmed  {:playout-id    playout-id
+                                :media-item-id (:media-items/id item)
+                                :kind          (sql-util/->pg-enum "event_kind" "content")
+                                :start-at      cursor-time
+                                :finish-at     block-end
+                                :guide-group   guide
+                                :slot-id       (:schedule-slots/id slot)
+                                :is-manual     false}
+                      c' (-> (cursor/save-enumerator cur ckey e)
+                             (assoc :next-start block-end)
+                             (cursor/bump-guide-group))]
+                  [(conj events trimmed) c'])
 
-              ;; tail_mode offline: leave the remainder dark (no filler).
-              (= "offline" tail-mode)
-              (let [c' (-> (cursor/save-enumerator cur ckey e)
-                           (assoc :next-start block-end)
-                           (cursor/bump-guide-group))]
-                [events c'])
+                ;; tail_mode offline: leave the remainder dark (no filler).
+                (= "offline" tail-mode)
+                (let [c' (-> (cursor/save-enumerator cur ckey e)
+                             (assoc :next-start block-end)
+                             (cursor/bump-guide-group))]
+                  [events c'])
 
-              ;; tail_mode filler (or none with nothing left to trim): post-roll
-              ;; then pad the rest with tail filler.
-              :else
-              (let [base-cursor (cursor/save-enumerator cur ckey e)
-                    [post-events cur1] (apply-filler db base-cursor slot channel
-                                                     :post cursor-time block-end
-                                                     playout-id opts)
-                    post-end (events-end post-events cursor-time)
-                    [tail-events cur2] (apply-filler db cur1 slot channel
-                                                     :tail post-end block-end
-                                                     playout-id opts)
-                    c' (-> cur2
-                           (assoc :next-start block-end)
-                           (cursor/bump-guide-group))]
-                [(into events (into (vec post-events) tail-events)) c'])))
+                ;; tail_mode filler (or none with nothing left to trim): post-roll
+                ;; then pad the rest with tail filler.
+                :else
+                (let [base-cursor (cursor/save-enumerator cur ckey e)
+                      [post-events cur1] (apply-filler db base-cursor slot channel
+                                                       :post cursor-time block-end
+                                                       playout-id opts)
+                      post-end (events-end post-events cursor-time)
+                      [tail-events cur2] (apply-filler db cur1 slot channel
+                                                       :tail post-end block-end
+                                                       playout-id opts)
+                      c' (-> cur2
+                             (assoc :next-start block-end)
+                             (cursor/bump-guide-group))]
+                  [(into events (into (vec post-events) tail-events)) c'])))
 
-          :else
-          (let [[item e'] (enum/next-item e)
-                dur       (item-duration item)
-                to        (t/add-duration cursor-time dur)]
-            (if (.isAfter to block-end)
-              ;; Too long for what's left of the block. Skip past it and keep
-              ;; packing shorter content — abandoning the block on the first
-              ;; overflow stranded the shorter episodes still in the pool (the
-              ;; "one episode then dead air" symptom). The enumerator advances
-              ;; (e') so the oversized item comes around on a later block;
-              ;; `skipped` bounds the scan to one pool cycle. The final remainder
-              ;; is handled per tail_mode in the branch above.
-              (recur cursor-time cur e' (inc skipped) events)
-              ;; Item fits — emit it, then inject mid-roll filler before the
-              ;; next item (only when more content remains).
-              (let [content {:playout-id    playout-id
-                             :media-item-id (:media-items/id item)
-                             :kind          (sql-util/->pg-enum "event_kind" "content")
-                             :start-at      cursor-time
-                             :finish-at     to
-                             :guide-group   guide
-                             :slot-id       (:schedule-slots/id slot)
-                             :is-manual     false}
-                    [mid-events curm] (if (seq (:items e'))
-                                        (apply-filler db cur slot channel
-                                                      :mid to block-end playout-id opts)
-                                        [[] cur])]
-                (recur (events-end mid-events to) curm e' 0
-                       (into events (into [content] mid-events)))))))))))
+            :else
+            (let [[item e'] (enum/next-item e)
+                  dur       (item-duration item)
+                  to        (t/add-duration cursor-time dur)]
+              (if (.isAfter to block-end)
+                ;; Too long for what's left of the block. Skip past it and keep
+                ;; packing shorter content — abandoning the block on the first
+                ;; overflow stranded the shorter episodes still in the pool (the
+                ;; "one episode then dead air" symptom). The enumerator advances
+                ;; (e') so the oversized item comes around on a later block;
+                ;; `skipped` bounds the scan to one pool cycle. The final remainder
+                ;; is handled per tail_mode in the branch above.
+                (recur cursor-time cur e' (inc skipped) events)
+                ;; Item fits — emit it, then inject mid-roll filler before the
+                ;; next item (only when more content remains).
+                (let [content {:playout-id    playout-id
+                               :media-item-id (:media-items/id item)
+                               :kind          (sql-util/->pg-enum "event_kind" "content")
+                               :start-at      cursor-time
+                               :finish-at     to
+                               :guide-group   guide
+                               :slot-id       (:schedule-slots/id slot)
+                               :is-manual     false}
+                      [mid-events curm] (if (seq (:items e'))
+                                          (apply-filler db cur slot channel
+                                                        :mid to block-end playout-id opts)
+                                          [[] cur])]
+                  (recur (events-end mid-events to) curm e' 0
+                         (into events (into [content] mid-events))))))))))))
 
 (defn emit-flood
   "Fill from now until the next fixed-anchor slot.
@@ -769,66 +985,70 @@
         guide  (:next-guide-group cursor)
         end    (or flood-end
                    (t/add-duration (:next-start cursor) (t/hours->duration 2)))]
-    (loop [cursor-time (:next-start cursor)
-           e           (cursor/get-enumerator cursor ckey items order enum-opts)
-           skipped     0
-           events      []]
-      (let [remaining (t/duration-between cursor-time end)]
-        (cond
-          (or (.isNegative remaining) (.isZero remaining))
-          (let [c' (-> cursor
-                       (assoc :next-start end)
-                       (cursor/save-enumerator ckey e)
-                       (cursor/bump-guide-group))]
-            (log/info "emit-flood: horizon reached"
-                     {:slot-id (:schedule-slots/id slot)
-                      :total-events (count events)
-                      :fill-reason "time-exhausted"
-                      :flood-duration (str (t/duration-between (:next-start cursor) end))})
-            [events c'])
+    (if (random-plan? slot order)
+      (let [[events c] (emit-random-window db cursor slot channel playout-id opts :flood
+                                           (:next-start cursor) end [])]
+        [events (-> c (assoc :next-start end) (cursor/bump-guide-group))])
+      (loop [cursor-time (:next-start cursor)
+             e           (cursor/get-enumerator cursor ckey items order enum-opts)
+             skipped     0
+             events      []]
+        (let [remaining (t/duration-between cursor-time end)]
+          (cond
+            (or (.isNegative remaining) (.isZero remaining))
+            (let [c' (-> cursor
+                         (assoc :next-start end)
+                         (cursor/save-enumerator ckey e)
+                         (cursor/bump-guide-group))]
+              (log/info "emit-flood: horizon reached"
+                       {:slot-id (:schedule-slots/id slot)
+                        :total-events (count events)
+                        :fill-reason "time-exhausted"
+                        :flood-duration (str (t/duration-between (:next-start cursor) end))})
+              [events c'])
 
-          ;; Either there is no content at all, or a full pass over the pool
-          ;; found nothing short enough to still fit the shrinking window. Pad
-          ;; the remainder [cursor-time, end) with fallback filler.
-          (or (empty? (:items e))
-              (>= skipped (count (:items e))))
-          (let [base-cursor (cursor/save-enumerator cursor ckey e)
-                [fill-events cursor'] (apply-filler db base-cursor slot channel
-                                                    :fallback cursor-time end
-                                                    playout-id opts)
-                c' (-> cursor'
-                       (assoc :next-start end)
-                       (cursor/bump-guide-group))]
-            (log/info "emit-flood: content packed, remainder padded"
-                     {:slot-id (:schedule-slots/id slot)
-                      :total-events (count (into events fill-events))
-                      :fill-reason (if (empty? (:items e)) "items-exhausted" "no-item-fits")
-                      :content-events (count events)
-                      :filler-events (count fill-events)})
-            [(into events fill-events) c'])
+            ;; Either there is no content at all, or a full pass over the pool
+            ;; found nothing short enough to still fit the shrinking window. Pad
+            ;; the remainder [cursor-time, end) with fallback filler.
+            (or (empty? (:items e))
+                (>= skipped (count (:items e))))
+            (let [base-cursor (cursor/save-enumerator cursor ckey e)
+                  [fill-events cursor'] (apply-filler db base-cursor slot channel
+                                                      :fallback cursor-time end
+                                                      playout-id opts)
+                  c' (-> cursor'
+                         (assoc :next-start end)
+                         (cursor/bump-guide-group))]
+              (log/info "emit-flood: content packed, remainder padded"
+                       {:slot-id (:schedule-slots/id slot)
+                        :total-events (count (into events fill-events))
+                        :fill-reason (if (empty? (:items e)) "items-exhausted" "no-item-fits")
+                        :content-events (count events)
+                        :filler-events (count fill-events)})
+              [(into events fill-events) c'])
 
-          :else
-          (let [[item e'] (enum/next-item e)
-                dur       (item-duration item)
-                to        (t/add-duration cursor-time dur)]
-            (if (.isAfter to end)
-              ;; This item is too long for what's left of the window. Rather
-              ;; than abandoning the rest of the slot to filler — which stranded
-              ;; every shorter item still waiting in the pool and produced the
-              ;; "one episode then dead air" symptom — skip past it and keep
-              ;; packing. The enumerator advances (e') so the oversized item
-              ;; comes around again on a later pass; `skipped` bounds the scan to
-              ;; one full pool cycle so a window that nothing fits can't spin.
-              (recur cursor-time e' (inc skipped) events)
-              (recur to e' 0
-                     (conj events {:playout-id    playout-id
-                                   :media-item-id (:media-items/id item)
-                                   :kind          (sql-util/->pg-enum "event_kind" "content")
-                                   :start-at      cursor-time
-                                   :finish-at     to
-                                   :guide-group   guide
-                                   :slot-id       (:schedule-slots/id slot)
-                                   :is-manual     false})))))))))
+            :else
+            (let [[item e'] (enum/next-item e)
+                  dur       (item-duration item)
+                  to        (t/add-duration cursor-time dur)]
+              (if (.isAfter to end)
+                ;; This item is too long for what's left of the window. Rather
+                ;; than abandoning the rest of the slot to filler — which stranded
+                ;; every shorter item still waiting in the pool and produced the
+                ;; "one episode then dead air" symptom — skip past it and keep
+                ;; packing. The enumerator advances (e') so the oversized item
+                ;; comes around again on a later pass; `skipped` bounds the scan to
+                ;; one full pool cycle so a window that nothing fits can't spin.
+                (recur cursor-time e' (inc skipped) events)
+                (recur to e' 0
+                       (conj events {:playout-id    playout-id
+                                     :media-item-id (:media-items/id item)
+                                     :kind          (sql-util/->pg-enum "event_kind" "content")
+                                     :start-at      cursor-time
+                                     :finish-at     to
+                                     :guide-group   guide
+                                     :slot-id       (:schedule-slots/id slot)
+                                     :is-manual     false}))))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Slot dispatch
@@ -1163,9 +1383,21 @@
             ;; picks are appended to this atom as we go (see pack-filler).
             (let [airings (playout-db/recent-filler-airings
                            tx (t/sub-duration now window) horizon)
+                  repeat-window (get opts :content-repeat-window
+                                     default-content-repeat-window)
                   opts'   (assoc opts' :pack-filler? (get opts :pack-filler? true)
                                        :recency-window window
                                        :filler-airings-atom (atom airings)
+                                       ;; What this channel aired recently, for
+                                       ;; the random-block repeat window (see
+                                       ;; plan-random-content). Events after
+                                       ;; rebuild-from were just deleted; this
+                                       ;; build's picks are added as it goes.
+                                       :content-repeat-window repeat-window
+                                       :content-airings-atom
+                                       (atom (playout-db/recent-content-airings
+                                              tx playout-id
+                                              (t/sub-duration rebuild-from repeat-window)))
                                        ;; Per-build caches: collection contents
                                        ;; and Grout pools don't change during
                                        ;; a build (see slot-items and
