@@ -241,3 +241,44 @@
                        (assoc catalog-item :media-items/state "normal")])]
         (let [[events _] (core/emit-once nil cur slot test-channel 1 {})]
           (is (= [7] (map :media-item-id events))))))))
+
+;; ---------------------------------------------------------------------------
+;; Failed probes (2026-11-10 audit)
+;; ---------------------------------------------------------------------------
+
+(deftest pooled-slots-skip-movies-and-episodes-with-failed-probes
+  (testing "a movie probed at 1 second (The Godfather Part II) is dropped
+            from a pooled slot; a short Grout program and a short film
+            stored as a movie still play"
+    (let [slot      {:schedule-slots/id             400
+                     :schedule-slots/playback-order "chronological"
+                     :schedule-slots/anchor         "sequential"
+                     :schedule-slots/fill-mode      "once"}
+          broken    {:media-items/id 50 :media-items/kind "movie"
+                     :media-versions/duration (Duration/ofSeconds 1)}
+          blip-ep   {:media-items/id 51 :media-items/kind "episode"
+                     :media-versions/duration (Duration/ofSeconds 20)}
+          program   {:media-items/id 52 :media-items/kind "program"
+                     :media-versions/duration (Duration/ofSeconds 45)}
+          short-flm {:media-items/id 53 :media-items/kind "movie"
+                     :media-versions/duration (Duration/ofMinutes 6)}]
+      (with-redefs [media-db/resolve-playable-by-channel-tag
+                    (fn [_ _] [broken blip-ep program short-flm])]
+        (is (= [52 53] (mapv :media-items/id (#'core/load-items nil slot test-channel)))))))
+  (testing "a slot pinned to one item is deliberate and is not filtered"
+    (let [slot   {:schedule-slots/id             401
+                  :schedule-slots/media-item-id  50
+                  :schedule-slots/playback-order "chronological"}
+          broken {:media-items/id 50 :media-items/kind "movie"
+                  :media-versions/duration (Duration/ofSeconds 1)}]
+      (with-redefs [media-db/get-media-item (fn [_ _] broken)]
+        (is (= [50] (mapv :media-items/id (#'core/load-items nil slot test-channel))))))))
+
+(deftest filler-recency-window-precedence
+  (let [w #'core/filler-recency-window]
+    (is (= (Duration/ofHours 4) (w {} {})) "default is 4 hours")
+    (is (= (Duration/ofHours 1) (w {} {:channels/filler-recency-hours 1}))
+        "the channel's own setting overrides the default")
+    (is (= (Duration/ofHours 2) (w {:recency-window (Duration/ofHours 2)}
+                                    {:channels/filler-recency-hours 1}))
+        "an explicit caller opt wins")))

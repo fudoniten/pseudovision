@@ -122,6 +122,9 @@ Grout clips over HTTP instead of a shared mount; merging pvcli and
 - Gap filler with no preset (`grout-channel-fallback`) asks Grout for any
   non-bumper clip that fits, so long-form `program` items can land in a tail
   gap as filler. Decide whether the fallback should ask for `kind=filler` only.
+- Movies and episodes whose probe failed (a real file recorded at under 60 s)
+  are skipped by pooled slots and logged by name, but nothing re-probes them.
+  They stay off air until the files are fixed and rescanned.
 
 ## Decisions
 
