@@ -108,6 +108,28 @@
   (when-let [^Duration d (:media-versions/duration item)]
     (pos? (.getSeconds d))))
 
+(def ^:private min-program-seconds
+  "Shortest runtime a movie or episode can plausibly have. Anything shorter is
+   a failed probe on a real file, not a real program: the 2026-11-10 audit
+   found The Godfather Part II probed at 1 second (and aired 769 two-minute
+   blips on Spotlight in a week), Key Largo at 15 s, Brave at 43 s, Zootopia
+   at 53 s. The floor is deliberately low so short films stored as movies
+   (a few minutes long) still play."
+  60)
+
+(defn- broken-probe?
+  "True when a movie or episode carries a positive but implausibly short
+   duration (see `min-program-seconds`). Other kinds (Grout programs, music
+   videos, trailers, clips) are legitimately short and are never flagged."
+  [item]
+  (let [^Duration d (:media-versions/duration item)
+        kind        (some-> (:media-items/kind item) name)]
+    (boolean
+      (and d
+           (#{"movie" "episode"} kind)
+           (pos? (.getSeconds d))
+           (< (.getSeconds d) min-program-seconds)))))
+
 (defn- load-items
   "Returns the ordered seq of playable media items for a slot.
    Filters by required/excluded tags if specified, and drops items with no
@@ -233,11 +255,27 @@
                    (log/info "Skipping items marked missing from their media source"
                              {:slot-id slot-id
                               :dropped (- (count tagged) (count active))}))
-        playable (distinct-items (filterv playable? active))]
-    (when (< (count playable) (count active))
+        playable (distinct-items (filterv playable? active))
+        ;; Pools (collections and the channel catalog) drop movies/episodes
+        ;; whose probe failed. A slot pinned to one item is a deliberate
+        ;; choice and is left alone.
+        pooled?  (not (:schedule-slots/media-item-id slot))
+        broken   (when pooled? (filterv broken-probe? playable))
+        playable (if (seq broken)
+                   (filterv (complement broken-probe?) playable)
+                   playable)]
+    (when (< (+ (count playable) (count broken)) (count active))
       (log/warn "Skipping unplayable items with zero/unknown duration"
                 {:slot-id slot-id
-                 :dropped (- (count active) (count playable))}))
+                 :dropped (- (count active) (count playable) (count broken))}))
+    (when (seq broken)
+      (log/warn "Skipping movies/episodes with an implausibly short probed duration (failed probe?); rescan these files"
+                {:slot-id slot-id
+                 :dropped (count broken)
+                 :items   (mapv (fn [i] {:id       (:media-items/id i)
+                                         :name     (:media-items/name i)
+                                         :duration (str (:media-versions/duration i))})
+                                (take 10 broken))}))
     (log/info "Loaded items for slot (final)"
              {:slot-id slot-id
               :count (count playable)})
@@ -1271,6 +1309,16 @@
                              :overlaps   (vec (take 10 found))}))))
     (count evs)))
 
+(defn- filler-recency-window
+  "How long an item's past airing keeps penalising it in the filler packer.
+   An explicit `:recency-window` opt wins, then the channel's own
+   channels.filler_recency_hours (a short window lets a channel with little
+   filler, like Enigma TV, repeat it sooner), then the 4-hour default."
+  [opts channel]
+  (or (:recency-window opts)
+      (some-> (:channels/filler-recency-hours channel) long t/hours->duration)
+      (t/hours->duration 4)))
+
 (defn build!
   "Builds the playout, replacing non-manual events from the rebuild point to the
    horizon.  Runs inside a transaction; saves the updated cursor on success.
@@ -1369,7 +1417,7 @@
                            ;; continues from where it left off.
                            (assoc saved-cursor :next-start rebuild-from)
                            (cursor/init rebuild-from))
-            window       (get opts :recency-window (t/hours->duration 4))]
+            window       (filler-recency-window opts channel)]
         (try
           (jdbc/with-transaction [tx db]
             ;; One build of a playout at a time, across processes too. A second
