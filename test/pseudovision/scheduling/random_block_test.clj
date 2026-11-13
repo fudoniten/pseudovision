@@ -187,3 +187,17 @@
         (is (not (contains? kinds "post")) "no post-roll without a post preset")
         (is (some #(pos? (inner %)) blocks)
             "some filler lands between programs, not only at the end")))))
+
+(deftest misses-lead-to-a-search-not-filler
+  (testing "a mixed pool: three movies drawn in a row after an episode no longer
+            leave the rest of a two-hour block to filler"
+    (let [;; drawn in this order: one episode, then movies, then more episodes
+          pool (-> [(item 1 22)]
+                   (into (map #(item % 100) (range 2 8)))
+                   (into (map #(item % 22) (range 8 12))))
+          e    (enum/make-enumerator pool :chronological {})
+          plan (core/plan-random-content e t0 (t/add-duration t0 (Duration/ofMinutes 120))
+                                         {:max-misses 3 :window (t/hours->duration 48)})]
+      (is (= 5 (count (:items plan))) "five 22-minute episodes fill 110 of 120 minutes")
+      (is (= (count (set (map :media-items/id (:items plan)))) (count (:items plan)))
+          "the search never picks an item already placed (cooldown)"))))

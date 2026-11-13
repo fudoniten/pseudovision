@@ -602,18 +602,19 @@
     (t/next-dow-occurrence tod dow-mask after zone-id)))
 
 ;; ---------------------------------------------------------------------------
-;; Random blocks: pick content without hunting for fits, then scatter filler
+;; Random blocks: draw content (searching only after a few misses), then scatter filler
 ;; ---------------------------------------------------------------------------
 
 (def ^:private random-max-misses
   "How many draws in a row that don't fit the time left a random block makes
-   before it stops picking content and fills the rest with filler.
+   before it stops drawing and searches the pool for something that fits.
 
-   Searching the whole pool for something that fits is what made very short
-   items (a trailer, a 2-minute short) air over and over: with 14 minutes
-   left, the search walked past every episode to the one item that fit, then
-   did the same with 13 minutes left. A few tries keeps the choice random, so a
-   short is picked about as often as its share of the pool."
+   Drawing keeps the choice random, so a short item is picked about as often
+   as its share of the pool. The search after the misses fills the time a
+   mixed pool would otherwise hand to filler (three movies in a row after an
+   episode left most of a two-hour block to filler). The search used to be
+   what made a 2-minute trailer air in every gap; the repeat window now keeps
+   anything it finds from coming back within `effective-repeat-window`."
   3)
 
 (def default-content-repeat-window
@@ -647,6 +648,19 @@
                      (< (Math/abs (- (.toEpochMilli a) (.toEpochMilli at))) w))
                    airings))))
 
+(defn- search-fit
+  "An item from the pool of `e` that fits [t, end) and is off cooldown, picked
+   at random (seeded by `t`, so rebuilds repeat it), or nil when none does.
+   Looks at the pool directly, so the enumerator's pass order is untouched."
+  [e ^Instant t ^Instant end airings window]
+  (let [fits (filterv (fn [item]
+                        (and (not (.isAfter ^Instant (t/add-duration t (item-duration item)) end))
+                             (not (and window
+                                       (aired-within? (get airings (content-key item)) t window)))))
+                      (:items e))]
+    (when (seq fits)
+      (nth fits (.nextInt (java.util.Random. (.toEpochMilli t)) (count fits))))))
+
 (defn plan-random-content
   "Chooses the content for a random-order window [from, end).
 
@@ -654,11 +668,12 @@
    left and hasn't aired within `window` of where it would start (`airings`:
    item-id -> start Instants, this build's earlier picks included). A draw on
    cooldown is passed over. A draw that doesn't fit counts as a miss; after
-   `max-misses` misses in a row the plan stops and the rest of the window goes
-   to filler. Until the first item is placed there is no miss limit, so the
-   whole pool is searched once and a block isn't left all filler just because
-   the first draw was a movie. A full pool's worth of draws without a pick also
-   stops it.
+   `max-misses` misses in a row the pool is searched for an item that fits and
+   is off cooldown (see `search-fit`), and the plan stops, leaving the rest of
+   the window to filler, only when there is none. Until the first item is
+   placed every draw is tried, so the whole pool is walked once before a block
+   is left all filler. A full pool's worth of draws without a pick also stops
+   it.
 
    Returns {:items [item ...] :enumerator e' :end Instant}, where :end is where
    the planned content finishes."
@@ -671,11 +686,20 @@
            misses  0
            airings airings
            picked  []]
-      (if (or (not (.isBefore t end))
-              (zero? pool-n)
-              (>= drawn pool-n)
-              (and (seq picked) (>= misses max-misses)))
+      (cond
+        (or (not (.isBefore t end))
+            (zero? pool-n)
+            (>= drawn pool-n))
         {:items picked :enumerator e :end t}
+
+        (and (seq picked) (>= misses max-misses))
+        (if-let [item (search-fit e t end airings window)]
+          (recur (t/add-duration t (item-duration item)) e 0 0
+                 (update airings (content-key item) (fnil conj []) t)
+                 (conj picked item))
+          {:items picked :enumerator e :end t})
+
+        :else
         (let [[item e'] (enum/next-item e)
               to        (t/add-duration t (item-duration item))]
           (cond
@@ -725,6 +749,19 @@
                                    (nth groups i)))
                          (range) content)]
       (retime-events from seq'))))
+
+(defn- series-in-order?
+  "Whether a slot plays one show's episodes in a fixed order: a sequential
+   order over a pool whose items all come from the same show (`:_top-id`, set
+   by the show and category resolvers). Such a slot must not pass over an
+   episode that doesn't fit the time left. Mixed pools (a channel catalog,
+   a manual collection) keep passing over what doesn't fit, which is what
+   stops one long item from stranding the shorter ones."
+  [order items]
+  (and (not (#{:random :shuffle} order))
+       (seq items)
+       (some? (:_top-id (first items)))
+       (every? #(= (:_top-id (first items)) (:_top-id %)) items)))
 
 (defn- random-plan?
   "Whether a block/flood slot fills through plan-random-content: random or
@@ -916,6 +953,7 @@
         enum-opts  {:seed (get opts :seed 0)
                     :batch-size (or (:schedule-slots/marathon-batch-size slot) 5)}
         block-dur  (:schedule-slots/block-duration slot)
+        series?    (series-in-order? order items)
         from       (:next-start cursor)
         block-end  (t/add-duration from block-dur)
         guide      (:next-guide-group cursor)
@@ -1000,7 +1038,19 @@
             (let [[item e'] (enum/next-item e)
                   dur       (item-duration item)
                   to        (t/add-duration cursor-time dur)]
-              (if (.isAfter to block-end)
+              (cond
+                ;; A series in order: the episode that doesn't fit leads the next
+                ;; block instead of being passed over. Skipping it aired the
+                ;; series out of order and left a double-length episode unaired
+                ;; until the next full pass. End the block here (enumerator
+                ;; unadvanced). An episode longer than the whole block can never
+                ;; air in it, so that one is passed over.
+                (and (.isAfter to block-end)
+                     series?
+                     (not (pos? (compare dur block-dur))))
+                (recur cursor-time cur e (count (:items e)) events)
+
+                (.isAfter to block-end)
                 ;; Too long for what's left of the block. Skip past it and keep
                 ;; packing shorter content — abandoning the block on the first
                 ;; overflow stranded the shorter episodes still in the pool (the
@@ -1009,6 +1059,8 @@
                 ;; `skipped` bounds the scan to one pool cycle. The final remainder
                 ;; is handled per tail_mode in the branch above.
                 (recur cursor-time cur e' (inc skipped) events)
+
+                :else
                 ;; Item fits — emit it, then inject mid-roll filler before the
                 ;; next item (only when more content remains).
                 (let [content {:playout-id    playout-id
@@ -1037,6 +1089,7 @@
         enum-opts {:seed (get opts :seed 0)
                    :batch-size (or (:schedule-slots/marathon-batch-size slot) 5)}
         guide  (:next-guide-group cursor)
+        series? (series-in-order? order items)
         end    (or flood-end
                    (t/add-duration (:next-start cursor) (t/hours->duration 2)))]
     (if (random-plan? slot order)
@@ -1085,7 +1138,16 @@
             (let [[item e'] (enum/next-item e)
                   dur       (item-duration item)
                   to        (t/add-duration cursor-time dur)]
-              (if (.isAfter to end)
+              (cond
+                ;; A series in order: the episode that doesn't fit leads the next
+                ;; window (see emit-block). One longer than this whole window is
+                ;; passed over.
+                (and (.isAfter to end)
+                     series?
+                     (not (pos? (compare dur (t/duration-between (:next-start cursor) end)))))
+                (recur cursor-time e (count (:items e)) events)
+
+                (.isAfter to end)
                 ;; This item is too long for what's left of the window. Rather
                 ;; than abandoning the rest of the slot to filler — which stranded
                 ;; every shorter item still waiting in the pool and produced the
@@ -1094,6 +1156,8 @@
                 ;; comes around again on a later pass; `skipped` bounds the scan to
                 ;; one full pool cycle so a window that nothing fits can't spin.
                 (recur cursor-time e' (inc skipped) events)
+
+                :else
                 (recur to e' 0
                        (conj events {:playout-id    playout-id
                                      :media-item-id (:media-items/id item)
@@ -1320,6 +1384,10 @@
                              :overlaps   (vec (take 10 found))}))))
     (count evs)))
 
+(def ^:private rewind-lookback
+  "How far back a rewound enumerator looks for the last item it aired."
+  (t/hours->duration (* 24 120)))
+
 (def default-filler-tolerance
   "Leftover time the filler packer treats as a full break unless the build
    options give :filler-tolerance. Without slack the packer ranked candidate
@@ -1388,6 +1456,7 @@
         ;; cursor has overshot: resuming from it would build nothing, or build
         ;; past the hole and never fill it. Resume from the start of the hole
         ;; instead.
+        hole-edge   (atom nil)
         resume-edge (let [e (:next-start saved-cursor)
                           e (if (and e (.isAfter ^Instant e now)) e now)]
                       (if (and saved-cursor (not reset?) (.isAfter ^Instant e now))
@@ -1400,6 +1469,7 @@
                                           {:playout-id playout-id
                                            :cursor     (str e)
                                            :hole-start (str covered)})
+                                (reset! hole-edge covered)
                                 covered)
                             e))
                         e))
@@ -1430,13 +1500,30 @@
       (do (log/warn "No schedule or slots; nothing to build"
                     {:playout-id playout-id})
           :no-schedule)
-      (let [initial-cur  (if (and saved-cursor (not reset?))
+      (let [;; A reset, or a resume pulled back to a hole, rebuilds time the
+            ;; saved cursor had already built past. Its enumerators sit at the
+            ;; old edge: dropping them restarted every series at its first
+            ;; episode, and keeping them as they are would skip what was
+            ;; built but never aired. Instead they are marked to rewind to the
+            ;; last item that aired before the rebuild point (see
+            ;; cursor/get-enumerator), read once the old events are deleted.
+            rewind?      (boolean (and saved-cursor (or reset? @hole-edge)))
+            initial-cur  (cond
+                           (and saved-cursor (not reset?))
                            ;; Resume from the saved cursor, but move its
                            ;; wall-clock edge to `rebuild-from` (now for a dry
                            ;; channel) so a stale past position doesn't replay old
                            ;; times. Enumerator states are kept, so rotation
                            ;; continues from where it left off.
-                           (assoc saved-cursor :next-start rebuild-from)
+                           (cond-> (assoc saved-cursor :next-start rebuild-from)
+                             rewind? cursor/mark-rewind)
+
+                           rewind?
+                           (cursor/mark-rewind
+                            (assoc (cursor/init rebuild-from)
+                                   :enumerator-states (:enumerator-states saved-cursor)))
+
+                           :else
                            (cursor/init rebuild-from))
             window       (filler-recency-window opts channel)]
         (try
@@ -1480,6 +1567,11 @@
                                        ;; grout-candidates).
                                        :items-cache (atom {})
                                        :grout-pools (atom {}))]
+            (let [initial-cur (cond-> initial-cur
+                                rewind? (cursor/with-rewind-airings
+                                          (playout-db/recent-content-airings
+                                           tx playout-id
+                                           (t/sub-duration rebuild-from rewind-lookback))))]
             (if (day-based? slots)
               (let [{:keys [events cursor stalled?]}
                     (try
@@ -1600,7 +1692,7 @@
                                                 :slot-id (:schedule-slots/id slot)
                                                 :playout-id playout-id
                                                 :cause e})))))]
-                      (recur cursor''' next-slot-idx next-cycle-anchor next-events))))))))
+                      (recur cursor''' next-slot-idx next-cycle-anchor next-events)))))))))
           (catch Exception e
             ;; A slot error records build_success=false inside the transaction
             ;; and then throws, which rolls that record back along with the

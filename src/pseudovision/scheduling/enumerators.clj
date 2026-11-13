@@ -112,17 +112,18 @@
 ;; next-item: advance the enumerator one step, returning [item enumerator]
 ;; ---------------------------------------------------------------------------
 
-(defmulti next-item
-  "Returns [item updated-enumerator].  Wraps around on exhaustion."
+(defmulti next-item*
+  "One step of an enumerator: [item updated-enumerator]. Wraps around on
+   exhaustion. Call `next-item`, which also records the item drawn."
   (fn [enumerator] (:playback-order enumerator)))
 
-(defmethod next-item :chronological [{:keys [items index] :as e}]
+(defmethod next-item* :chronological [{:keys [items index] :as e}]
   (let [n     (count items)
         idx   (mod index n)
         item  (nth items idx)]
     [item (assoc e :index (inc index))]))
 
-(defmethod next-item :random [{:keys [items index order seed] :as e}]
+(defmethod next-item* :random [{:keys [items index order seed] :as e}]
   ;; On each new pass (pos wraps to 0) generate a fresh shuffle with an
   ;; incremented seed so successive passes differ.
   (let [n   (count items)
@@ -134,15 +135,18 @@
         item (nth items (nth order' pos))]
     [item (assoc e :index (inc index) :order order' :seed seed')]))
 
-(defmethod next-item :shuffle [{:keys [items index order] :as e}]
+(defmethod next-item* :shuffle [{:keys [items index order] :as e}]
   (let [n    (count items)
         idx  (mod index n)
         item (nth items (nth order idx))]
     [item (assoc e :index (inc index))]))
 
-(defmethod next-item :semi-sequential [{:keys [items index seed batch-size batch-offset within-batch-idx] :as e}]
-  ;; Play batch-size items sequentially, then jump randomly to a new starting point
-  (let [n (count items)]
+(defmethod next-item* :semi-sequential [{:keys [items index seed batch-size batch-offset within-batch-idx batch-start] :as e}]
+  ;; Play batch-size items sequentially from batch-start, then jump to a random
+  ;; start and repeat. (The position used to be index + within-batch-idx, and
+  ;; both advanced every draw, so a batch played every other item.)
+  (let [n     (count items)
+        start (or batch-start 0)]
     (if (>= within-batch-idx batch-size)
       ;; Batch complete - pick new random start position
       (let [new-offset  (inc batch-offset)
@@ -151,40 +155,83 @@
             item        (nth items new-start)]
         [item (assoc e :index (inc index)
                        :batch-offset new-offset
+                       :batch-start new-start
                        :within-batch-idx 1)])
       ;; Continue in current batch
-      (let [current-start (mod index n)
-            item          (nth items (mod (+ current-start within-batch-idx) n))]
+      (let [item (nth items (mod (+ start within-batch-idx) n))]
         [item (assoc e :index (inc index)
                        :within-batch-idx (inc within-batch-idx))]))))
 
-(defmethod next-item :season-episode [e]
-  ((get-method next-item :chronological) e))
+(defmethod next-item* :season-episode [e]
+  ((get-method next-item* :chronological) e))
 
-(defmethod next-item :default [e]
-  ((get-method next-item :chronological) e))
+(defmethod next-item* :default [e]
+  ((get-method next-item* :chronological) e))
+
+(defn next-item
+  "Returns [item updated-enumerator], wrapping around on exhaustion. The
+   enumerator remembers the id of the item drawn (:last-id), so a restored
+   enumerator can resume after that item even when the pool has changed size
+   since (see `cursor->enumerator`)."
+  [e]
+  (let [[item e'] (next-item* e)]
+    [item (assoc e' :last-id (:media-items/id item))]))
 
 ;; ---------------------------------------------------------------------------
 ;; Cursor serialisation
 ;; ---------------------------------------------------------------------------
 
+(defn- play-position
+  "Where `id` sits in the enumerator's play order: the n such that drawing at
+   position n returns that item, or nil when it isn't in the pool. Only the
+   orders that walk a fixed sequence have one."
+  [{:keys [items order playback-order]} id]
+  (when (some? id)
+    (let [order-kw (keyword playback-order)
+          at       (fn [pos] (case order-kw
+                               (:random :shuffle) (nth items (nth order pos))
+                               (nth items pos)))]
+      (when-not (= :semi-sequential order-kw)
+        (first (filter #(= id (:media-items/id (at %))) (range (count items))))))))
+
 (defn enumerator->cursor
-  "Extracts the serializable resumption state from an enumerator (index, seed, order name)."
-  [{:keys [index seed playback-order batch-size batch-offset within-batch-idx]}]
-  (cond-> {:index          index
-           :seed           (or seed 0)
-           :playback-order (name playback-order)}
-    batch-size       (assoc :batch-size batch-size)
-    batch-offset     (assoc :batch-offset batch-offset)
-    within-batch-idx (assoc :within-batch-idx within-batch-idx)))
+  "Extracts the serializable resumption state from an enumerator: position,
+   seed, order name, pool size and the id of the last item drawn. The index
+   is stored within the pool (mod its size); it used to grow with every draw,
+   so any change in the pool's size moved the position by index / size."
+  [{:keys [items index seed playback-order batch-size batch-offset within-batch-idx
+           batch-start last-id]}]
+  (let [n (count items)]
+    (cond-> {:index          (if (pos? n) (mod index n) index)
+             :seed           (or seed 0)
+             :playback-order (name playback-order)
+             :n              n}
+      (some? last-id)  (assoc :last-id last-id)
+      batch-size       (assoc :batch-size batch-size)
+      batch-offset     (assoc :batch-offset batch-offset)
+      within-batch-idx (assoc :within-batch-idx within-batch-idx)
+      batch-start      (assoc :batch-start batch-start))))
 
 (defn cursor->enumerator
-  "Rebuilds an enumerator from its cursor snapshot, restoring the exact position."
-  [items {:keys [index seed playback-order batch-size batch-offset within-batch-idx]}]
+  "Rebuilds an enumerator from its cursor snapshot.
+
+   When the snapshot names the last item drawn and that item is still in the
+   pool, the enumerator resumes right after it, so a series stays on the next
+   episode when episodes are added, go missing or are filtered out. Otherwise
+   the saved index is used, as before. A random pass that resumes after its
+   last item in a pool of a new size keeps going in the new pass order; the
+   repeat window covers the items it may meet twice."
+  [items {:keys [index seed playback-order batch-size batch-offset within-batch-idx
+                 batch-start last-id]}]
   (let [order (keyword playback-order)
         opts  (cond-> {:seed seed}
                 batch-size (assoc :batch-size batch-size))
-        e     (make-enumerator items order opts)]
-    (cond-> (assoc e :index index)
-      batch-offset     (assoc :batch-offset batch-offset)
-      within-batch-idx (assoc :within-batch-idx within-batch-idx))))
+        e     (make-enumerator items order opts)
+        e     (cond-> (assoc e :index index)
+                (some? last-id)  (assoc :last-id last-id)
+                batch-offset     (assoc :batch-offset batch-offset)
+                within-batch-idx (assoc :within-batch-idx within-batch-idx)
+                batch-start      (assoc :batch-start batch-start))]
+    (if-let [pos (play-position e last-id)]
+      (assoc e :index (inc pos))
+      e)))
