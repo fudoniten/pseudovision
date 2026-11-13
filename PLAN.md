@@ -154,3 +154,11 @@ Grout clips over HTTP instead of a shared mount; merging pvcli and
   handoff (design Option B), not a single continuous encoder.
 - Segment storage is local disk behind a `SegmentStore` protocol, so shared
   storage can drop in later.
+- 2026-11-13: After 3 misfit draws, a random block searches its pool once for
+  an item that fits and is off cooldown before giving the rest to filler (the
+  repeat window, not the miss limit, keeps short items from looping).
+- 2026-11-13: Series keep their place. Saved positions are stored as
+  `{key, state}` entries (the JSONB reader mangled `collection:7` keys, so no
+  position was ever read back), enumerators resume after the last item drawn,
+  a series in order never skips an episode that doesn't fit, and a reset
+  rebuild rewinds each series to the episode after the last one that aired.
