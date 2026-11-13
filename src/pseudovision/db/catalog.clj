@@ -128,7 +128,7 @@
                                 [:= :e.parent-id :season.id]]
                            [:= :e.kind (sql-util/->pg-enum "media_item_kind" "episode")]])
              (h/left-join [:media-versions :mv]
-                          [:= :mv.media-item-id :e.id])
+                          [:= :mv.id (media/primary-version-id :e.id)])
             (h/where [:= :mi.state (sql-util/->pg-enum "media_item_state" "normal")])
             (h/where [:= :mi.kind (sql-util/->pg-enum "media_item_kind" "show")])
             (cond->
@@ -146,7 +146,7 @@
             (h/from [:media-items :mi])
             (h/join [:metadata :m] [:= :m.media-item-id :mi.id])
             (h/left-join [:media-versions :mv]
-                         [:= :mv.media-item-id :mi.id])
+                         [:= :mv.id (media/primary-version-id :mi.id)])
             (h/where [:= :mi.state (sql-util/->pg-enum "media_item_state" "normal")])
             (h/where [:= :mi.kind (sql-util/->pg-enum "media_item_kind" "movie")])
             (cond->
@@ -167,7 +167,7 @@
             (h/from [:media-items :mi])
             (h/join [:metadata :m] [:= :m.media-item-id :mi.id])
             (h/left-join [:media-versions :mv]
-                         [:= :mv.media-item-id :mi.id])
+                         [:= :mv.id (media/primary-version-id :mi.id)])
             (h/where [:= :mi.state (sql-util/->pg-enum "media_item_state" "normal")])
             (h/where [:= :mi.kind (sql-util/->pg-enum "media_item_kind" "program")])
             (cond->

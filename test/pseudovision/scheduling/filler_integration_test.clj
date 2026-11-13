@@ -22,7 +22,9 @@
             [honey.sql :as sql]
             [honey.sql.helpers :as h]
             [pseudovision.db.core :as db]
+            [pseudovision.db.collections :as col-db]
             [pseudovision.db.filler :as filler-db]
+            [pseudovision.db.media :as media-db]
             [pseudovision.db.playouts :as playout-db]
             [pseudovision.scheduling.core :as sched]
             [pseudovision.util.sql :as sql-util]
@@ -123,9 +125,9 @@
                         :tail-mode      "filler"
                         :collection-id  content
                         :tail-filler-id preset})
-        chan-a   (ins! ds :channels {:number "90" :sort-number 90.0 :name "A"
+        chan-a   (ins! ds :channels {:number "90" :sort-number 90.0 :name "A" :slug "a"
                                      :ffmpeg-profile-id profile})
-        chan-b   (ins! ds :channels {:number "91" :sort-number 91.0 :name "B"
+        chan-b   (ins! ds :channels {:number "91" :sort-number 91.0 :name "B" :slug "b"
                                      :ffmpeg-profile-id profile})]
     (doseq [ch [chan-a chan-b]]
       (playout-db/upsert-playout! ds ch schedule)
@@ -281,3 +283,63 @@
               "the timeline is extended out toward the new 24h horizon")
           (is (< (max-consecutive-gap-secs ev2) (* 2 block-seconds))
               "no multi-hour gap opens between the preserved near term and the extension"))))))
+
+(deftest rotation-continues-across-builds
+  ;; Regression: the saved cursor went through the JSONB column reader, which
+  ;; turned "collection:7" into :collection:-7, so the top-up never found the
+  ;; saved position and restarted the collection at its first item.
+  (if-not @ds-atom
+    (is true "skipped (no test database configured)")
+    (let [ds @ds-atom]
+      (with-redefs [t/now (constantly (Instant/parse "2026-06-14T00:00:00Z"))]
+        (let [{a :a}  (seed! ds)
+              content (:id (db/execute-one! ds ["SELECT id FROM collections WHERE name = 'content'"]))
+              lp      (:id (db/execute-one! ds ["SELECT id FROM library_paths LIMIT 1"]))
+              _       (dotimes [_ 59] (add-item! ds lp content content-seconds))
+              items   (->> (db/execute! ds [(str "SELECT media_item_id FROM collection_items"
+                                                 " WHERE collection_id = ? ORDER BY media_item_id")
+                                            content])
+                           (mapv :media-item-id))
+              _       (sched/build! ds {:lookahead-hours 8} (playout-db/get-playout ds a))
+              _       (sched/ensure-horizon! ds a 1)
+              aired   (->> (playout-db/list-events ds a)
+                           (filter #(= "content" (str (:playout-events/kind %))))
+                           (sort-by :playout-events/start-at)
+                           (mapv :playout-events/media-item-id))]
+          (is (> (count aired) 20) "a day of half-hour blocks")
+          (is (= (take (count aired) items) aired)
+              "the top-up continues the collection where the first build stopped"))))))
+
+(deftest pinned-and-remote-key-items-resolve-with-durations
+  ;; A slot pinned to a movie used to resolve through get-media-item, which
+  ;; carries no duration, so the movie looked unplayable and the strip aired
+  ;; filler. The catalog names Jellyfin titles by remote key, which smart
+  ;; collections now accept for shows and single items.
+  (if-not @ds-atom
+    (is true "skipped (no test database configured)")
+    (let [ds @ds-atom]
+      (seed! ds)
+      (let [lp     (:id (db/execute-one! ds ["SELECT id FROM library_paths LIMIT 1"]))
+            movie  (ins! ds :media-items {:kind (enum "media_item_kind" "movie")
+                                          :library-path-id lp :remote-key "abc123movie"})
+            _      (ins! ds :media-versions {:media-item-id movie :duration (secs->interval 5400)})
+            _      (ins! ds :media-versions {:media-item-id movie :duration (secs->interval 90)})
+            show   (ins! ds :media-items {:kind (enum "media_item_kind" "show")
+                                          :library-path-id lp :remote-key "def456show"})
+            season (ins! ds :media-items {:kind (enum "media_item_kind" "season") :position 1
+                                          :library-path-id lp :parent-id show})
+            eps    (doall (for [i [2 1]]
+                            (let [e (ins! ds :media-items {:kind (enum "media_item_kind" "episode")
+                                                           :position i :parent-id season
+                                                           :library-path-id lp})]
+                              (ins! ds :media-versions {:media-item-id e :duration (secs->interval 1320)})
+                              e)))
+            smart  (fn [q] (col-db/resolve-collection
+                            ds {:collections/id 0 :collections/kind "smart"
+                                :collections/config {:query q}}))]
+        (is (= (java.time.Duration/ofSeconds 5400)
+               (:media-versions/duration (media-db/get-playable-item ds movie)))
+            "the pinned item carries its longest version's duration")
+        (is (= [movie] (map :media-items/id (smart {:item-ref "abc123movie"}))))
+        (is (= (reverse eps) (map :media-items/id (smart {:show-id "def456show"})))
+            "a show named by remote key resolves to its episodes, in order")))))

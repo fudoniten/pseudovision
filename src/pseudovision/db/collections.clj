@@ -63,8 +63,13 @@
   ;; instead of the flat query below,
   ;; which only matches tags on the row's OWN metadata and cannot express
   ;; "all episodes of show X" or "all episodes whose SHOW carries genre Y"):
-  ;;   :show-id        — internal id of a show; resolves to its ordered,
-  ;;                     season-aware episode list (a named-series strip).
+  ;;   :show-id        — a show, by internal id or remote_key (the catalog
+  ;;                     profile names Jellyfin shows by their remote key);
+  ;;                     resolves to its ordered, season-aware episode list
+  ;;                     (a named-series strip).
+  ;;   :item-ref       — one movie or program, by internal id or remote_key;
+  ;;                     resolves to that item (a `movie:<id>` strip whose id
+  ;;                     isn't an internal id).
   ;;   :category       — a genre/category tag (bare or `genre:`-prefixed);
   ;;                     resolves matching shows (expanded to episodes) and
   ;;                     movies, exactly like a `random:<category>` pool at
@@ -80,13 +85,25 @@
   ;; pre-kebab their fixtures too — see test/pseudovision/db/collections_test.clj.)
   (let [q           (get-in collection [:collections/config :query] {})
         show-id     (get q :show-id)
+        item-ref    (get q :item-ref)
         category    (get q :category)
         channel-tag (get q :channel-tag)]
     (cond
       show-id
       (do (log/info "Resolving smart collection (show-id)"
                     {:id (:collections/id collection) :show-id show-id})
-          (media/list-show-episodes-by-id ds show-id))
+          (if-let [id (if (integer? show-id) show-id (media/resolve-media-item-id ds show-id))]
+            (media/list-show-episodes-by-id ds id)
+            (do (log/warn "Smart collection names a show that doesn't exist"
+                          {:id (:collections/id collection) :show-id show-id})
+                [])))
+
+      item-ref
+      (if-let [item (media/get-playable-item ds item-ref)]
+        [item]
+        (do (log/warn "Smart collection names an item that doesn't exist"
+                      {:id (:collections/id collection) :item-ref item-ref})
+            []))
 
       category
       (do (log/info "Resolving smart collection (category)"

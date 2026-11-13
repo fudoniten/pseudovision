@@ -180,12 +180,12 @@
 
                 (:schedule-slots/media-item-id slot)
                 (let [media-id (:schedule-slots/media-item-id slot)
-                      item (media-db/get-media-item db media-id)]
+                      item (media-db/get-playable-item db media-id)]
                   (log/info "Loading single media item for slot"
                            {:slot-id slot-id
                             :media-id media-id
                             :media-name (when item (:media-items/name item))})
-                  [item])
+                  (if item [item] []))
 
                 :else
                 ;; Channel-catalog fallback — see `load-items` docstring.

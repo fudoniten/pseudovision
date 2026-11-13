@@ -131,7 +131,7 @@
                       :schedule-slots/tail-filler-id nil)
           cur  (make-cursor t0)
           filler-called? (atom false)]
-      (with-redefs [media-db/get-media-item     (fn [_ _] long-item)
+      (with-redefs [media-db/get-playable-item     (fn [_ _] long-item)
                     filler-db/get-filler-preset  (fn [_ _]
                                                    (reset! filler-called? true)
                                                    tail-filler-preset)]
@@ -153,7 +153,7 @@
     (let [long-item {:media-items/id 1 :media-versions/duration dur-2h}
           slot      (block-slot-with-item 1 dur-1h "filler")
           cur       (make-cursor t0)]
-      (with-redefs [media-db/get-media-item     (fn [_ _] long-item)
+      (with-redefs [media-db/get-playable-item     (fn [_ _] long-item)
                     filler-db/get-filler-preset  (fn [_ _] tail-filler-preset)
                     filler-db/load-filler-items  (fn [_ _] (filler-items 20))]
         (let [[events cursor'] (core/emit-block nil cur slot channel 1 {})]
@@ -201,7 +201,7 @@
                      :schedule-slots/playback-order "chronological"}
           cur       (make-cursor t0)
           opts      {:flood-end flood-end :seed 0}]
-      (with-redefs [media-db/get-media-item     (fn [_ _] content-item)
+      (with-redefs [media-db/get-playable-item     (fn [_ _] content-item)
                     filler-db/get-filler-preset  (fn [_ _] fallback-filler-preset)
                     filler-db/load-filler-items  (fn [_ _] (filler-items 30))]
         (let [[events cursor'] (core/emit-flood nil cur slot channel 1 opts)]
@@ -221,7 +221,7 @@
                      :schedule-slots/playback-order "chronological"}
           cur       (make-cursor t0)
           opts      {:flood-end flood-end :seed 0}]
-      (with-redefs [media-db/get-media-item (fn [_ _] content-item)]
+      (with-redefs [media-db/get-playable-item (fn [_ _] content-item)]
         (let [[events cursor'] (core/emit-flood nil cur slot {} 1 opts)]
           (is (= 1 (count events)) "only the one episode that fit is emitted")
           (is (= flood-end (:next-start cursor')) "cursor still advances to flood-end"))))))
@@ -306,7 +306,7 @@
                        {:media-items/id 97 :media-versions/duration (Duration/ofMinutes 5)}]
           opts {:flood-end t1 :seed 0 :pack-filler? true
                 :grout {:enabled? true :base-url "http://grout"}}]
-      (with-redefs [media-db/get-media-item     (fn [_ _] {:media-items/id 1
+      (with-redefs [media-db/get-playable-item     (fn [_ _] {:media-items/id 1
                                                            :media-versions/duration (Duration/ofMinutes 45)})
                     filler-db/get-filler-preset (fn [_ _] nil)      ; no preset anywhere
                     grout/enabled?              (fn [_] true)
@@ -361,7 +361,7 @@
     (let [zero-item {:media-items/id 1 :media-versions/duration (Duration/ofSeconds 0)}
           slot      (block-slot-with-item 1 dur-1h "filler")
           cur       (make-cursor t0)]
-      (with-redefs [media-db/get-media-item     (fn [_ _] zero-item)
+      (with-redefs [media-db/get-playable-item     (fn [_ _] zero-item)
                     filler-db/get-filler-preset  (fn [_ _] tail-filler-preset)
                     filler-db/load-filler-items  (fn [_ _] (filler-items 20))]
         (let [result (run-with-timeout 5000 #(core/emit-block nil cur slot channel 1 {}))]
@@ -380,7 +380,7 @@
                     :schedule-slots/playback-order "chronological"}
           cur      (make-cursor t0)
           opts     {:flood-end t2 :seed 0}]
-      (with-redefs [media-db/get-media-item     (fn [_ _] nil-item)
+      (with-redefs [media-db/get-playable-item     (fn [_ _] nil-item)
                     filler-db/get-filler-preset  (fn [_ _] fallback-filler-preset)
                     filler-db/load-filler-items  (fn [_ _] (filler-items 30))]
         (let [result (run-with-timeout 5000 #(core/emit-flood nil cur slot channel 1 opts))]
@@ -453,7 +453,7 @@
     (let [slot (pre-slot {:schedule-slots/pre-filler-id 50})
           cur  (make-cursor t0)
           block-end t1]   ; t0 + 1h
-      (with-redefs [media-db/get-media-item     (fn [_ _] content-item)
+      (with-redefs [media-db/get-playable-item     (fn [_ _] content-item)
                     filler-db/get-filler-preset (fn [_ _] pre-count-preset)
                     filler-db/load-filler-items (fn [_ _] (filler-items 10))]
         (let [[events _] (core/emit-block nil cur slot {} 1 {})
@@ -481,7 +481,7 @@
                   :filler-presets/role "pre"}
           slot   (pre-slot {:schedule-slots/pre-filler-id 50})
           cur    (make-cursor t0)]
-      (with-redefs [media-db/get-media-item     (fn [_ _] content-item)
+      (with-redefs [media-db/get-playable-item     (fn [_ _] content-item)
                     filler-db/get-filler-preset (fn [_ _] preset)
                     filler-db/load-filler-items (fn [_ _] (filler-items 20))]
         (let [[events _] (core/emit-block nil cur slot {} 1 {})
@@ -541,7 +541,7 @@
     (let [slot (pre-slot {})   ; no pre/mid/post/tail filler
           cur  (make-cursor t0)
           block-end t1]        ; t0 + 1h
-      (with-redefs [media-db/get-media-item     (fn [_ _] content-item)
+      (with-redefs [media-db/get-playable-item     (fn [_ _] content-item)
                     filler-db/get-filler-preset (fn [_ _] nil)   ; no presets anywhere
                     filler-db/load-filler-items (fn [_ _] [])]
         (let [[events _] (core/emit-block nil cur slot {} 1 {})
@@ -570,7 +570,7 @@
     (let [slot (pre-slot {:schedule-slots/post-filler-id 52})
           post-called? (atom false)
           cur  (make-cursor t0)]
-      (with-redefs [media-db/get-media-item     (fn [_ _] content-item)
+      (with-redefs [media-db/get-playable-item     (fn [_ _] content-item)
                     filler-db/get-filler-preset (fn [_ _]
                                                    (reset! post-called? true)
                                                    post-count-preset)
@@ -591,7 +591,7 @@
                 :schedule-slots/post-filler-id 52
                 :schedule-slots/playback-order "chronological"}
           cur  (make-cursor t0)]
-      (with-redefs [media-db/get-media-item     (fn [_ _] content-item)
+      (with-redefs [media-db/get-playable-item     (fn [_ _] content-item)
                     ;; both roles resolve to a count preset (count = 2)
                     filler-db/get-filler-preset (fn [_ _] pre-count-preset)
                     filler-db/load-filler-items (fn [_ _] (filler-items 10))]
@@ -611,7 +611,7 @@
           cur  (make-cursor t0)
           preset {:filler-presets/id 42 :filler-presets/mode "count"
                   :filler-presets/count 3 :filler-presets/role "tail"}]
-      (with-redefs [media-db/get-media-item     (fn [_ _] {:media-items/id 1
+      (with-redefs [media-db/get-playable-item     (fn [_ _] {:media-items/id 1
                                                            :media-versions/duration (Duration/ofMinutes 25)})
                     filler-db/get-filler-preset (fn [_ _] preset)
                     filler-db/load-filler-items (fn [_ _] (filler-items 10))]
@@ -629,7 +629,7 @@
                   {:media-items/id (+ 100 i)
                    :media-versions/duration (Duration/ofMillis (+ 60900 (* 4 i)))})
           opts  {:seed 7 :pack-filler? true :grout {:enabled? true :base-url "http://grout"}}]
-      (with-redefs [media-db/get-media-item     (fn [_ _] {:media-items/id 1
+      (with-redefs [media-db/get-playable-item     (fn [_ _] {:media-items/id 1
                                                            :media-versions/duration (Duration/ofMinutes 50)})
                     filler-db/get-filler-preset (fn [_ _] nil)
                     grout/enabled?              (fn [_] true)
