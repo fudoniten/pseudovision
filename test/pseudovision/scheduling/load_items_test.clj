@@ -173,7 +173,7 @@
 (deftest emit-once-uses-media-item-when-media-item-id-is-set
   (testing "regression guard: the media-item-id branch is unchanged.  When
             a slot has a media-item-id, load-items must still use
-            `get-media-item` and the channel-catalog branch must NOT fire."
+            `get-playable-item` and the channel-catalog branch must NOT fire."
     (let [slot {:schedule-slots/id             300
                 :schedule-slots/media-item-id  1
                 :schedule-slots/playback-order "chronological"}
@@ -181,7 +181,7 @@
           channel-tag-called? (atom false)]
       (with-redefs [media-db/resolve-playable-by-channel-tag
                     (fn [_ _] (reset! channel-tag-called? true) [])
-                    media-db/get-media-item
+                    media-db/get-playable-item
                     (fn [_ _] catalog-item)]
         (let [[events _] (core/emit-once nil cur slot test-channel 1 {})]
           (is (= 1 (count events)) "media-item path emits the item")
@@ -271,7 +271,7 @@
                   :schedule-slots/playback-order "chronological"}
           broken {:media-items/id 50 :media-items/kind "movie"
                   :media-versions/duration (Duration/ofSeconds 1)}]
-      (with-redefs [media-db/get-media-item (fn [_ _] broken)]
+      (with-redefs [media-db/get-playable-item (fn [_ _] broken)]
         (is (= [50] (mapv :media-items/id (#'core/load-items nil slot test-channel))))))))
 
 (deftest filler-recency-window-precedence

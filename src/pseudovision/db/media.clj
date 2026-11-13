@@ -399,6 +399,18 @@
                        (h/where (item-ref-match :mi.id :mi.remote-key id))
                        sql/format)))
 
+(defn get-playable-item
+  "One media item as the scheduler needs it: its row plus the duration of its
+   primary version (`:media-versions/duration`), or nil. `ref` may be the
+   internal id or a remote_key. `get-media-item` carries no duration, so a slot
+   pinned to an item through it always looked unplayable and aired filler."
+  [ds ref]
+  (db/query-one ds (-> (h/select :mi.* :mv.duration)
+                       (h/from [:media-items :mi])
+                       (h/left-join [:media-versions :mv] [:= :mv.id (primary-version-id :mi.id)])
+                       (h/where (item-ref-match :mi.id :mi.remote-key ref))
+                       sql/format)))
+
 (defn get-media-item-with-source
   "Returns a media item joined to its media source, including the source kind
    and connection_config needed to construct a playback URL. `id` may be the

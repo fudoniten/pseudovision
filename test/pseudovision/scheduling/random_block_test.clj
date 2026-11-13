@@ -9,6 +9,8 @@
             [pseudovision.scheduling.enumerators :as enum]
             [pseudovision.db.filler :as filler-db]
             [pseudovision.db.media :as media-db]
+            [pseudovision.media.grout :as grout]
+            [pseudovision.media.grout-source :as grout-source]
             [pseudovision.util.time :as t])
   (:import [java.time Duration Instant]))
 
@@ -151,3 +153,51 @@
     (is (= [1 2 3] (content-ids out)) "programs keep their order")
     (is (= 1 (:media-item-id (first out))))
     (is (= (t/add-duration t0 (Duration/ofMinutes 72)) (:finish-at (last out))))))
+
+;; ---------------------------------------------------------------------------
+;; Channels with no filler presets (every channel Tunarr Scheduler syncs)
+;; ---------------------------------------------------------------------------
+
+(defn- preset-less-block [minutes]
+  {:schedule-slots/id             8
+   :schedule-slots/block-duration (Duration/ofMinutes minutes)
+   :schedule-slots/tail-mode      "filler"
+   :schedule-slots/playback-order "random"})
+
+(deftest filler-is-scattered-without-presets
+  (testing "with no presets, Grout fills the leftover as tail filler, which is
+            scattered; post-roll no longer swallows the whole remainder"
+    (with-redefs [media-db/resolve-playable-by-channel-tag (fn [_ _] spectrum-pool)
+                  filler-db/get-filler-preset              (fn [_ _] nil)
+                  grout/enabled?                           (fn [_] true)
+                  grout-source/grout-filler-items          (fn [& _] (filler-pool))]
+      (let [opts   {:pack-filler? true :content-airings-atom (atom {}) :grout {}}
+            blocks (loop [i 0, cur (cursor/init t0), out []]
+                     (if (= i 10)
+                       out
+                       (let [[evs cur'] (core/emit-block nil cur (preset-less-block 180)
+                                                         channel 1 opts)]
+                         (recur (inc i) cur' (conj out evs)))))
+            kinds  (set (map #(str (:kind %)) (mapcat identity blocks)))
+            inner  (fn [evs]
+                     (->> (partition-by #(< (:media-item-id %) 500) evs)
+                          (drop 1) (butlast)
+                          (filter #(>= (:media-item-id (first %)) 500))
+                          count))]
+        (is (not (contains? kinds "post")) "no post-roll without a post preset")
+        (is (some #(pos? (inner %)) blocks)
+            "some filler lands between programs, not only at the end")))))
+
+(deftest misses-lead-to-a-search-not-filler
+  (testing "a mixed pool: three movies drawn in a row after an episode no longer
+            leave the rest of a two-hour block to filler"
+    (let [;; drawn in this order: one episode, then movies, then more episodes
+          pool (-> [(item 1 22)]
+                   (into (map #(item % 100) (range 2 8)))
+                   (into (map #(item % 22) (range 8 12))))
+          e    (enum/make-enumerator pool :chronological {})
+          plan (core/plan-random-content e t0 (t/add-duration t0 (Duration/ofMinutes 120))
+                                         {:max-misses 3 :window (t/hours->duration 48)})]
+      (is (= 5 (count (:items plan))) "five 22-minute episodes fill 110 of 120 minutes")
+      (is (= (count (set (map :media-items/id (:items plan)))) (count (:items plan)))
+          "the search never picks an item already placed (cooldown)"))))

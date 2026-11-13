@@ -117,6 +117,34 @@
                                              {:filler-presets/grout-tags ["x"]})]
           (is (= ["c1"] (map :media-items/id result))))))))
 
+(deftest grout-filler-items-asks-for-filler-kind-and-drops-programs
+  (testing "programs (15 min and up) are content, not filler"
+    (let [captured (atom nil)
+          clips    [{:id "c1" :kind "filler"  :path "/data/c1.mp4" :duration-ms 30000}
+                    {:id "c3" :kind "program" :path "/data/c3.mp4" :duration-ms 1500000}]]
+      (with-redefs [grout/find-filler        (fn [_ opts] (reset! captured opts) clips)
+                    sut/ensure-library-path! (fn [_ _] 7)
+                    sut/ingest-clip!         (fn [_ _ c] {:media-items/id (:id c)
+                                                          :media-versions/duration
+                                                          (Duration/ofMillis (:duration-ms c))})]
+        (let [result (sut/grout-filler-items nil enabled-client
+                                             {:channels/slug "spectrum"}
+                                             (Instant/now) (Instant/now) {})]
+          (is (= "filler" (:kind @captured)))
+          (is (= ["c1"] (map :media-items/id result))))))))
+
+(deftest grout-filler-pool-asks-for-filler-kind-and-drops-programs
+  (let [captured (atom nil)
+        clips    [{:id "c1" :kind "filler"  :path "/data/c1.mp4" :duration-ms 30000}
+                  {:id "c2" :kind "bumper"  :path "/data/c2.mp4" :duration-ms 10000}
+                  {:id "c3" :kind "program" :path "/data/c3.mp4" :duration-ms 1500000}]]
+    (with-redefs [grout/list-all           (fn [_ opts _] (reset! captured opts) clips)
+                  sut/ensure-library-path! (fn [_ _] 7)
+                  sut/ingest-clips!        (fn [_ _ cs] (mapv (fn [c] {:media-items/id (:id c)}) cs))]
+      (let [result (sut/grout-filler-pool nil enabled-client {:channels/slug "spectrum"} {})]
+        (is (= "filler" (:kind @captured)))
+        (is (= ["c1"] (map :media-items/id result)))))))
+
 ;; ---------------------------------------------------------------------------
 ;; grout-bumper-items
 ;; ---------------------------------------------------------------------------
@@ -384,7 +412,7 @@
              (sut/grout-filler-pool nil enabled-client {:channels/slug "goldenreels"}
                                     {:filler-presets/grout-tags ["retro"]}))
           "bumpers are left for the bumper pool")
-      (is (= {:tags ["retro"] :channel "goldenreels"} @captured)
+      (is (= {:tags ["retro"] :kind "filler" :channel "goldenreels"} @captured)
           "no max_ms: the build cuts the pool to each gap itself"))))
 
 (deftest ingest-clips-backfills-titles-for-known-clips

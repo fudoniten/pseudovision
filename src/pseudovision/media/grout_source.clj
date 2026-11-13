@@ -233,6 +233,16 @@
   (when candidate
     (cond-> candidate (generic-clip? clip) (assoc :grout/generic? true))))
 
+(defn- filler-clip?
+  "Whether a Grout clip may be used as plain filler: `filler` kind only (the
+   queries ask Grout for that kind; this also guards an older Grout that
+   ignores the parameter). Bumpers go through the small-gap injector, and
+   `program` clips are long-form content that the catalog sync schedules as
+   programs, so using them as filler aired them twice and filled whole breaks
+   with a single program."
+  [clip]
+  (contains? #{nil "filler"} (some-> (:kind clip) name)))
+
 (defn- usable-clip? [clip]
   (and (not (str/blank? (:path clip)))
        (some-> (:duration-ms clip) pos?)))
@@ -310,16 +320,18 @@
     []
     (let [gap-ms (when (and from to) (max 0 (.toMillis (Duration/between from to))))
           clips  (->> (grout/find-filler grout
+                                         ;; Only `filler`-kind clips. Bumpers are
+                                         ;; reserved for the small-gap injector
+                                         ;; (grout-bumper-items), and `program`s
+                                         ;; (15 minutes and up) are content,
+                                         ;; synced into the catalog and
+                                         ;; scheduled on their own.
                                          (cond-> {:tags   (:filler-presets/grout-tags preset)
+                                                  :kind   "filler"
                                                   :random true}
                                            (channel-tag channel) (assoc :channel (channel-tag channel))
                                            (and gap-ms (pos? gap-ms)) (assoc :max-ms gap-ms)))
-                      ;; Bumpers are reserved for the dedicated small-gap
-                      ;; injector (see grout-bumper-items / fill-gap-with-bumper)
-                      ;; so they keep their "Coming up next" overlay treatment —
-                      ;; never surface them here as plain tail/fallback/pre/mid/
-                      ;; post filler.
-                      (remove #(= "bumper" (:kind %))))]
+                      (filter filler-clip?))]
       (if (empty? clips)
         (do (log/info "Grout returned no filler candidates"
                       {:channel (channel-tag channel)
@@ -374,7 +386,7 @@
   10)
 
 (defn grout-filler-pool
-  "Every non-bumper Grout clip usable on `channel` (its own plus generic clips)
+  "Every filler-kind Grout clip usable on `channel` (its own plus generic clips)
    carrying all of `preset`'s grout-tags, ingested as local media items.
    Same candidate shape as `grout-filler-items`, without the gap-length cap.
    Returns [] when Grout is disabled, unreachable or has no match."
@@ -383,10 +395,11 @@
     []
     (let [chan  (channel-tag channel)
           clips (->> (grout/list-all grout
-                                     (cond-> {:tags (:filler-presets/grout-tags preset)}
+                                     (cond-> {:tags (:filler-presets/grout-tags preset)
+                                              :kind "filler"}
                                        chan (assoc :channel chan))
                                      pool-max-pages)
-                     (remove #(= "bumper" (:kind %))))]
+                     (filter filler-clip?))]
       (log/info "Loaded Grout filler pool"
                 {:channel chan :tags (:filler-presets/grout-tags preset) :clips (count clips)})
       (if (empty? clips)

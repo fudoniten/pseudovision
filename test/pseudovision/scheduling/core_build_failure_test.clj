@@ -140,3 +140,43 @@
                                         (update :next-start str))})
         (is (= [finish] (:deleted-from @log))
             "the new timeline starts when the on-air event finishes")))))
+
+(deftest reset-keeps-each-series-on-its-next-episode
+  (testing "a reset rebuild resumes a series after the last episode that aired,
+            instead of restarting it at episode 1"
+    (let [pool   (mapv (fn [id] {:media-items/id id :_top-id 50
+                                 :media-versions/duration (java.time.Duration/ofMinutes 30)})
+                       (range 1 41))
+          ;; the old cursor had built through episode 30; episode 12 aired last
+          ;; as the JSONB reader hands it over (kebab keys, ISO instants)
+          saved  {:next-start        (str (.plusSeconds ^java.time.Instant t0 (* 14 86400)))
+                  :slot-index        0
+                  :next-guide-group  1
+                  :enumerator-states {"collection:7" {:index 30 :seed 0 :n 40 :last-id 30
+                                                      :playback-order "chronological"}}}
+          slot   {:schedule-slots/id 9 :schedule-slots/slot-index 0
+                  :schedule-slots/anchor "fixed"
+                  :schedule-slots/start-time (java.time.Duration/ofHours 10)
+                  :schedule-slots/collection-id 7
+                  :schedule-slots/fill-mode "block"
+                  :schedule-slots/block-duration (java.time.Duration/ofMinutes 30)
+                  :schedule-slots/tail-mode "filler"
+                  :schedule-slots/playback-order "chronological"}]
+      (with-build-stubs
+        {#'schedules-db/list-slots              (fn [_ _] [slot])
+         #'pseudovision.db.media/get-collection (fn [_ _] {:collections/id 7 :collections/kind "manual"})
+         #'pseudovision.db.collections/resolve-collection (fn [_ _] pool)
+         #'pseudovision.db.media/effective-tags-by-item   (fn [_ _] {})
+         #'playout-db/recent-content-airings
+         (fn [_ _ _] {11 [(.minusSeconds ^java.time.Instant t0 172800)]
+                      12 [(.minusSeconds ^java.time.Instant t0 86400)]})
+         #'t/now (fn [] t0)}
+        (fn [log]
+          (sched/build! :db {:lookahead-hours 1 :reset-cursor? true :zone-id "UTC"}
+                        {:playouts/id 1 :playouts/schedule-id 2 :playouts/channel-id 3
+                         :playouts/cursor saved})
+          (is (= 13 (:media-item-id (first (filter #(= 13 (:media-item-id %)) (:inserted @log)))))
+              "episode 13 is scheduled")
+          (is (= [13] (vec (distinct (keep #(when (<= (:media-item-id % 0) 40) (:media-item-id %))
+                                           (:inserted @log))))))
+          "only episode 13 airs in the one-hour horizon")))))

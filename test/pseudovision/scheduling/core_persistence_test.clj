@@ -37,7 +37,7 @@
 (deftest content-and-filler-events-share-one-column-set
   (testing "a block that emits content then tail filler yields rows that are
             uniform and insert-safe (non-nil guide_group on every row)"
-    (with-redefs [media-db/get-media-item     (fn [_ _] content-item)
+    (with-redefs [media-db/get-playable-item     (fn [_ _] content-item)
                   filler-db/get-filler-preset (fn [_ _] tail-preset)
                   filler-db/load-filler-items (fn [_ _] (filler-items 20))]
       (let [cur            (cursor/init t0)

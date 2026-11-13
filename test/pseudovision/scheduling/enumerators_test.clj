@@ -84,3 +84,37 @@
           [straight _] (step e 10)
           [resumed _]  (step (sut/cursor->enumerator pool (sut/enumerator->cursor e)) 10)]
       (is (= straight resumed)))))
+
+(defn- eps [ids] (mapv (fn [id] {:media-items/id id}) ids))
+
+(defn- draw-ids [e n]
+  (loop [e e, i 0, out []]
+    (if (= i n) [out e] (let [[it e'] (sut/next-item e)] (recur e' (inc i) (conj out (:media-items/id it)))))))
+
+(deftest chronological-resumes-after-last-item-when-pool-changes
+  (let [pool        (eps (range 1 101))
+        ;; play past a full pass so the raw draw count is far above the pool size
+        [_ e]       (draw-ids (sut/make-enumerator pool :chronological {}) 130)
+        saved       (sut/enumerator->cursor e)]
+    (is (= 30 (:last-id saved)))
+    (is (= 30 (:index saved)) "the index is stored within the pool")
+    (testing "an episode added at the end of the series"
+      (is (= [31 32] (first (draw-ids (sut/cursor->enumerator (eps (range 1 102)) saved) 2)))))
+    (testing "an earlier episode removed"
+      (is (= [31 32] (first (draw-ids (sut/cursor->enumerator (eps (remove #{5} (range 1 101))) saved) 2)))))
+    (testing "the last-aired episode itself removed: falls back to the index"
+      (is (= [32] (first (draw-ids (sut/cursor->enumerator (eps (remove #{30} (range 1 101))) saved) 1)))))
+    (testing "an old cursor without :last-id still restores by index"
+      (is (= [31] (first (draw-ids (sut/cursor->enumerator pool (dissoc saved :last-id)) 1)))))))
+
+(deftest random-resumes-after-last-item
+  (let [pool    (eps (range 1 21))
+        [a e]   (draw-ids (sut/make-enumerator pool :random {:seed 7}) 25)
+        [b _]   (draw-ids e 10)
+        [c _]   (draw-ids (sut/cursor->enumerator pool (sut/enumerator->cursor e)) 10)]
+    (is (= b c) "a same-size pool resumes exactly where it left off")))
+
+(deftest semi-sequential-plays-consecutive-items-in-a-batch
+  (let [[ids _] (draw-ids (sut/make-enumerator (eps (range 1 21)) :semi-sequential
+                                               {:seed 1 :batch-size 4}) 4)]
+    (is (= [1 2 3 4] ids))))
