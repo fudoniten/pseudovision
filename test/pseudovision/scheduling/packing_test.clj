@@ -212,3 +212,17 @@
           picked (pack/pack target items :seed 3)]
       (is (= 2 (count picked)))
       (is (not (pos? (compare (pack/duration-of picked) target)))))))
+
+(deftest tolerance-lets-recency-choose-among-near-tight-fills
+  (testing "a just-aired clip that fits to the millisecond loses to a fresh one
+            that fits to within the tolerance"
+    (let [target (Duration/ofSeconds 600)
+          items  [(item :stale 600) (item :fresh 595)]
+          picks  (fn [tol]
+                   (for [seed (range 40)]
+                     (map :media-items/id
+                          (pack/pack target items :seed seed :recency {:stale 5.0}
+                                     :tolerance tol))))]
+      (is (every? #(= [:fresh] %) (picks (Duration/ofSeconds 10))))
+      (testing "without tolerance the exact fit usually wins whatever its recency"
+        (is (some #(= [:stale] %) (picks nil)))))))

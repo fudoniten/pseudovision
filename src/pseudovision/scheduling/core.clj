@@ -484,10 +484,27 @@
           [[] cursor]))
       [[] cursor])))
 
+(defn- unconfigured-filler
+  "Filler for a `role` with no preset on the slot or channel. The gap-filling
+   roles (:tail, :fallback) fall back to channel-mapped Grout filler so the gap
+   doesn't become dead air. Inline roles (:pre, :mid, :post) emit nothing: they
+   decorate content, they don't pad dead air.
+
+   Post-roll used to take the Grout fallback too. Every caller asks for
+   post-roll first and tail filler right after it, so post-roll took the whole
+   remainder of each block and tail got nothing. A random block keeps post-roll
+   next to the last program and scatters only the tail, so on channels without
+   presets (every channel Tunarr Scheduler syncs) its leftover could never be
+   spread between programs."
+  [db cursor slot channel role from to playout-id opts]
+  (if (#{:tail :fallback} role)
+    (grout-channel-fallback db cursor slot channel role from to playout-id opts)
+    [[] cursor]))
+
 (defn- apply-filler*
   "Resolves the filler preset for `role`, loads its items, emits filler events,
    and returns [filler-events updated-cursor].  When no preset is configured for
-   the role on this slot/channel, gap-filling roles (:tail, :fallback, :post)
+   the role on this slot/channel, gap-filling roles (:tail, :fallback)
    fall back to channel-mapped Grout filler (see grout-channel-fallback); other
    roles, or a disabled/empty Grout, yield [[] cursor] (a genuine gap).
 
@@ -557,14 +574,8 @@
                  cursor' (cursor/save-enumerator cursor ckey (:enumerator result))]
              [events cursor'])))
        ;; preset-ref resolved but the row vanished — treat as unconfigured.
-       (grout-channel-fallback db cursor slot channel role from to playout-id opts))
-     ;; No preset configured for this role at slot or channel level: for the
-     ;; gap-filling roles, fall back to channel-mapped Grout filler so the gap
-     ;; doesn't become dead air.  Inline roles (:pre, :mid) keep the old "nothing"
-     ;; behaviour — they decorate content, they don't pad dead air.
-     (if (#{:tail :fallback :post} role)
-       (grout-channel-fallback db cursor slot channel role from to playout-id opts)
-       [[] cursor]))))
+       (unconfigured-filler db cursor slot channel role from to playout-id opts))
+     (unconfigured-filler db cursor slot channel role from to playout-id opts))))
 
 (defn- apply-filler
   "apply-filler*, with the filler cut so it never runs past `to` (when there
@@ -1309,6 +1320,16 @@
                              :overlaps   (vec (take 10 found))}))))
     (count evs)))
 
+(def default-filler-tolerance
+  "Leftover time the filler packer treats as a full break unless the build
+   options give :filler-tolerance. Without slack the packer ranked candidate
+   breaks by leftover milliseconds first and recency second, and millisecond
+   ties almost never happen, so the tightest-fitting break won whatever it
+   repeated and the recency window (and the generic-clip penalty) barely
+   mattered. Ten seconds lets recency choose among breaks that all fill their
+   gap to within a few seconds."
+  (Duration/ofSeconds 10))
+
 (defn- filler-recency-window
   "How long an item's past airing keeps penalising it in the filler packer.
    An explicit `:recency-window` opt wins, then the channel's own
@@ -1439,6 +1460,8 @@
                   repeat-window (get opts :content-repeat-window
                                      default-content-repeat-window)
                   opts'   (assoc opts' :pack-filler? (get opts :pack-filler? true)
+                                       :filler-tolerance (get opts :filler-tolerance
+                                                              default-filler-tolerance)
                                        :recency-window window
                                        :filler-airings-atom (atom airings)
                                        ;; What this channel aired recently, for

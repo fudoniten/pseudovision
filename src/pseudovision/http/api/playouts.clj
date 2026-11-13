@@ -14,13 +14,17 @@
 (defn- build-opts
   "The options every playout build gets: the Grout client, plus scheduling
    settings from config (:content-repeat-window-hours, the random-block repeat
-   window; the builder's default applies when it's absent)."
+   window, and :filler-tolerance-seconds, the filler packer's slack; the
+   builder's defaults apply when they're absent)."
   [scheduling grout]
   (cond-> {:grout grout}
     (:content-repeat-window-hours scheduling)
     (assoc :content-repeat-window
            (java.time.Duration/ofMinutes
-            (long (* 60 (:content-repeat-window-hours scheduling)))))))
+            (long (* 60 (:content-repeat-window-hours scheduling)))))
+    (:filler-tolerance-seconds scheduling)
+    (assoc :filler-tolerance
+           (java.time.Duration/ofSeconds (long (:filler-tolerance-seconds scheduling))))))
 
 (defn- resolve-channel-id
   "Resolves a path parameter to the internal channel ID. The value is always an

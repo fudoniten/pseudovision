@@ -35,7 +35,12 @@
                ;; Random-order blocks don't pick an item that aired on the
                ;; same channel within this many hours (capped at half the
                ;; pool's runtime, so small pools still rotate).
-               :content-repeat-window-hours 48}
+               :content-repeat-window-hours 48
+               ;; Filler breaks that come within this many seconds of filling
+               ;; their gap count as full, so the packer chooses among them by
+               ;; how recently their clips aired instead of by the last few
+               ;; milliseconds of fit.
+               :filler-tolerance-seconds 10}
 
   ;; Live streaming paths.  streams-dir is where served HLS segments live;
   ;; scratch-dir is where per-encoder temporary files are written before
